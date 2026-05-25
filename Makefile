@@ -22,30 +22,30 @@
 # Application version
 APPVERSION_M = 0
 APPVERSION_N = 1
-APPVERSION_P = 1
+APPVERSION_P = 0
 APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 
 # Setting to allow building variant applications
 VARIANT_PARAM = COIN
-VARIANT_VALUES = btcext_boilerplate btcext_boilerplate_testnet
+VARIANT_VALUES = app_babylon_vault app_babylon_vault_testnet
 
 # simplify for tests
 ifndef COIN
-COIN = btcext_boilerplate_testnet
+COIN = app_babylon_vault_testnet
 endif
 
 # Enabling DEBUG flag will enable PRINTF and disable optimizations
 #DEBUG = 1
 
-APP_DESCRIPTION = "This app enables signing\nFoo transactions\nfor all you Fools."
-APP_DEVELOPER = "FooCorp"
+APP_DESCRIPTION = "Babylon Vault — secure\nBitcoin vault signing\nfor the Babylon protocol."
+APP_DEVELOPER = "Hoodies"
 
-ifeq ($(COIN),btcext_boilerplate)
-APPNAME = "Btcext Boilerplate"
+ifeq ($(COIN),app_babylon_vault)
+APPNAME = "Babylon Vault"
 BITCOIN_NETWORK = mainnet
 
-else ifeq ($(COIN),btcext_boilerplate_testnet)
-APPNAME = "Btcext Boilerplate Testnet"
+else ifeq ($(COIN),app_babylon_vault_testnet)
+APPNAME = "Babylon Vault Testnet"
 BITCOIN_NETWORK = testnet
 
 else ifeq ($(filter clean,$(MAKECMDGOALS)),)
