@@ -37,7 +37,7 @@ endif
 # Enabling DEBUG flag will enable PRINTF and disable optimizations
 #DEBUG = 1
 
-APP_DESCRIPTION = "Babylon Vault — secure\nBitcoin vault signing\nfor the Babylon protocol."
+APP_DESCRIPTION = "Babylon Vault \nsecure Bitcoin vault signing\nfor the Babylon protocol."
 APP_DEVELOPER = "Hoodies"
 
 ifeq ($(COIN),app_babylon_vault)
@@ -56,10 +56,10 @@ APP_SOURCE_PATH += bitcoin_app_base/src src
 
 # Application icons following guidelines:
 # https://developers.ledger.com/docs/embedded-app/design-requirements/#device-icon
-ICON_NANOX = icons/nanox_app_foo.gif
-ICON_NANOSP = icons/nanox_app_foo.gif
-ICON_STAX = icons/stax_app_foo.png
-ICON_FLEX = icons/flex_app_foo.png
-ICON_APEX_P = icons/apex_p_app_foo.png
+ICON_NANOX = icons/nanox_app_babylon_vault.gif
+ICON_NANOSP = icons/nanosp_app_babylon_vault.gif
+ICON_STAX = icons/stax_app_babylon_vault.gif
+ICON_FLEX = icons/flex_app_babylon_vault.gif
+ICON_APEX_P = icons/apex_p_app_babylon_vault.png
 
 include bitcoin_app_base/Makefile
