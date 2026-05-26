@@ -24,10 +24,37 @@ void vault_context_invalidate(vault_context_t *ctx) {
     explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
 }
 
+/**
+ * @brief Return true iff (from → to) is a legal edge in the state diagram.
+ *
+ * No default case — combined with -Wall/-Wswitch/-Werror this becomes a
+ * compile error whenever a new vault_state_t value is added without being
+ * handled here, enforcing exhaustiveness at build time.
+ */
+static inline bool vault_transition_allowed(vault_state_t from, vault_state_t to) {
+    switch (from) {
+        case VAULT_STATE_IDLE:
+            return (to == VAULT_STATE_INTENT_LOADED);
+        case VAULT_STATE_INTENT_LOADED:
+            return (to == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED ||
+                    to == VAULT_STATE_SESSION2_PEGIN_EXPECTED);
+        case VAULT_STATE_SESSION1_PREPEGIN_EXPECTED:
+            return (to == VAULT_STATE_INTENT_LOADED);
+        case VAULT_STATE_SESSION2_PEGIN_EXPECTED:
+            return (to == VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
+        case VAULT_STATE_SESSION2_PAYOUT_EXPECTED:
+            return (to == VAULT_STATE_SESSION2_COMPLETE);
+        case VAULT_STATE_SESSION2_COMPLETE:
+            return (to == VAULT_STATE_IDLE);
+        /* no default */
+    }
+    return false;  /* unreachable; satisfies -Wreturn-type */
+}
+
 bool vault_context_transition(vault_context_t *ctx,
                               vault_state_t    from,
                               vault_state_t    to) {
-    if (ctx->state != from) {
+    if (ctx->state != from || !vault_transition_allowed(from, to)) {
         vault_context_invalidate(ctx);
         return false;
     }

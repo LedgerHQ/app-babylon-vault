@@ -212,31 +212,37 @@ static void test_transition_wrong_from_state(void **state) {
                     VAULT_STATE_SESSION1_PREPEGIN_EXPECTED);
 }
 
-static void test_transition_skip_state(void **state) {
+static void test_transition_illegal_to_state(void **state) {
     (void) state;
     /*
-     * A rogue handler at IDLE claims the context is at SESSION2_PEGIN_EXPECTED
-     * to jump directly to PAYOUT (bypassing INTENT_LOADED + PEGIN steps).
-     * The from-mismatch must be caught and the session invalidated.
+     * from matches current state (IDLE) but target is illegal:
+     * IDLE → SESSION2_PEGIN_EXPECTED skips INTENT_LOADED.
+     * The to-validation must catch this even though from is correct.
      */
     _assert_illegal(VAULT_STATE_IDLE,
-                    VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-                    VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
+                    VAULT_STATE_IDLE,
+                    VAULT_STATE_SESSION2_PEGIN_EXPECTED);
 }
 
 static void test_transition_backwards_without_valid_edge(void **state) {
     (void) state;
-    /* SESSION2_COMPLETE → SESSION2_PAYOUT_EXPECTED is not a valid backwards edge */
+    /*
+     * from matches current state (SESSION2_COMPLETE) but target is an
+     * illegal backwards edge — SESSION2_COMPLETE can only go to IDLE.
+     */
     _assert_illegal(VAULT_STATE_SESSION2_COMPLETE,
-                    VAULT_STATE_SESSION2_PAYOUT_EXPECTED,  /* wrong `from` */
-                    VAULT_STATE_SESSION2_PEGIN_EXPECTED);
+                    VAULT_STATE_SESSION2_COMPLETE,
+                    VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
 }
 
 static void test_transition_double_approve(void **state) {
     (void) state;
-    /* INTENT_LOADED → INTENT_LOADED is an illegal self-transition (double approve) */
+    /*
+     * INTENT_LOADED → INTENT_LOADED: correct from, but self-transitions
+     * are not in the legal table (double APPROVE_VAULT_INTENT must invalidate).
+     */
     _assert_illegal(VAULT_STATE_INTENT_LOADED,
-                    VAULT_STATE_IDLE,           /* wrong `from` for current state */
+                    VAULT_STATE_INTENT_LOADED,
                     VAULT_STATE_INTENT_LOADED);
 }
 
@@ -264,7 +270,7 @@ int main(void) {
 
         /* invalid transitions */
         cmocka_unit_test(test_transition_wrong_from_state),
-        cmocka_unit_test(test_transition_skip_state),
+        cmocka_unit_test(test_transition_illegal_to_state),
         cmocka_unit_test(test_transition_backwards_without_valid_edge),
         cmocka_unit_test(test_transition_double_approve),
     };
