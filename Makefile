@@ -22,30 +22,30 @@
 # Application version
 APPVERSION_M = 0
 APPVERSION_N = 1
-APPVERSION_P = 1
+APPVERSION_P = 0
 APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 
 # Setting to allow building variant applications
 VARIANT_PARAM = COIN
-VARIANT_VALUES = btcext_boilerplate btcext_boilerplate_testnet
+VARIANT_VALUES = app_babylon_vault app_babylon_vault_testnet
 
 # simplify for tests
 ifndef COIN
-COIN = btcext_boilerplate_testnet
+COIN = app_babylon_vault_testnet
 endif
 
 # Enabling DEBUG flag will enable PRINTF and disable optimizations
 #DEBUG = 1
 
-APP_DESCRIPTION = "This app enables signing\nFoo transactions\nfor all you Fools."
-APP_DEVELOPER = "FooCorp"
+APP_DESCRIPTION = "Babylon Vault \nsecure Bitcoin vault signing\nfor the Babylon protocol."
+APP_DEVELOPER = "Hoodies"
 
-ifeq ($(COIN),btcext_boilerplate)
-APPNAME = "Btcext Boilerplate"
+ifeq ($(COIN),app_babylon_vault)
+APPNAME = "Babylon Vault"
 BITCOIN_NETWORK = mainnet
 
-else ifeq ($(COIN),btcext_boilerplate_testnet)
-APPNAME = "Btcext Boilerplate Testnet"
+else ifeq ($(COIN),app_babylon_vault_testnet)
+APPNAME = "Babylon Vault Testnet"
 BITCOIN_NETWORK = testnet
 
 else ifeq ($(filter clean,$(MAKECMDGOALS)),)
@@ -56,10 +56,10 @@ APP_SOURCE_PATH += bitcoin_app_base/src src
 
 # Application icons following guidelines:
 # https://developers.ledger.com/docs/embedded-app/design-requirements/#device-icon
-ICON_NANOX = icons/nanox_app_foo.gif
-ICON_NANOSP = icons/nanox_app_foo.gif
-ICON_STAX = icons/stax_app_foo.png
-ICON_FLEX = icons/flex_app_foo.png
-ICON_APEX_P = icons/apex_p_app_foo.png
+ICON_NANOX = icons/nanox_app_babylon_vault.gif
+ICON_NANOSP = icons/nanosp_app_babylon_vault.gif
+ICON_STAX = icons/stax_app_babylon_vault.gif
+ICON_FLEX = icons/flex_app_babylon_vault.gif
+ICON_APEX_P = icons/apex_p_app_babylon_vault.png
 
 include bitcoin_app_base/Makefile

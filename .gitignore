@@ -21,8 +21,8 @@ fuzzing/build/
 
 # Editors
 .idea/
-.vscode/c_cpp_properties.json
-.vscode/settings.json
+/.vscode/
+/.claude/
 
 # Python
 *.pyc[cod]
@@ -38,3 +38,8 @@ doc/html
 doc/latex
 
 tests/snapshots-tmp
+
+
+# local 
+/tmp/
+/scripts_local/

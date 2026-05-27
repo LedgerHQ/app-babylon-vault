@@ -1,5 +1,0 @@
-{
-    "python.analysis.extraPaths": [
-        "./bitcoin_app_base"
-    ]
-}
