@@ -1,62 +1,70 @@
-# Ledger Boilerplate for Bitcoin Smart Contract Applications
+# Babylon Vault — Ledger Firmware App
 
-This is a boilerplate application which can be forked to start a new project for Ledger devices that can sign specialized types of bitcoin transactions, while building on top of the tooling of the Ledger Bitcoin application.
+This application enables a Ledger device to participate in the [Babylon](https://babylonlabs.io/) vault lifecycle: locking BTC into an HTLC, pre-signing vault exit transactions, and releasing the session secret once all pre-signatures are complete.
 
-## The Foo protocol
+The app is a btcext extension — standard commands (`SIGN_PSBT`, `GET_EXTENDED_PUBKEY`, etc.) are handled by the bitcoin base app. Three custom `INS` codes (`CLA 0xE1`) implement Babylon-specific vault operations.
 
-This repository implements an imaginary protocol for clear signing transactions of a specific format that the bitcoin app does not support.
+## The Babylon Vault Protocol
 
-The Foo protocol expects transactions that are just like normal transactions (inputs and change outputs from a standard account compliant to BIP-44, BIP-49, BIP-84 or BIP-86), plus in addition:
-- a special 'magic input' that is a P2TR UTXO with taproot public key at a fixed derivation path `m/86'/1'/99'`.
-- an `OP_RETURN` output with the message `FOO`.
+The vault lifecycle spans two sessions:
 
-The app's UX validates that the transaction satisfies this protocol, and shows all the transaction details with a clear UX.
+**Session 1 — Lock:** The depositor creates an HTLC output locking BTC on-chain.
 
-This example app also implements a custom APDU that receives a data buffer, and returns the binary XOR of all its bytes. 
+1. `DERIVE_CONTEXT_HASH` — derives an `htlc_preimage` bound to the on-chain context hash; returns `htlc_hashlock = SHA256(htlc_preimage)` to the host.
+2. `APPROVE_VAULT_INTENT` — streams vault parameters (17 scalar fields + keeper/challenger public keys) and shows an approval screen; the device stores the `vault_intent_t` in RAM.
+3. `SIGN_PSBT` (Pre-PegIn) — validates the HTLC PSBT, displays vault amount, fee, and HTLC address, then signs.
+
+**Session 2 — Pre-sign:** Before BTC is committed on-chain, all vault exit transactions are pre-signed.
+
+1. `DERIVE_CONTEXT_HASH` + `APPROVE_VAULT_INTENT` — re-derives and re-loads the intent (no new approval screen).
+2. `SIGN_PSBT` (PegIn) — silent; verifies `htlc_hashlock` binding, script reconstruction, and fee.
+3. `SIGN_PSBT` (Payout × N+1) — silent; VP first, then keeper keys in lexicographic order.
+4. `RELEASE_CONTEXT_SECRET` — returns `htlc_preimage` to the host and zeroes it on-device immediately.
+
+A **Refund** transaction (HTLC timelock branch) can be signed from any session state without loading an intent.
+
+### Security properties
+
+- The device always **reconstructs scripts** from the loaded `vault_intent_t` and rejects any PSBT that does not match — it never trusts scripts provided by the host.
+- `htlc_preimage` is **zeroed immediately** (`explicit_bzero`) on any signing error, intent reload, or early `RELEASE_CONTEXT_SECRET` call.
+- Payout order is **enforced by the device**: VP first, then VK keys in lexicographic order.
+- All vault P2TR outputs use a **NUMS internal key** (`lift_x(0x50929b74...)`) — no key-path spend is possible.
 
 ## Hooks
 
-Your apps can hook into the several places in order to extend upon the functionality of the base app.
+The app overrides two hooks exposed by the bitcoin base app via weak symbols.
 
-The [main.c](./src/main.c) contains an example and code documentation for each of them.
+### `validate_and_display_transaction`
 
-### <code>validate_and_display_transaction</code>
+Called during `SIGN_PSBT`. The app determines which of the four transaction types (Pre-PegIn, PegIn, Payout, Refund) is being signed, validates all external inputs against the loaded `vault_intent_t`, and displays the relevant UX screens.
 
-This function must be implemented by your application in order to make sure that the transaction is valid.
+### `sign_custom_inputs`
 
-The function has access to the entire content of the PSBT (via the functionality provided by the base app), and two bitvectors (one for the inputs, and one for the outputs) indicating which inputs/outputs are considered *internal*. Internal inputs are the ones that are spending a UTXO controlled by the wallet policy; similarly, internal outputs are valid change addresses. All the other inputs/outputs are external.
+Signs external inputs that belong to the vault protocol (e.g., the HTLC input in PegIn). The base app provides:
+- `compute_sighash_segwitv1` / `sign_sighash_schnorr_and_yield` for SegWit v1 (taproot) inputs
+- `compute_sighash_segwitv0` / `sign_sighash_ecdsa_and_yield` for SegWit v0 inputs
 
-This function must validate all the external inputs, and it MUST reject if any unexpected input is present.
+See [sign_psbt.h](https://github.com/LedgerHQ/app-bitcoin-new/blob/baseapp/src/handler/sign_psbt.h) and [txhashes.h](https://github.com/LedgerHQ/app-bitcoin-new/blob/baseapp/src/handler/sign_psbt/txhashes.h) for the full API.
 
-### <code>sign_custom_inputs</code>
+### `custom_apdu_handler`
 
-This function can be implemented to allow your application to sign for external inputs, are all the inputs that do not belong to the wallet policy (and are therefore custom to the protocol of your app - as any unrecognized input would have been rejected by <code>validate_and_display_transaction</code>).
+Handles the three Babylon-specific INS codes on `CLA 0xE1`:
 
-The function can use the functionality implemented in the base app in order to comput the sighash and yield the signatures returned to the client:
-- SegWitV1 (taproot) inputs: `compute_sighash_segwitv1` and `sign_sighash_schnorr_and_yield`;
-- SegWitV0 inputs: `compute_sighash_segwitv0` and `sign_sighash_ecdsa_and_yield`;
-- Legacy inputs: you should probably not use custom legacy inputs.
-
-Please consult the code of the base app for exact documentation about those functions. Definitions are in the headers [sign_psbt.h](https://github.com/LedgerHQ/app-bitcoin-new/blob/baseapp/src/handler/sign_psbt.h) and [txhashes.h](https://github.com/LedgerHQ/app-bitcoin-new/blob/baseapp/src/handler/sign_psbt/txhashes.h).
-
-If there are no external inputs to sign for, then this function can be omitted.
-
-### <code>custom_apdu_handler</code>
-
-This function can be implemented in order to customize the processing of APDUs, and add new ones.
-
-It is recommended that your app uses the same `CLA` value of `0xE1` used by the base app, and an `INS` equal to 128 or above.
+| INS | Command |
+|-----|---------|
+| `0x80` | `APPROVE_VAULT_INTENT` |
+| `0x81` | `DERIVE_CONTEXT_HASH` |
+| `0x82` | `RELEASE_CONTEXT_SECRET` |
 
 ## Compiling the app
 
-Initialize the submodule with
+Initialize the submodule with:
 
 ```
 $ git submodule update --init --recursive
 ```
 
-Compile the app [as usual](https://github.com/LedgerHQ/app-boilerplate#quick-start-guide).
-You should be able to launch it using speculos.
+Compile the app [as usual](https://github.com/LedgerHQ/app-boilerplate#quick-start-guide). You should be able to launch it using Speculos.
 
 ## Running the tests
 
