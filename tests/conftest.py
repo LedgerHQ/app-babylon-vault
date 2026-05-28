@@ -1,6 +1,7 @@
 from ledger_bitcoin import Chain
 from ragger.backend import RaisePolicy
 from ragger.backend.interface import BackendInterface
+from ragger.conftest import configuration
 import os
 from pathlib import Path
 from typing import Literal, Union
@@ -21,6 +22,15 @@ print(str(REPO_ROOT_DIR / "bitcoin_app_base" ))
 from ragger_bitcoin import createRaggerClient, RaggerClient
 
 # fmt: on
+
+# Seed Speculos with the standard test mnemonic so that BIP-32 derivations
+# (including m/73681862' used by DERIVE_CONTEXT_HASH) are reproducible.
+MNEMONIC = (
+    "glory promote mansion idle axis finger extra february uncover one trip "
+    "resource lawn turtle enact monster seven myth punch hobby comfort wild "
+    "raise skin"
+)
+configuration.OPTIONAL.CUSTOM_SEED = MNEMONIC
 
 
 ###########################

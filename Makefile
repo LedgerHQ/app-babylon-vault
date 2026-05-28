@@ -62,4 +62,10 @@ ICON_STAX = icons/stax_app_babylon_vault.gif
 ICON_FLEX = icons/flex_app_babylon_vault.gif
 ICON_APEX_P = icons/apex_p_app_babylon_vault.png
 
+# DERIVE_CONTEXT_HASH derives its HKDF key from the device seed at m/73681862'.
+# APP_LOAD_PARAMS is the intended extension point: Makefile.rules_generic includes
+# Makefile.app_params *after* this file runs, which extracts --path entries and
+# appends them to PATH_APP_LOAD_PARAMS before APP_INSTALL_PARAMS_DATA is computed.
+APP_LOAD_PARAMS = --path "73681862'"
+
 include bitcoin_app_base/Makefile
