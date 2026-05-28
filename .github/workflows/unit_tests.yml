@@ -1,0 +1,32 @@
+name: Unit tests
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - develop
+  pull_request:
+
+jobs:
+  unit_tests:
+    name: Build and run unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: sudo apt-get install -y libcmocka-dev cmake
+
+      - name: Configure
+        run: cmake -B unit-tests/build -S unit-tests -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build unit-tests/build
+
+      - name: Run tests
+        run: ctest --test-dir unit-tests/build -V --output-on-failure

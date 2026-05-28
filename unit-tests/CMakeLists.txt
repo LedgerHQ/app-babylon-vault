@@ -25,24 +25,43 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
 endif()
 
 # -----------------------------------------------------------------------
-# Sources under test (no Ledger SDK needed — pure-C state machine)
+# Paths
 # -----------------------------------------------------------------------
-set(SRC_DIR ${CMAKE_SOURCE_DIR}/../src)
+set(SRC_DIR   ${CMAKE_SOURCE_DIR}/../src)
+set(MOCKS_DIR ${CMAKE_SOURCE_DIR}/mocks)
 
-include_directories(${SRC_DIR})
+# Mock headers override Ledger SDK headers for all test targets.
+# MOCKS_DIR must come first so mock cx.h / crypto_helpers.h are found
+# before any SDK include path.
+include_directories(${MOCKS_DIR} ${SRC_DIR})
+
+find_package(cmocka REQUIRED)
 
 # -----------------------------------------------------------------------
 # test_vault_context
 # -----------------------------------------------------------------------
 add_executable(test_vault_context
   test_vault_context.c
+  mock_cx.c
   ${SRC_DIR}/vault_context.c
   ${SRC_DIR}/globals.c
 )
 
 target_compile_definitions(test_vault_context PRIVATE TEST)
-
-find_package(cmocka REQUIRED)
 target_link_libraries(test_vault_context cmocka)
 
 add_test(NAME test_vault_context COMMAND test_vault_context)
+
+# -----------------------------------------------------------------------
+# test_derive_context_hash
+# -----------------------------------------------------------------------
+add_executable(test_derive_context_hash
+  test_derive_context_hash.c
+  mock_cx.c
+  ${SRC_DIR}/globals.c
+)
+
+target_compile_definitions(test_derive_context_hash PRIVATE TEST)
+target_link_libraries(test_derive_context_hash cmocka)
+
+add_test(NAME test_derive_context_hash COMMAND test_derive_context_hash)
