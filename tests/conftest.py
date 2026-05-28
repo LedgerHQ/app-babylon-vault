@@ -50,12 +50,35 @@ pytest_plugins = ("ragger.conftest.base_conftest", )
 def pytest_addoption(parser):
     parser.addoption("--network", default="test")
 
+
+def _detect_network_from_binary() -> str:
+    """Infer mainnet/testnet from the most recently built app binary.
+
+    The mainnet binary embeds APPNAME='Babylon Vault'; the testnet binary
+    embeds APPNAME='Babylon Vault Testnet'.  Searching for b'Testnet' in
+    the raw ELF is sufficient — it lives in the ledger.app_name section.
+    Falls back to 'test' if no binary is found or the file is unreadable.
+    """
+    for elf in REPO_ROOT_DIR.glob("build/*/bin/app.elf"):
+        try:
+            if b"Testnet" not in elf.read_bytes():
+                return "main"
+        except OSError:
+            pass
+        break  # all device variants are built from the same COIN — one check is enough
+    return "test"
+
+
 @pytest.fixture
 def bitcoin_network(pytestconfig) -> Union[Literal['main'], Literal['test']]:
-    network = pytestconfig.getoption("network")
+    network = pytestconfig.getoption("--network")
+    # The VS Code plugin never passes --network, so the default "test" is always
+    # used even when testing the mainnet binary.  Auto-detect from the binary
+    # when the default hasn't been overridden explicitly.
+    if network == "test":
+        network = _detect_network_from_binary()
     if network not in ["main", "test"]:
-        raise ValueError(
-            f'Invalid value for BITCOIN_NETWORK: {network}')
+        raise ValueError(f'Invalid value for BITCOIN_NETWORK: {network}')
     return network
 
 
