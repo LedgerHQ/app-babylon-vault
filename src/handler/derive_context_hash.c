@@ -37,14 +37,13 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
     uint8_t app_name_len = cmd->data[0];
-    if (app_name_len > 64u || cmd->lc < (uint8_t)(1u + app_name_len + 2u)) {
+    if (app_name_len > 64u || cmd->lc < (uint8_t) (1u + app_name_len + 2u)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
     const uint8_t *app_name = &cmd->data[1];
     uint16_t context_total_len =
-        ((uint16_t)cmd->data[1u + app_name_len] << 8) |
-        (uint16_t)cmd->data[2u + app_name_len];
+        ((uint16_t) cmd->data[1u + app_name_len] << 8) | (uint16_t) cmd->data[2u + app_name_len];
 
     if (!hkdf_stream_begin(&G_hkdf_stream, app_name, app_name_len, context_total_len)) {
         SEND_SW(dc, SW_BAD_STATE);
@@ -53,8 +52,8 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
 
     if (context_total_len == 0u) {
         if (!hkdf_stream_finalize(&G_hkdf_stream,
-                                   G_vault_context.htlc_preimage,
-                                   G_vault_context.htlc_hashlock)) {
+                                  G_vault_context.htlc_preimage,
+                                  G_vault_context.htlc_hashlock)) {
             abort_stream();
             SEND_SW(dc, SW_BAD_STATE);
             return;
@@ -74,8 +73,7 @@ static void handle_context_chunk(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
 
-    uint16_t remaining = G_hkdf_stream.context_total_len -
-                         G_hkdf_stream.context_received_len;
+    uint16_t remaining = G_hkdf_stream.context_total_len - G_hkdf_stream.context_received_len;
     if (cmd->lc > remaining) {
         explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -90,12 +88,12 @@ static void handle_context_chunk(dispatcher_context_t *dc, const command_t *cmd)
 
     G_hkdf_stream.context_received_len += cmd->lc;
 
-    bool all_context_received = (G_hkdf_stream.context_received_len ==
-                                  G_hkdf_stream.context_total_len);
+    bool all_context_received =
+        (G_hkdf_stream.context_received_len == G_hkdf_stream.context_total_len);
     if (all_context_received) {
         if (!hkdf_stream_finalize(&G_hkdf_stream,
-                                   G_vault_context.htlc_preimage,
-                                   G_vault_context.htlc_hashlock)) {
+                                  G_vault_context.htlc_preimage,
+                                  G_vault_context.htlc_hashlock)) {
             abort_stream();
             SEND_SW(dc, SW_BAD_STATE);
             return;
@@ -113,8 +111,14 @@ static void handle_context_chunk(dispatcher_context_t *dc, const command_t *cmd)
 
 void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd) {
     switch (cmd->p1) {
-        case P1_INITIAL:  handle_initial_chunk(dc, cmd); return;
-        case P1_CONTINUE: handle_context_chunk(dc, cmd); return;
-        default:          SEND_SW(dc, SW_WRONG_P1P2);    return;
+        case P1_INITIAL:
+            handle_initial_chunk(dc, cmd);
+            return;
+        case P1_CONTINUE:
+            handle_context_chunk(dc, cmd);
+            return;
+        default:
+            SEND_SW(dc, SW_WRONG_P1P2);
+            return;
     }
 }

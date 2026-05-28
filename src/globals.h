@@ -9,7 +9,7 @@
 #include "cx.h"
 
 /** Loaded vault intent. Valid only when G_vault_context.state != VAULT_STATE_IDLE. */
-extern vault_intent_t  G_vault_intent;
+extern vault_intent_t G_vault_intent;
 
 /** Active session context. Always valid; state == VAULT_STATE_IDLE when no session is running. */
 extern vault_context_t G_vault_context;
@@ -23,11 +23,11 @@ extern vault_context_t G_vault_context;
  */
 typedef struct {
     /** True after a valid P1=0x00 chunk; gates acceptance of P1=0x01 chunks. */
-    bool             active;
+    bool active;
     /** Total context byte count declared in P1=0x00. */
-    uint16_t         context_total_len;
+    uint16_t context_total_len;
     /** Context bytes fed so far via P1=0x01 chunks. */
-    uint16_t         context_received_len;
+    uint16_t context_received_len;
     /**
      * Running HMAC-SHA256 context for HKDF-Expand.
      * Keyed with PRK; fed SHA256(app_name) then context chunks then 0x01.

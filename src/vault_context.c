@@ -46,14 +46,12 @@ static inline bool vault_transition_allowed(vault_state_t from, vault_state_t to
             return (to == VAULT_STATE_SESSION2_COMPLETE);
         case VAULT_STATE_SESSION2_COMPLETE:
             return (to == VAULT_STATE_IDLE);
-        /* no default */
+            /* no default */
     }
-    return false;  /* unreachable; satisfies -Wreturn-type */
+    return false; /* unreachable; satisfies -Wreturn-type */
 }
 
-bool vault_context_transition(vault_context_t *ctx,
-                              vault_state_t    from,
-                              vault_state_t    to) {
+bool vault_context_transition(vault_context_t *ctx, vault_state_t from, vault_state_t to) {
     if (ctx->state != from || !vault_transition_allowed(from, to)) {
         vault_context_invalidate(ctx);
         return false;

@@ -11,7 +11,8 @@
  * Three-phase protocol matching the chunked APDU wire format:
  *   1. hkdf_stream_begin()  — BIP-32 derive → HKDF-Extract → HMAC init with SHA256(app_name)
  *   2. hkdf_stream_feed()   — feed context chunks into the running HMAC (zero or more times)
- *   3. hkdf_stream_finalize() — append 0x01 counter, finalise HMAC → htlc_preimage, compute htlc_hashlock
+ *   3. hkdf_stream_finalize() — append 0x01 counter, finalise HMAC → htlc_preimage, compute
+ * htlc_hashlock
  */
 
 #include <stdbool.h>
@@ -28,8 +29,8 @@
 #define VAULT_HKDF_PATH_INDEX (0x80000000u | 73681862u)
 
 // HKDF salt per spec (no null terminator counted)
-static const uint8_t HKDF_SALT[]  = "derive-context-hash";
-#define HKDF_SALT_LEN ((uint32_t)(sizeof(HKDF_SALT) - 1u))
+static const uint8_t HKDF_SALT[] = "derive-context-hash";
+#define HKDF_SALT_LEN ((uint32_t) (sizeof(HKDF_SALT) - 1u))
 
 // ---------------------------------------------------------------------------
 // Phase 1 — BIP-32 key derivation
@@ -40,10 +41,8 @@ static const uint8_t HKDF_SALT[]  = "derive-context-hash";
  * @return true on success; false if the SDK returns an error (reject — do not substitute).
  */
 static inline bool derive_vault_privkey(cx_ecfp_256_private_key_t *privkey) {
-    static const uint32_t path[1] = { VAULT_HKDF_PATH_INDEX };
-    return bip32_derive_init_privkey_256(CX_CURVE_SECP256K1,
-                                        path, 1,
-                                        privkey, NULL) == CX_OK;
+    static const uint32_t path[1] = {VAULT_HKDF_PATH_INDEX};
+    return bip32_derive_init_privkey_256(CX_CURVE_SECP256K1, path, 1, privkey, NULL) == CX_OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,10 +84,10 @@ static inline void extract_prk(const uint8_t *ikm, uint8_t *prk_out) {
  * @param context_total_len Total context byte count that will follow in feed() calls.
  * @return true on success; false on any crypto error.
  */
-static inline bool hkdf_stream_begin(hkdf_stream_t     *stream,
-                                     const uint8_t     *app_name,
-                                     uint8_t            app_name_len,
-                                     uint16_t           context_total_len) {
+static inline bool hkdf_stream_begin(hkdf_stream_t *stream,
+                                     const uint8_t *app_name,
+                                     uint8_t app_name_len,
+                                     uint16_t context_total_len) {
     cx_ecfp_256_private_key_t privkey;
     if (!derive_vault_privkey(&privkey)) {
         explicit_bzero(&privkey, sizeof(privkey));
@@ -102,15 +101,15 @@ static inline bool hkdf_stream_begin(hkdf_stream_t     *stream,
     uint8_t app_name_hash[VAULT_HASH256_LEN];
     cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN);
 
-    bool ok = (cx_hmac_sha256_init_no_throw(&stream->hmac, prk, VAULT_HASH256_LEN) == CX_OK) &&
-              (cx_hmac_update((cx_hmac_t *) &stream->hmac,
-                              app_name_hash, VAULT_HASH256_LEN) == CX_OK);
+    bool ok =
+        (cx_hmac_sha256_init_no_throw(&stream->hmac, prk, VAULT_HASH256_LEN) == CX_OK) &&
+        (cx_hmac_update((cx_hmac_t *) &stream->hmac, app_name_hash, VAULT_HASH256_LEN) == CX_OK);
 
     explicit_bzero(prk, sizeof(prk));
     explicit_bzero(app_name_hash, sizeof(app_name_hash));
 
     if (ok) {
-        stream->context_total_len    = context_total_len;
+        stream->context_total_len = context_total_len;
         stream->context_received_len = 0;
     }
 
@@ -125,9 +124,7 @@ static inline bool hkdf_stream_begin(hkdf_stream_t     *stream,
  * @brief Feed @p len bytes of context data into the running HKDF-Expand HMAC.
  * @return true on success; false on HMAC update error.
  */
-static inline bool hkdf_stream_feed(hkdf_stream_t *stream,
-                                    const uint8_t *data,
-                                    uint8_t        len) {
+static inline bool hkdf_stream_feed(hkdf_stream_t *stream, const uint8_t *data, uint8_t len) {
     return cx_hmac_update((cx_hmac_t *) &stream->hmac, data, len) == CX_OK;
 }
 
@@ -147,19 +144,20 @@ static inline bool hkdf_stream_feed(hkdf_stream_t *stream,
  * @return true on success; false on any crypto error.
  */
 static inline bool hkdf_stream_finalize(hkdf_stream_t *stream,
-                                        uint8_t       *htlc_preimage_out,
-                                        uint8_t       *htlc_hashlock_out) {
+                                        uint8_t *htlc_preimage_out,
+                                        uint8_t *htlc_hashlock_out) {
     const uint8_t counter = 0x01;
     if (cx_hmac_update((cx_hmac_t *) &stream->hmac, &counter, 1) != CX_OK) {
         return false;
     }
 
     size_t out_len = VAULT_HASH256_LEN;
-    if (cx_hmac_final((cx_hmac_t *) &stream->hmac,
-                      htlc_preimage_out, &out_len) != CX_OK) {
+    if (cx_hmac_final((cx_hmac_t *) &stream->hmac, htlc_preimage_out, &out_len) != CX_OK) {
         return false;
     }
 
-    return cx_hash_sha256(htlc_preimage_out, VAULT_HASH256_LEN,
-                          htlc_hashlock_out, VAULT_HASH256_LEN) == VAULT_HASH256_LEN;
+    return cx_hash_sha256(htlc_preimage_out,
+                          VAULT_HASH256_LEN,
+                          htlc_hashlock_out,
+                          VAULT_HASH256_LEN) == VAULT_HASH256_LEN;
 }
