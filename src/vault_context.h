@@ -27,7 +27,7 @@
  *                                                                                         │
  *                                                                                         └─(RELEASE_CONTEXT_SECRET)──► IDLE
  *
- * Invalidation triggers (any of these → explicit_bzero(s) + IDLE):
+ * Invalidation triggers (any of these → explicit_bzero(htlc_preimage) + IDLE):
  *   - Signing error in any hook
  *   - APPROVE_VAULT_INTENT while intent already loaded
  *   - DERIVE_CONTEXT_HASH while intent is loaded
@@ -44,15 +44,15 @@ typedef enum {
 /**
  * @brief Session context — secret, hash, and state machine.
  *
- * The secret field s MUST be zeroed via explicit_bzero() on every invalidation.
+ * The htlc_preimage field MUST be zeroed via explicit_bzero() on every invalidation.
  * The state MUST be reset to VAULT_STATE_IDLE after zeroing.
  */
 typedef struct {
-    /** Session secret. Zeroed on any invalidation. */
-    uint8_t       s[VAULT_HASH256_LEN];
+    /** HTLC preimage (secret s). Zeroed on any invalidation. */
+    uint8_t       htlc_preimage[VAULT_HASH256_LEN];
 
-    /** Session hash h = SHA256(s), returned by DERIVE_CONTEXT_HASH. */
-    uint8_t       h[VAULT_HASH256_LEN];
+    /** HTLC hashlock h = SHA256(htlc_preimage), returned by DERIVE_CONTEXT_HASH. */
+    uint8_t       htlc_hashlock[VAULT_HASH256_LEN];
 
     /** Current session state. */
     vault_state_t state;

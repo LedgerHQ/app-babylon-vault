@@ -14,7 +14,7 @@ void vault_context_init(vault_context_t *ctx) {
 
 void vault_context_invalidate(vault_context_t *ctx) {
     // Zero the secret first to guarantee it is wiped even if we fault later.
-    explicit_bzero(ctx->s, sizeof(ctx->s));
+    explicit_bzero(ctx->htlc_preimage, sizeof(ctx->htlc_preimage));
 
     // Zero the rest and return to IDLE.
     explicit_bzero(ctx, sizeof(*ctx));

@@ -25,6 +25,9 @@ _Static_assert(sizeof(vault_intent_t)  <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
 _Static_assert(sizeof(vault_context_t) <= 128,
                "vault_context_t exceeds expected size");
+_Static_assert(sizeof(hkdf_stream_t) <= 512,
+               "hkdf_stream_t exceeds expected size");
 
 vault_intent_t  G_vault_intent;
 vault_context_t G_vault_context;
+hkdf_stream_t   G_hkdf_stream;
