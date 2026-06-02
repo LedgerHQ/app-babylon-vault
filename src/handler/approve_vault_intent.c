@@ -13,6 +13,9 @@
 #define P1_SCALARS   0x00
 #define P1_KEY_BATCH 0x01
 
+/* Spec-defined SW for BIP-32 depositor key derivation failure (see docs/apdu.md). */
+#define SW_BIP32_FAIL ((uint16_t) 0x6F00)
+
 static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
     switch (err) {
         case VAULT_TLV_OK:
@@ -33,12 +36,8 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
-    explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
-
-    if (G_vault_context.state != VAULT_STATE_IDLE) {
-        vault_context_invalidate(&G_vault_context);
-    }
+    /* Always reset to IDLE — vault_context_invalidate zeroes all dependent globals. */
+    vault_context_invalidate(&G_vault_context);
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
     if (err != VAULT_TLV_OK) {
@@ -46,6 +45,17 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         SEND_SW(dc, tlv_err_to_sw(err));
         return;
     }
+
+    /* Verify vault_provider_pk is a valid secp256k1 x-only point.
+     * vault_tlv_parse stores it as raw bytes without an EC validity check;
+     * reject invalid points here before they can reach taproot key derivation. */
+    uint8_t tmp_point[65];
+    if (crypto_tr_lift_x(G_vault_intent.vault_provider_pk, tmp_point) != 0) {
+        explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+    explicit_bzero(tmp_point, sizeof(tmp_point));
 
     G_approve_intent_state.scalars_loaded = true;
     SEND_SW(dc, SW_OK);
@@ -100,7 +110,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
                                              depositor_compressed,
                                              NULL) != CX_OK) {
         vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_SIGNATURE_FAIL);
+        SEND_SW(dc, SW_BIP32_FAIL);
         return;
     }
 

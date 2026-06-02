@@ -16,7 +16,7 @@ static void review_choice(bool approved) {
     }
 }
 
-#define MAX_N_PAIRS 4;
+#define MAX_N_PAIRS 4
 
 bool display_transaction(dispatcher_context_t *dc,
                          int64_t value_spent,

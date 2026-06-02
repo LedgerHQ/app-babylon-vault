@@ -316,6 +316,52 @@ static void test_tlv_challenger_count_zero(void **state) {
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
 }
 
+static void test_tlv_challenger_count_too_large(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    patch_tlv_u8(buf, len, TAG_CHALLENGER_COUNT, VAULT_MAX_CHALLENGERS + 1);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+}
+
+static void test_tlv_htlc_refund_below_min(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_TIMELOCK_MIN - 1);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+}
+
+static void test_tlv_htlc_refund_at_min(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_TIMELOCK_MIN);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
+}
+
+static void test_tlv_htlc_refund_above_max(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_TIMELOCK_MAX + 1);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+}
+
+static void test_tlv_htlc_refund_at_max(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_TIMELOCK_MAX);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
+}
+
+static void test_tlv_empty_payload(void **state) {
+    (void) state;
+    vault_intent_t out;
+    assert_int_equal(vault_tlv_parse(NULL, 0, &out), VAULT_TLV_ERR_MISSING_FIELD);
+}
+
 static void test_tlv_commission_fee_zero(void **state) {
     (void) state;
     uint8_t buf[256]; vault_intent_t out;
@@ -621,11 +667,16 @@ int main(void) {
         cmocka_unit_test(test_tlv_payout_timelock_just_above_min),
         cmocka_unit_test(test_tlv_payout_timelock_at_exclusive_max),
         cmocka_unit_test(test_tlv_payout_timelock_just_below_max),
+        cmocka_unit_test(test_tlv_htlc_refund_below_min),
+        cmocka_unit_test(test_tlv_htlc_refund_at_min),
+        cmocka_unit_test(test_tlv_htlc_refund_above_max),
+        cmocka_unit_test(test_tlv_htlc_refund_at_max),
 
         /* vault_tlv_parse — count validation */
         cmocka_unit_test(test_tlv_keeper_count_zero),
         cmocka_unit_test(test_tlv_keeper_count_too_large),
         cmocka_unit_test(test_tlv_challenger_count_zero),
+        cmocka_unit_test(test_tlv_challenger_count_too_large),
 
         /* vault_tlv_parse — amount / fee validation */
         cmocka_unit_test(test_tlv_commission_fee_zero),
@@ -638,6 +689,7 @@ int main(void) {
         cmocka_unit_test(test_tlv_depositor_path_account_not_hardened),
 
         /* vault_tlv_parse — TLV structure errors */
+        cmocka_unit_test(test_tlv_empty_payload),
         cmocka_unit_test(test_tlv_duplicate_tag),
         cmocka_unit_test(test_tlv_unknown_tag),
         cmocka_unit_test(test_tlv_missing_field),
