@@ -67,5 +67,9 @@ add_fuzz_target(fuzz_vault_tlv
     ${SRC_DIR}/vault_tlv.c
 )
 
-# P1=0x01 key batch validation (static inline — no extra .c needed)
-add_fuzz_target(fuzz_key_batch)
+# P1=0x01 key batch validation
+# fuzz_key_batch_impl.c provides a second TU so the compiler emits UBSan checks
+# and coverage counters (see that file for a detailed explanation).
+add_fuzz_target(fuzz_key_batch
+    src/fuzz_key_batch_impl.c
+)
