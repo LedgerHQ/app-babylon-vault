@@ -19,29 +19,21 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED True)
 
 # ── Sanitizer + libFuzzer flags ───────────────────────────────────────────────
-# ClusterFuzzLite sets LIB_FUZZING_ENGINE; local runs default to
-# -fsanitize=fuzzer,address,undefined.
-if(DEFINED ENV{LIB_FUZZING_ENGINE})
-    set(FUZZER_FLAGS "$ENV{LIB_FUZZING_ENGINE} $ENV{CFLAGS}")
-    if(DEFINED ENV{SANITIZER})
-        if("$ENV{SANITIZER}" STREQUAL "address")
-            string(APPEND FUZZER_FLAGS
-                " -fsanitize=address -fsanitize-address-use-after-scope")
-        elseif("$ENV{SANITIZER}" STREQUAL "memory")
-            string(APPEND FUZZER_FLAGS
-                " -fsanitize=memory -fsanitize-memory-track-origins=2")
-        elseif("$ENV{SANITIZER}" STREQUAL "undefined")
-            string(APPEND FUZZER_FLAGS
-                " -fsanitize=undefined -fno-sanitize-recover=undefined")
-        endif()
-        string(APPEND FUZZER_FLAGS
-            " -fsanitize-coverage=trace-cmp,indirect-calls,8bit-counters")
-    endif()
-else()
-    set(FUZZER_FLAGS "-O1 -g -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined")
+# In ClusterFuzzLite/OSS-Fuzz, build.sh passes $CFLAGS via -DCMAKE_C_FLAGS and
+# $LIB_FUZZING_ENGINE via -DCMAKE_EXE_LINKER_FLAGS — cmake propagates both to
+# every target automatically. No manual ENV handling needed here.
+#
+# For local development (LIB_FUZZING_ENGINE not set), fall back to a combined
+# fuzzer+sanitizer build so run_local.sh works without any extra setup.
+if(NOT DEFINED ENV{LIB_FUZZING_ENGINE})
+    add_compile_options(
+        -O1
+        -g
+        -fno-omit-frame-pointer
+        -fsanitize=fuzzer,address,undefined
+    )
+    add_link_options(-fsanitize=fuzzer,address,undefined)
 endif()
-
-separate_arguments(FUZZER_FLAGS_LIST NATIVE_COMMAND "${FUZZER_FLAGS}")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 set(SRC_DIR   ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -60,8 +52,6 @@ function(add_fuzz_target TARGET)
         src/${TARGET}.c
         ${EXTRA_SOURCES}
     )
-    target_compile_options(${TARGET} PRIVATE ${FUZZER_FLAGS_LIST})
-    target_link_options(${TARGET}    PRIVATE ${FUZZER_FLAGS_LIST})
 endfunction()
 
 # ── Targets ───────────────────────────────────────────────────────────────────
