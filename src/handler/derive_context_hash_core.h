@@ -100,7 +100,8 @@ static inline bool hkdf_stream_begin(hkdf_stream_t *stream,
 
     uint8_t app_name_hash[VAULT_HASH256_LEN];
 
-    if (cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN) != VAULT_HASH256_LEN) {
+    if (cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN) !=
+        VAULT_HASH256_LEN) {
         explicit_bzero(prk, sizeof(prk));
         explicit_bzero(app_name_hash, sizeof(app_name_hash));
         return false;
