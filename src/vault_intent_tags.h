@@ -23,17 +23,22 @@
 
 /* --- P1=0x00 scalar tags (17) ------------------------------------------- */
 
-#define TAG_STRUCTURE_TYPE    0x01 /**< u8    — protocol structure type constant          (1 B)  */
-#define TAG_VERSION           0x02 /**< u8    — protocol version constant                 (1 B)  */
-#define TAG_COIN_TYPE         0x03 /**< u32   — SLIP-44 coin type                         (4 B BE) */
-#define TAG_VAULT_PROVIDER_PK  0x04 /**< bytes — vault provider x-only pubkey              (32 B)   */
-#define TAG_VAULT_AMOUNT       0x05 /**< u64   — total vault amount in satoshis             (8 B BE) */
-#define TAG_COMMISSION_FEE     0x06 /**< u64   — vault provider commission (Fc)             (8 B BE) */
-#define TAG_DEPOSITOR_CLAIM_VALUE 0x07 /**< u64 — depositor claim UTXO value (Dcv)          (8 B BE) */
-#define TAG_BASE_FEE_RATE      0x08 /**< u64   — base fee rate in sat/vbyte                 (8 B BE) */
-#define TAG_PEGIN_MAX_FEE      0x09 /**< u64   — max acceptable PegIn fee                   (8 B BE) */
-#define TAG_PEGIN_CSV_TIMELOCK 0x0A /**< u32   — vault UTXO CSV timelock P [72, 1008]       (4 B BE) */
-#define TAG_PAYOUT_TIMELOCK    0x0B /**< u32   — Assert:0 payout timelock t2 (90, 4032)     (4 B BE) */
+#define TAG_STRUCTURE_TYPE 0x01 /**< u8    — protocol structure type constant          (1 B)  */
+#define TAG_VERSION        0x02 /**< u8    — protocol version constant                 (1 B)  */
+#define TAG_COIN_TYPE      0x03 /**< u32   — SLIP-44 coin type                         (4 B BE) */
+#define TAG_VAULT_PROVIDER_PK \
+    0x04                        /**< bytes — vault provider x-only pubkey              (32 B)   */
+#define TAG_VAULT_AMOUNT   0x05 /**< u64   — total vault amount in satoshis             (8 B BE) */
+#define TAG_COMMISSION_FEE 0x06 /**< u64   — vault provider commission (Fc)             (8 B BE) \
+                                 */
+#define TAG_DEPOSITOR_CLAIM_VALUE \
+    0x07                       /**< u64 — depositor claim UTXO value (Dcv)          (8 B BE) */
+#define TAG_BASE_FEE_RATE 0x08 /**< u64   — base fee rate in sat/vbyte                 (8 B BE) */
+#define TAG_PEGIN_MAX_FEE 0x09 /**< u64   — max acceptable PegIn fee                   (8 B BE) */
+#define TAG_PEGIN_CSV_TIMELOCK \
+    0x0A /**< u32   — vault UTXO CSV timelock P [72, 1008]       (4 B BE) */
+#define TAG_PAYOUT_TIMELOCK 0x0B /**< u32   — Assert:0 payout timelock t2 (90, 4032)     (4 B BE) \
+                                  */
 #define TAG_PREPEGIN_TXID 0x0C   /**< bytes — Pre-PegIn txid (little-endian)             (32 B) */
 #define TAG_HTLC_VOUT     0x0D   /**< u8    — HTLC output index in Pre-PegIn tx          (1 B)  */
 #define TAG_HTLC_REFUND_TIMELOCK \

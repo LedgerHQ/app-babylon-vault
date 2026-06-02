@@ -20,24 +20,24 @@
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size < 2) return 0;
 
-    uint8_t keeper_count     = (data[0] % VAULT_MAX_KEEPERS)     + 1;
+    uint8_t keeper_count = (data[0] % VAULT_MAX_KEEPERS) + 1;
     uint8_t challenger_count = (data[1] % VAULT_MAX_CHALLENGERS) + 1;
 
     vault_intent_t intent;
     memset(&intent, 0, sizeof(intent));
-    intent.keeper_count     = keeper_count;
+    intent.keeper_count = keeper_count;
     intent.challenger_count = challenger_count;
     /* vault_provider_pk stays zero — intentionally not a valid EC point; used as
      * a deterministic collision target so the fuzzer can reach VAULT_KEY_ERR_ROLE_COLLISION. */
 
-    const uint8_t *ptr  = data + 2;
-    size_t remaining    = size - 2;
-    uint8_t total       = keeper_count + challenger_count;
+    const uint8_t *ptr = data + 2;
+    size_t remaining = size - 2;
+    uint8_t total = keeper_count + challenger_count;
 
     for (uint8_t idx = 0; idx < total; idx++) {
         if (remaining < VAULT_XONLY_PUBKEY_LEN) break;
         (void) vault_validate_and_store_key(&intent, idx, ptr);
-        ptr       += VAULT_XONLY_PUBKEY_LEN;
+        ptr += VAULT_XONLY_PUBKEY_LEN;
         remaining -= VAULT_XONLY_PUBKEY_LEN;
     }
 
