@@ -19,9 +19,9 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED True)
 
 # ── Sanitizer + libFuzzer flags ───────────────────────────────────────────────
-# In ClusterFuzzLite/OSS-Fuzz, build.sh passes $CFLAGS via -DCMAKE_C_FLAGS and
-# $LIB_FUZZING_ENGINE via -DCMAKE_EXE_LINKER_FLAGS — cmake propagates both to
-# every target automatically. No manual ENV handling needed here.
+# In ClusterFuzzLite/OSS-Fuzz, build.sh passes $CFLAGS via -DCMAKE_C_FLAGS
+# and $LIB_FUZZING_ENGINE as a cmake variable; each fuzzer target links it
+# explicitly via target_link_libraries. No manual ENV handling needed here.
 #
 # For local development (LIB_FUZZING_ENGINE not set), fall back to a combined
 # fuzzer+sanitizer build so run_local.sh works without any extra setup.
@@ -52,6 +52,12 @@ function(add_fuzz_target TARGET)
         src/${TARGET}.c
         ${EXTRA_SOURCES}
     )
+    # In CI, link the fuzzer engine explicitly so it isn't part of CMAKE_EXE_LINKER_FLAGS
+    # (a global linker flag would conflict with cmake's own int-main() compiler check).
+    # For local runs, -fsanitize=fuzzer from add_link_options above provides the runtime.
+    if(DEFINED LIB_FUZZING_ENGINE)
+        target_link_libraries(${TARGET} PRIVATE ${LIB_FUZZING_ENGINE})
+    endif()
 endfunction()
 
 # ── Targets ───────────────────────────────────────────────────────────────────

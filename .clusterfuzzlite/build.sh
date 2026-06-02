@@ -5,7 +5,7 @@ pushd "$SRC/app-babylon-vault/fuzzing"
 cmake \
     -DCMAKE_C_COMPILER="$CC" \
     -DCMAKE_C_FLAGS="$CFLAGS" \
-    -DCMAKE_EXE_LINKER_FLAGS="$CFLAGS $LIB_FUZZING_ENGINE" \
+    -DLIB_FUZZING_ENGINE="$LIB_FUZZING_ENGINE" \
     -Bbuild -H.
 
 make -C build -j"$(nproc)"
