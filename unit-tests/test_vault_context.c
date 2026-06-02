@@ -31,8 +31,8 @@ static void _fill(vault_context_t *ctx) {
 }
 
 static bool _secret_is_zero(const vault_context_t *ctx) {
-    for (size_t i = 0; i < sizeof(ctx->s); i++) {
-        if (ctx->s[i] != 0) return false;
+    for (size_t i = 0; i < sizeof(ctx->htlc_preimage); i++) {
+        if (ctx->htlc_preimage[i] != 0) return false;
     }
     return true;
 }
@@ -71,8 +71,8 @@ static void test_invalidate_zeroes_secret_and_intent(void **state) {
     vault_context_init(&ctx);
 
     /* Set a fake secret and advance state */
-    memset(ctx.s, 0xFF, sizeof(ctx.s));
-    memset(ctx.h, 0xEE, sizeof(ctx.h));
+    memset(ctx.htlc_preimage, 0xFF, sizeof(ctx.htlc_preimage));
+    memset(ctx.htlc_hashlock, 0xEE, sizeof(ctx.htlc_hashlock));
     ctx.state = VAULT_STATE_INTENT_LOADED;
 
     /* Fill intent with non-zero data */
@@ -195,7 +195,7 @@ static void _assert_illegal(vault_state_t current_state,
     ctx.state = current_state;
 
     /* Place non-zero secret so we can verify it gets wiped */
-    memset(ctx.s, 0x42, sizeof(ctx.s));
+    memset(ctx.htlc_preimage, 0x42, sizeof(ctx.htlc_preimage));
 
     bool ok = vault_context_transition(&ctx, from, to);
 

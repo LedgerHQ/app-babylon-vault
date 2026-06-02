@@ -9,10 +9,59 @@
 | INS    | Name                     | Status         | Story       | Brief purpose |
 |--------|--------------------------|----------------|-------------|---------------|
 | `0x80` | `APPROVE_VAULT_INTENT`   | stub           | NAPPS-1372  | Parse and validate vault intent TLV (scalars + key batches); show approval screen; transition to `INTENT_LOADED`. |
-| `0x81` | `DERIVE_CONTEXT_HASH`    | stub           | NAPPS-1367  | Derive session secret `s` via HKDF-SHA-256 at `m/73681862'`; return `h = SHA256(s)`. No display. |
-| `0x82` | `RELEASE_CONTEXT_SECRET` | stub           | NAPPS-1373  | Return `s` (32 B) once state = `SESSION2_COMPLETE`; zero `s`; reset to `IDLE`. Rejected in all other states. |
+| `0x81` | `DERIVE_CONTEXT_HASH`    | implemented    | NAPPS-1367  | Derive HTLC preimage via HKDF-SHA-256 at `m/73681862'`; return `htlc_hashlock = SHA256(htlc_preimage)`. No display. |
+| `0x82` | `RELEASE_CONTEXT_SECRET` | stub           | NAPPS-1373  | Return `htlc_preimage` (32 B) once state = `SESSION2_COMPLETE`; zero it; reset to `IDLE`. Rejected in all other states. |
 
-All three stubs currently return `SW_INS_NOT_SUPPORTED` (`0x6D00`).
+---
+
+## INS 0x81 — DERIVE_CONTEXT_HASH — Wire Format
+
+### P1=0x00 — Initial chunk
+
+| Offset | Field | Size | Notes |
+|--------|-------|------|-------|
+| 0 | `app_name_len` | 1 B | Length of `app_name`; must be ≤ 64 |
+| 1 | `app_name` | `app_name_len` B | UTF-8 app name |
+| 1+`app_name_len` | `context_total_len` | 2 B BE | Total byte count of context to follow in P1=0x01 chunks; may be 0 |
+
+If `context_total_len == 0` the derivation completes immediately and the response carries `htlc_hashlock`.
+Otherwise the device responds `SW_OK` (`0x9000`) with no data and waits for P1=0x01 chunks.
+
+### P1=0x01 — Continuation chunk
+
+| Offset | Field | Size | Notes |
+|--------|-------|------|-------|
+| 0 | `context_data` | `Lc` B | Next slice of context (up to 255 B per APDU) |
+
+The device accumulates chunks until `context_received == context_total_len`, then finalises and returns `htlc_hashlock`.
+Intermediate chunks receive `SW_OK` with no data.
+Sending more bytes than `context_total_len` returns `SW_INCORRECT_DATA` (`0x6A80`).
+
+### Response (final chunk or zero-context)
+
+| Field | Size | Value |
+|-------|------|-------|
+| Data  | 32 B | `htlc_hashlock = SHA256(htlc_preimage)` |
+| SW    | 2 B  | `0x9000` |
+
+### Error conditions
+
+| SW     | Condition |
+|--------|-----------|
+| `0x6A80` | `app_name_len > 64`, malformed initial chunk, or chunk exceeds declared length |
+| `0x6A86` | P1 is not `0x00` or `0x01` |
+| `0x6A87` | Initial chunk too short to contain all mandatory fields |
+| `0xB007` | P1=0x01 received before P1=0x00 (no active stream) |
+| `0xB007` | BIP-32 derivation or HMAC operation failed |
+
+### Crypto detail
+
+- **IKM**: 32-byte private key derived at `m/73681862'` (hardened, `CX_CURVE_SECP256K1`)
+- **HKDF-Extract**: `PRK = HMAC-SHA256(salt="derive-context-hash", ikm)`
+- **HKDF-Expand** (single block, L=32): `htlc_preimage = HMAC-SHA256(PRK, SHA256(app_name) || context || 0x01)`
+- **Hashlock**: `htlc_hashlock = SHA256(htlc_preimage)`
+
+Implementation: `src/handler/derive_context_hash_core.h` (static inline, unit-testable without APDU layer).
 
 ---
 
