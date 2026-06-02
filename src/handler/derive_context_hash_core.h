@@ -99,21 +99,28 @@ static inline bool hkdf_stream_begin(hkdf_stream_t *stream,
     explicit_bzero(&privkey, sizeof(privkey));
 
     uint8_t app_name_hash[VAULT_HASH256_LEN];
-    cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN);
 
-    bool ok =
-        (cx_hmac_sha256_init_no_throw(&stream->hmac, prk, VAULT_HASH256_LEN) == CX_OK) &&
-        (cx_hmac_update((cx_hmac_t *) &stream->hmac, app_name_hash, VAULT_HASH256_LEN) == CX_OK);
+    if (cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN) != VAULT_HASH256_LEN) {
+        explicit_bzero(prk, sizeof(prk));
+        explicit_bzero(app_name_hash, sizeof(app_name_hash));
+        return false;
+    }
+    if (cx_hmac_sha256_init_no_throw(&stream->hmac, prk, VAULT_HASH256_LEN) != CX_OK) {
+        explicit_bzero(prk, sizeof(prk));
+        explicit_bzero(app_name_hash, sizeof(app_name_hash));
+        return false;
+    }
+    if (cx_hmac_update((cx_hmac_t *) &stream->hmac, app_name_hash, VAULT_HASH256_LEN) != CX_OK) {
+        explicit_bzero(prk, sizeof(prk));
+        explicit_bzero(app_name_hash, sizeof(app_name_hash));
+        return false;
+    }
 
     explicit_bzero(prk, sizeof(prk));
     explicit_bzero(app_name_hash, sizeof(app_name_hash));
-
-    if (ok) {
-        stream->context_total_len = context_total_len;
-        stream->context_received_len = 0;
-    }
-
-    return ok;
+    stream->context_total_len = context_total_len;
+    stream->context_received_len = 0;
+    return true;
 }
 
 // ---------------------------------------------------------------------------

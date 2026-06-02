@@ -33,11 +33,13 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
 
     // Parse: app_name_len(1B) | app_name(≤64B) | context_total_len(2B BE)
     if (cmd->lc < 3u) {
+        abort_stream();
         SEND_SW(dc, SW_WRONG_DATA_LENGTH);
         return;
     }
     uint8_t app_name_len = cmd->data[0];
     if (app_name_len > 64u || cmd->lc < (uint8_t) (1u + app_name_len + 2u)) {
+        abort_stream();
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
@@ -46,6 +48,7 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
         ((uint16_t) cmd->data[1u + app_name_len] << 8) | (uint16_t) cmd->data[2u + app_name_len];
 
     if (!hkdf_stream_begin(&G_hkdf_stream, app_name, app_name_len, context_total_len)) {
+        abort_stream();
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
@@ -75,7 +78,7 @@ static void handle_context_chunk(dispatcher_context_t *dc, const command_t *cmd)
 
     uint16_t remaining = G_hkdf_stream.context_total_len - G_hkdf_stream.context_received_len;
     if (cmd->lc > remaining) {
-        explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+        abort_stream();
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
