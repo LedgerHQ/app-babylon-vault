@@ -39,6 +39,7 @@ from .vault_client import (
     TAG_COIN_TYPE,
     TAG_PEGIN_CSV_TIMELOCK,
     TAG_KEEPER_COUNT,
+    TEST_VP_KEY,
 )
 
 # ---------------------------------------------------------------------------
@@ -47,8 +48,7 @@ from .vault_client import (
 
 HARDENED = 0x80000000
 
-# Vault provider key — 32 synthetic bytes, clearly not a real curve point
-VP_KEY = bytes([0x02]) + bytes(31)
+VP_KEY = TEST_VP_KEY
 
 # Pre-PegIn txid placeholder
 TXID = bytes(range(32))

@@ -61,6 +61,10 @@ TAG_CHALLENGER_COUNT          = 0x11
 VAULT_STRUCTURE_TYPE     = 0x01
 VAULT_PROTOCOL_VERSION   = 0x01
 
+# Canonical test vault-provider key: x-coordinate of secp256k1 generator G.
+# Must be a valid curve point because the firmware calls crypto_tr_lift_x on it.
+TEST_VP_KEY = bytes.fromhex('79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798')
+
 
 def _exchange(client: RaggerClient, p1: int, data: bytes) -> bytes:
     """Send one DERIVE_CONTEXT_HASH APDU and return the response data.
