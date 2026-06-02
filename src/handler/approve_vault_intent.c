@@ -1,9 +1,139 @@
 #include "approve_vault_intent.h"
+#include "approve_vault_intent_core.h"
+
+#include "../globals.h"
+#include "../vault_context.h"
+#include "../vault_tlv.h"
 
 #include "../../bitcoin_app_base/src/boilerplate/sw.h"
+#include "../../bitcoin_app_base/src/crypto.h"
 
-// Stub — full implementation in NAPPS-1372.
+#include <string.h>
+
+#define P1_SCALARS   0x00
+#define P1_KEY_BATCH 0x01
+
+static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
+    switch (err) {
+        case VAULT_TLV_OK:
+            return SW_OK;
+        case VAULT_TLV_ERR_OVERFLOW:
+        case VAULT_TLV_ERR_WRONG_LENGTH:
+        case VAULT_TLV_ERR_UNKNOWN_TAG:
+        case VAULT_TLV_ERR_DUPLICATE_TAG:
+        case VAULT_TLV_ERR_MISSING_FIELD:
+        case VAULT_TLV_ERR_VALIDATION:
+            return SW_INCORRECT_DATA;
+    }
+    return SW_INCORRECT_DATA;
+}
+
+/* -------------------------------------------------------------------------
+ * P1=0x00 — scalar TLV payload
+ * ---------------------------------------------------------------------- */
+
+static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
+    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
+    explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+
+    if (G_vault_context.state != VAULT_STATE_IDLE) {
+        vault_context_invalidate(&G_vault_context);
+    }
+
+    vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
+    if (err != VAULT_TLV_OK) {
+        explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+        SEND_SW(dc, tlv_err_to_sw(err));
+        return;
+    }
+
+    G_approve_intent_state.scalars_loaded = true;
+    SEND_SW(dc, SW_OK);
+}
+
+/* -------------------------------------------------------------------------
+ * P1=0x01 — key batch streaming
+ * ---------------------------------------------------------------------- */
+
+static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
+    if (!G_approve_intent_state.scalars_loaded) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+
+    if (cmd->lc == 0 || cmd->lc % VAULT_XONLY_PUBKEY_LEN != 0) {
+        SEND_SW(dc, SW_WRONG_DATA_LENGTH);
+        return;
+    }
+
+    uint8_t n_keys = cmd->lc / VAULT_XONLY_PUBKEY_LEN;
+    uint8_t total_expected = G_vault_intent.keeper_count + G_vault_intent.challenger_count;
+
+    if ((uint16_t) G_approve_intent_state.keys_received + n_keys > total_expected) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+
+    for (uint8_t i = 0; i < n_keys; i++) {
+        const uint8_t *key = cmd->data + i * VAULT_XONLY_PUBKEY_LEN;
+        vault_key_err_t err = vault_validate_and_store_key(&G_vault_intent,
+                                                           G_approve_intent_state.keys_received,
+                                                           key);
+        if (err != VAULT_KEY_OK) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+        G_approve_intent_state.keys_received++;
+    }
+
+    if (G_approve_intent_state.keys_received < total_expected) {
+        SEND_SW(dc, SW_OK);
+        return;
+    }
+
+    /* All keys received — verify depositor key is disjoint from all roles. */
+    uint8_t depositor_compressed[33];
+    if (crypto_get_compressed_pubkey_at_path(G_vault_intent.depositor_path,
+                                             VAULT_DEPOSITOR_PATH_LEN,
+                                             depositor_compressed,
+                                             NULL) != CX_OK) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_SIGNATURE_FAIL);
+        return;
+    }
+
+    if (!vault_check_depositor_uniqueness(&G_vault_intent, depositor_compressed + 1)) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+
+    /* Intent fully loaded.
+     * NOTE: NAPPS-1373 inserts display_vault_intent(dc) here before the transition. */
+    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
+    if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_INTENT_LOADED)) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+    SEND_SW(dc, SW_OK);
+}
+
+/* -------------------------------------------------------------------------
+ * Entry point
+ * ---------------------------------------------------------------------- */
+
 void handler_approve_vault_intent(dispatcher_context_t *dc, const command_t *cmd) {
-    UNUSED(cmd);
-    SEND_SW(dc, SW_INS_NOT_SUPPORTED);
+    switch (cmd->p1) {
+        case P1_SCALARS:
+            handle_scalar_payload(dc, cmd);
+            return;
+        case P1_KEY_BATCH:
+            handle_key_batch(dc, cmd);
+            return;
+        default:
+            SEND_SW(dc, SW_WRONG_P1P2);
+            return;
+    }
 }

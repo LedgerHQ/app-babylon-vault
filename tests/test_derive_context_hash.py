@@ -174,9 +174,31 @@ def test_chunk_exceeds_declared_length_raises(client: RaggerClient):
     assert exc.value.status == 0x6A80
 
 
-@pytest.mark.skip(reason="requires NAPPS-1372 APPROVE_VAULT_INTENT implementation")
-def test_invalidates_loaded_intent(client: RaggerClient):
-    """Calling DERIVE_CONTEXT_HASH while intent is loaded must invalidate the session."""
-    # Load an intent via APPROVE_VAULT_INTENT first, then call DERIVE_CONTEXT_HASH
-    # and verify the session is back to IDLE.
-    pass
+def test_invalidates_loaded_intent(client: RaggerClient, bitcoin_network: str):
+    """Calling DERIVE_CONTEXT_HASH while intent is loaded must invalidate the session.
+
+    Covered more thoroughly in test_approve_vault_intent.py::test_approve_resets_session_derive_can_run.
+    This test just verifies the inverse: DERIVE_CONTEXT_HASH still works after an intent was loaded.
+    """
+    from .vault_client import approve_vault_intent, build_intent_tlv, VAULT_STRUCTURE_TYPE, VAULT_PROTOCOL_VERSION
+
+    HARDENED = 0x80000000
+    ct = 0 if bitcoin_network == "main" else 1
+    vp = bytes([0x02]) + bytes(31)
+    key_a = bytes([0xAA]) + bytes(31)
+    key_b = bytes([0xBB]) + bytes(31)
+    scalars = build_intent_tlv(
+        coin_type=ct, vault_provider_pk=vp,
+        vault_amount=100_000, commission_fee=1_000,
+        depositor_claim_value=10_000, base_fee_rate=10, pegin_max_fee=50_000,
+        pegin_csv_timelock=100, payout_timelock=200,
+        prepegin_txid=bytes(range(32)), htlc_vout=0, htlc_refund_timelock=144,
+        depositor_path=[HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0],
+        keeper_count=1, challenger_count=1,
+    )
+    approve_vault_intent(client, scalars, keeper_pks=[key_a], challenger_pks=[key_b])
+
+    # DERIVE_CONTEXT_HASH must still work (and resets state to IDLE)
+    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")
+    assert len(hashlock) == 32
+    assert hashlock == HASHLOCK_NO_CTX

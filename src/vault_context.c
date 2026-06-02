@@ -20,8 +20,9 @@ void vault_context_invalidate(vault_context_t *ctx) {
     explicit_bzero(ctx, sizeof(*ctx));
     ctx->state = VAULT_STATE_IDLE;
 
-    // Mirror: wipe the intent as well — it is only valid when state != IDLE.
+    // Wipe all globals whose validity depends on state != IDLE.
     explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
 }
 
 /**

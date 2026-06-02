@@ -20,7 +20,7 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: sudo apt-get install -y libcmocka-dev cmake
+        run: sudo apt-get install -y libcmocka-dev cmake lcov
 
       - name: Configure
         run: cmake -B unit-tests/build -S unit-tests -DCMAKE_BUILD_TYPE=Debug
@@ -30,3 +30,14 @@ jobs:
 
       - name: Run tests
         run: ctest --test-dir unit-tests/build -V --output-on-failure
+
+      - name: Generate coverage
+        run: cd unit-tests && bash gen_coverage.sh
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            unit-tests/coverage.info
+            unit-tests/coverage/

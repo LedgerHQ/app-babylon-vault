@@ -72,7 +72,13 @@ typedef struct {
     /** Maximum acceptable PegIn transaction fee in satoshis. */
     uint64_t pegin_max_fee;
 
-    /** Vault provider x-only public key. */
+    /**
+     * Vault provider x-only public key.
+     *
+     * Stored as received; not validated as a point on secp256k1 (EC point
+     * check is expensive on hardware and deferred to the signing stage).
+     * Used only for role-uniqueness comparisons via memcmp.
+     */
     uint8_t vault_provider_pk[VAULT_XONLY_PUBKEY_LEN];
 
     /** Output index of the HTLC in the Pre-PegIn transaction. */
