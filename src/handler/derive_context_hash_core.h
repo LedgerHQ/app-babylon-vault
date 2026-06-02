@@ -69,6 +69,12 @@ static inline void extract_prk(const uint8_t *ikm, uint8_t *prk_out) {
 // Phase 1 — Full stream begin: derive + extract + HMAC init
 // ---------------------------------------------------------------------------
 
+/** Zero sensitive intermediates on both success and error paths of hkdf_stream_begin(). */
+static inline void wipe_hkdf_intermediates(uint8_t *prk, uint8_t *app_name_hash) {
+    explicit_bzero(prk, VAULT_HASH256_LEN);
+    explicit_bzero(app_name_hash, VAULT_HASH256_LEN);
+}
+
 /**
  * @brief Begin a streaming HKDF derivation.
  *
@@ -99,21 +105,25 @@ static inline bool hkdf_stream_begin(hkdf_stream_t *stream,
     explicit_bzero(&privkey, sizeof(privkey));
 
     uint8_t app_name_hash[VAULT_HASH256_LEN];
-    cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN);
 
-    bool ok =
-        (cx_hmac_sha256_init_no_throw(&stream->hmac, prk, VAULT_HASH256_LEN) == CX_OK) &&
-        (cx_hmac_update((cx_hmac_t *) &stream->hmac, app_name_hash, VAULT_HASH256_LEN) == CX_OK);
-
-    explicit_bzero(prk, sizeof(prk));
-    explicit_bzero(app_name_hash, sizeof(app_name_hash));
-
-    if (ok) {
-        stream->context_total_len = context_total_len;
-        stream->context_received_len = 0;
+    if (cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN) !=
+        VAULT_HASH256_LEN) {
+        wipe_hkdf_intermediates(prk, app_name_hash);
+        return false;
+    }
+    if (cx_hmac_sha256_init_no_throw(&stream->hmac, prk, VAULT_HASH256_LEN) != CX_OK) {
+        wipe_hkdf_intermediates(prk, app_name_hash);
+        return false;
+    }
+    if (cx_hmac_update((cx_hmac_t *) &stream->hmac, app_name_hash, VAULT_HASH256_LEN) != CX_OK) {
+        wipe_hkdf_intermediates(prk, app_name_hash);
+        return false;
     }
 
-    return ok;
+    wipe_hkdf_intermediates(prk, app_name_hash);
+    stream->context_total_len = context_total_len;
+    stream->context_received_len = 0;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
