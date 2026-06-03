@@ -47,7 +47,7 @@ jobs:
     uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_build.yml@v1
     with:
       upload_app_binaries_artifact: "compiled_app_binaries_mainnet"
-      flags: "COIN=app_babylon_vault"
+      flags: "COIN=babylon_vault"
 
   ragger_tests_mainnet:
     name: Run ragger tests using the reusable workflow for mainnet

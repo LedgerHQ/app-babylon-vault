@@ -27,11 +27,11 @@ APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 
 # Setting to allow building variant applications
 VARIANT_PARAM = COIN
-VARIANT_VALUES = app_babylon_vault app_babylon_vault_testnet
+VARIANT_VALUES = babylon_vault babylon_vault_testnet
 
 # simplify for tests
 ifndef COIN
-COIN = app_babylon_vault_testnet
+COIN = babylon_vault_testnet
 endif
 
 # Enabling DEBUG flag will enable PRINTF and disable optimizations
@@ -40,11 +40,11 @@ endif
 APP_DESCRIPTION = "Babylon Vault \nsecure Bitcoin vault signing\nfor the Babylon protocol."
 APP_DEVELOPER = "Hoodies"
 
-ifeq ($(COIN),app_babylon_vault)
+ifeq ($(COIN),babylon_vault)
 APPNAME = "Babylon Vault"
 BITCOIN_NETWORK = mainnet
 
-else ifeq ($(COIN),app_babylon_vault_testnet)
+else ifeq ($(COIN),babylon_vault_testnet)
 APPNAME = "Babylon Vault Testnet"
 BITCOIN_NETWORK = testnet
 
