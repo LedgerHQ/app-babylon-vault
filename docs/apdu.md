@@ -6,11 +6,11 @@
 
 ## Vault APDUs
 
-| INS    | Name                     | Status         | Story       | Brief purpose |
-|--------|--------------------------|----------------|-------------|---------------|
-| `0x80` | `APPROVE_VAULT_INTENT`   | implemented    | NAPPS-1372  | Parse and validate vault intent TLV (scalars + key batches); show approval screen; transition to `INTENT_LOADED`. |
-| `0x81` | `DERIVE_CONTEXT_HASH`    | implemented    | NAPPS-1367  | Derive HTLC preimage via HKDF-SHA-256 at `m/73681862'`; return `htlc_hashlock = SHA256(htlc_preimage)`. No display. |
-| `0x82` | `RELEASE_CONTEXT_SECRET` | stub           | NAPPS-1373  | Return `htlc_preimage` (32 B) once state = `SESSION2_COMPLETE`; zero it; reset to `IDLE`. Rejected in all other states. |
+| INS    | Name                     | Brief purpose |
+|--------|--------------------------|---------------|
+| `0x80` | `APPROVE_VAULT_INTENT`   | Parse and validate vault intent TLV (scalars + key batches); show approval screen; transition to `INTENT_LOADED`. |
+| `0x81` | `DERIVE_CONTEXT_HASH`    | Derive HTLC preimage via HKDF-SHA-256 at `m/73681862'`; return `htlc_hashlock = SHA256(htlc_preimage)`. No display. |
+| `0x82` | `RELEASE_CONTEXT_SECRET` | Return `htlc_preimage` (32 B) once state = `SESSION2_COMPLETE`; zero it; reset to `IDLE`. Rejected in all other states. |
 
 ---
 
@@ -83,9 +83,10 @@ After the final key is accepted the device also derives the depositor public key
 
 **Response (partial — more keys expected):** `SW_OK`, no data.
 
-**Response (complete — all keys received, approval pending):**
-In NAPPS-1372 the device auto-transitions to `INTENT_LOADED` and returns `SW_OK`.
-In NAPPS-1373 a display screen is shown first; `SW_OK` is returned only after user confirms.
+**Response (complete — all keys received):**
+The device displays the vault parameters for user review. On approval the session
+transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
+(`0x6985`) is returned and the session remains `IDLE`.
 
 ---
 
@@ -96,7 +97,7 @@ In NAPPS-1373 a display screen is shown first; `SW_OK` is returned only after us
 | `0x6A80` | Duplicate tag, unknown tag, field validation failure, wrong field length, key ordering/uniqueness violation, extra keys beyond declared count |
 | `0x6A86` | P1 is not `0x00` or `0x01` |
 | `0x6A87` | P1=0x01 payload length is not a multiple of 32 |
-| `0x6985` | User rejected the approval screen (NAPPS-1373) |
+| `0x6985` | User rejected the approval screen |
 | `0xB007` | P1=0x01 received without a prior successful P1=0x00 |
 | `0x6F00` | BIP-32 derivation of depositor key failed |
 
@@ -153,6 +154,42 @@ Implementation: `src/handler/derive_context_hash_core.h` (static inline, unit-te
 
 ---
 
+## INS 0x82 — RELEASE_CONTEXT_SECRET — Wire Format
+
+Single-APDU command; no payload. Returns the 32-byte session secret `s`
+(`htlc_preimage`) exactly once, then zeroes it and resets the session to `IDLE`.
+
+| Field | Value |
+|-------|-------|
+| P1    | `0x00` (no sub-commands; any other value → `SW_WRONG_P1P2`) |
+| P2    | `0x00` (reserved; any other value → `SW_WRONG_P1P2`) |
+| Lc    | `0` (no data; any non-zero value → `SW_WRONG_DATA_LENGTH`) |
+
+**State requirement:** session must be in `SESSION2_COMPLETE`.
+Calling from any other state returns `SW_BAD_STATE` and leaves the session unchanged.
+
+### Response
+
+| Field | Size | Value |
+|-------|------|-------|
+| Data  | 32 B | `htlc_preimage` (the session secret `s`) |
+| SW    | 2 B  | `0x9000` |
+
+After sending the response the device calls `explicit_bzero` on `htlc_preimage` and
+resets the session to `VAULT_STATE_IDLE`, clearing all session globals.
+The secret is zeroed in device RAM before the packet leaves the device — the response
+buffer holds a copy staged before the zero operation.
+
+### Error conditions
+
+| SW       | Condition |
+|----------|-----------|
+| `0x6A86` | P1 or P2 is non-zero |
+| `0x6A87` | Lc is non-zero (payload present) |
+| `0xB007` | Session state is not `SESSION2_COMPLETE` |
+
+---
+
 ## Base app APDUs (pass-through)
 
 Handled by `bitcoin_app_base`. Listed here for completeness.
@@ -176,8 +213,11 @@ Handled by `bitcoin_app_base`. Listed here for completeness.
 | `0x9000` | `SW_OK`                 | Success. |
 | `0x6985` | `SW_DENY`               | User rejected on device. |
 | `0x6A80` | `SW_INCORRECT_DATA`     | Invalid APDU data or validation failure. |
-| `0x6D00` | `SW_INS_NOT_SUPPORTED`  | INS not yet implemented (stub) or unknown. |
+| `0x6A86` | `SW_WRONG_P1P2`         | P1 or P2 value not valid for this command. |
+| `0x6A87` | `SW_WRONG_DATA_LENGTH`  | Lc value not valid for this command. |
+| `0x6D00` | `SW_INS_NOT_SUPPORTED`  | Unknown INS. |
 | `0x6E00` | `SW_CLA_NOT_SUPPORTED`  | Unknown CLA. |
+| `0x6F00` | `SW_BIP32_FAIL`         | BIP-32 key derivation failed (invalid key at path). |
 | `0xB007` | `SW_BAD_STATE`          | Command not allowed in current session state. |
 
 ---

@@ -17,9 +17,10 @@ from typing import TYPE_CHECKING, List
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
-CLA_VAULT                = 0xE1
-INS_DERIVE_CONTEXT_HASH  = 0x81
-INS_APPROVE_VAULT_INTENT = 0x80
+CLA_VAULT                    = 0xE1
+INS_DERIVE_CONTEXT_HASH      = 0x81
+INS_APPROVE_VAULT_INTENT     = 0x80
+INS_RELEASE_CONTEXT_SECRET   = 0x82
 
 P1_INITIAL   = 0x00
 P1_CONTINUE  = 0x01
