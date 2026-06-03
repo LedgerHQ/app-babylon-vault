@@ -2,8 +2,8 @@
 Ragger integration tests for APPROVE_VAULT_INTENT (INS 0x80).
 
 Device: Speculos emulator seeded with the default test mnemonic (see conftest.py).
-No UX navigation needed — NAPPS-1373 adds the display screen; until then the
-device auto-transitions to INTENT_LOADED on a valid two-phase exchange.
+Happy-path tests navigate the approval screen and perform golden snapshot comparison.
+Error-path tests fail before the display is shown and need no navigation.
 
 Test keys are synthetic 32-byte values chosen so they:
   - are lexicographically sorted within each group
@@ -13,15 +13,19 @@ Test keys are synthetic 32-byte values chosen so they:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
 import pytest
+from ledgered.devices import DeviceType
 from ragger.error import ExceptionRAPDU
+from ragger.navigator import Navigator
 
 from .vault_client import (
     approve_vault_intent,
+    approve_vault_intent_with_nav,
     build_intent_tlv,
     derive_context_hash,
     CLA_VAULT,
@@ -108,36 +112,59 @@ def _raw_exchange(client, p1: int, data: bytes):
 # Happy paths
 # ---------------------------------------------------------------------------
 
-def test_minimal_1_keeper_1_challenger(client: RaggerClient, bitcoin_network: str):
+def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigator,
+                                       firmware: DeviceType, bitcoin_network: str,
+                                       test_name: str, default_screenshot_path: Path):
     """Load a minimal intent (1 keeper, 1 challenger) end-to-end → SW_OK."""
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    approve_vault_intent(client, scalars, keeper_pks=[KEY_A], challenger_pks=[KEY_B])
+    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  path=default_screenshot_path,
+                                  test_case_name=test_name + "_" + bitcoin_network)
 
 
-def test_keys_split_across_batches(client: RaggerClient, bitcoin_network: str):
+def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
+                                   firmware: DeviceType, bitcoin_network: str,
+                                   test_name: str, default_screenshot_path: Path):
     """8 keepers + 8 challengers forces three P1=0x01 batches (7+7+2 keys)."""
     keepers     = [bytes([0x10 + i]) + bytes(31) for i in range(8)]
     challengers = [bytes([0x20 + i]) + bytes(31) for i in range(8)]
     scalars = _make_scalars(bitcoin_network, keeper_count=8, challenger_count=8)
-    approve_vault_intent(client, scalars, keeper_pks=keepers, challenger_pks=challengers)
+    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+                                  keeper_pks=keepers, challenger_pks=challengers,
+                                  path=default_screenshot_path,
+                                  test_case_name=test_name + "_" + bitcoin_network)
 
 
-def test_reload_intent_invalidates_previous(client: RaggerClient, bitcoin_network: str):
+def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Navigator,
+                                            firmware: DeviceType, bitcoin_network: str,
+                                            test_name: str, default_screenshot_path: Path):
     """Loading a second intent while one is active must succeed (session reset)."""
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    # First load
-    approve_vault_intent(client, scalars, keeper_pks=[KEY_A], challenger_pks=[KEY_B])
-    # Second load — handler must invalidate the first session and accept this one
-    approve_vault_intent(client, scalars, keeper_pks=[KEY_A], challenger_pks=[KEY_B])
+    # First load — approve the screen; snapshots named …_load1/
+    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  path=default_screenshot_path,
+                                  test_case_name=test_name + "_load1_" + bitcoin_network)
+    # Second load — handler invalidates the first session and shows the screen again
+    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  path=default_screenshot_path,
+                                  test_case_name=test_name + "_load2_" + bitcoin_network)
 
 
-def test_approve_resets_session_derive_can_run(client: RaggerClient, bitcoin_network: str):
+def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: Navigator,
+                                               firmware: DeviceType, bitcoin_network: str,
+                                               test_name: str, default_screenshot_path: Path):
     """After a successful approve, DERIVE_CONTEXT_HASH must reset state back to IDLE.
 
     Replaces the skipped test in test_derive_context_hash.py.
     """
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    approve_vault_intent(client, scalars, keeper_pks=[KEY_A], challenger_pks=[KEY_B])
+    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  path=default_screenshot_path,
+                                  test_case_name=test_name + "_" + bitcoin_network)
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
     hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")

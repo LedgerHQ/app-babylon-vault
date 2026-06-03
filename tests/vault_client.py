@@ -13,9 +13,12 @@ Usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List
+from pathlib import Path
+from typing import TYPE_CHECKING, List, Optional, Union
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
+    from ragger.navigator import Navigator
+    from ledgered.devices import DeviceType
 
 CLA_VAULT                    = 0xE1
 INS_DERIVE_CONTEXT_HASH      = 0x81
@@ -205,6 +208,62 @@ def _approve_exchange(client: "RaggerClient", p1: int, data: bytes) -> bytes:
         data=data,
     )
     return bytes(response.data)
+
+
+def approve_vault_intent_with_nav(
+    client: "RaggerClient",
+    navigator: "Navigator",
+    firmware: "DeviceType",
+    scalars_tlv: bytes,
+    keeper_pks: List[bytes],
+    challenger_pks: List[bytes],
+    path: Optional[Path] = None,
+    test_case_name: Optional[Union[Path, str]] = None,
+) -> None:
+    """Send APPROVE_VAULT_INTENT APDUs and navigate the approval screen.
+
+    All batches except the last are sent synchronously (they respond SW_OK immediately).
+    The final batch triggers the display; it is sent asynchronously while the navigator
+    confirms the review screen.
+
+    When path and test_case_name are provided, golden snapshot comparison is performed
+    via navigate_until_text_and_compare.  Otherwise navigate_until_text is used (no
+    snapshot saving or comparison).
+    """
+    from .instructions import vault_intent_approve_nav
+
+    _approve_exchange(client, P1_SCALARS, scalars_tlv)
+
+    all_keys = keeper_pks + challenger_pks
+    batches = [all_keys[i : i + _KEYS_PER_BATCH] for i in range(0, len(all_keys), _KEYS_PER_BATCH)]
+
+    for batch in batches[:-1]:
+        _approve_exchange(client, P1_KEY_BATCH, b"".join(batch))
+
+    navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(firmware)
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=b"".join(batches[-1]),
+    ):
+        if path is not None and test_case_name is not None:
+            navigator.navigate_until_text_and_compare(
+                navigate_instruction=navigate_instr,
+                validation_instructions=confirm_instrs,
+                text=search_text,
+                path=path,
+                test_case_name=test_case_name,
+                screen_change_before_first_instruction=False,
+            )
+        else:
+            navigator.navigate_until_text(
+                navigate_instruction=navigate_instr,
+                validation_instructions=confirm_instrs,
+                text=search_text,
+                screen_change_before_first_instruction=False,
+            )
 
 
 def approve_vault_intent(
