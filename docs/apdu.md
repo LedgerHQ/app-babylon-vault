@@ -58,6 +58,19 @@ Duplicate tags, unknown tags, and wrong-length fields are rejected.
 
 **Response:** `SW_OK` (`0x9000`), no data. Key streaming may now begin.
 
+**State context:**
+This command is accepted from any session state. The meaningful distinction is:
+
+- **Called from `HASH_DERIVED`** (after a successful `DERIVE_CONTEXT_HASH`) — Session 2 path.
+  The `htlc_preimage` and `htlc_hashlock` produced by `DERIVE_CONTEXT_HASH` are copied to
+  a stack buffer before the internal session reset, then restored afterwards. They remain
+  held in the session context through `INTENT_LOADED` → `SESSION2_PEGIN_EXPECTED` →
+  `SESSION2_PAYOUT_EXPECTED` → `SESSION2_COMPLETE`, at which point `RELEASE_CONTEXT_SECRET`
+  (stub — NAPPS-1373) will return the preimage to the host and zero it.
+- **Called from any other state** — Session 1 path (or intent replacement).
+  The session is reset normally; no preimage is preserved. A prior `DERIVE_CONTEXT_HASH`
+  result is discarded if the device was not in `HASH_DERIVED` state at call time.
+
 ---
 
 ### P1=0x01 — Key batch

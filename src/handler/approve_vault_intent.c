@@ -57,6 +57,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
     if (err != VAULT_TLV_OK) {
         explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, tlv_err_to_sw(err));
         return;
     }
@@ -67,6 +68,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     uint8_t tmp_point[65];
     if (crypto_tr_lift_x(G_vault_intent.vault_provider_pk, tmp_point) != 0) {
         explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }

@@ -27,8 +27,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     memset(&intent, 0, sizeof(intent));
     intent.keeper_count = keeper_count;
     intent.challenger_count = challenger_count;
-    /* vault_provider_pk stays zero — intentionally not a valid EC point; used as
-     * a deterministic collision target so the fuzzer can reach VAULT_KEY_ERR_ROLE_COLLISION. */
+    /* vault_provider_pk stays zero — intentionally not a valid EC point.
+     * In the live handler, crypto_tr_lift_x rejects this before vault_validate_and_store_key
+     * is reached; the fuzzer targets the post-validation logic directly, bypassing that layer.
+     * Zero is chosen as a deterministic collision target to exercise VAULT_KEY_ERR_ROLE_COLLISION.
+     */
 
     const uint8_t *ptr = data + 2;
     size_t remaining = size - 2;

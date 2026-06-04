@@ -3,6 +3,8 @@
 set -x
 set -e
 
+cd "$(dirname "$0")"
+
 BUILD_DIRECTORY=$(realpath build/)
 
 lcov --directory . -b "${BUILD_DIRECTORY}" --capture --initial -o coverage.base &&

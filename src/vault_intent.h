@@ -75,9 +75,11 @@ typedef struct {
     /**
      * Vault provider x-only public key.
      *
-     * Stored as received; not validated as a point on secp256k1 (EC point
-     * check is expensive on hardware and deferred to the signing stage).
-     * Used only for role-uniqueness comparisons via memcmp.
+     * Validated as a secp256k1 point via crypto_tr_lift_x during P1=0x00
+     * processing, after vault_tlv_parse has populated this struct.  Payloads
+     * with an invalid x-coordinate cause the struct to be zeroed and the
+     * session to be invalidated before P1=0x01 can begin.  Used for taproot
+     * key derivation and role-uniqueness comparisons.
      */
     uint8_t vault_provider_pk[VAULT_XONLY_PUBKEY_LEN];
 
