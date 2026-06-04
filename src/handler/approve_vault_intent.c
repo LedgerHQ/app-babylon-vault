@@ -102,6 +102,17 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
 
     for (uint8_t i = 0; i < n_keys; i++) {
         const uint8_t *key = cmd->data + i * VAULT_XONLY_PUBKEY_LEN;
+
+        /* Reject keys that are not valid secp256k1 x-only points. */
+        uint8_t tmp_point[65];
+        int lift_rc = crypto_tr_lift_x(key, tmp_point);
+        explicit_bzero(tmp_point, sizeof(tmp_point));
+        if (lift_rc != 0) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
         vault_key_err_t err = vault_validate_and_store_key(&G_vault_intent,
                                                            G_approve_intent_state.keys_received,
                                                            key);

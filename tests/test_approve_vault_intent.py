@@ -40,6 +40,8 @@ from .vault_client import (
     TAG_PEGIN_CSV_TIMELOCK,
     TAG_KEEPER_COUNT,
     TEST_VP_KEY,
+    TEST_VALID_KEYS,
+    TEST_INVALID_XONLY_KEY,
 )
 
 # ---------------------------------------------------------------------------
@@ -53,11 +55,12 @@ VP_KEY = TEST_VP_KEY
 # Pre-PegIn txid placeholder
 TXID = bytes(range(32))
 
-# Synthetic x-only keys — sorted ascending, globally distinct, != VP_KEY
-KEY_A = bytes([0xAA]) + bytes(31)
-KEY_B = bytes([0xBB]) + bytes(31)
-KEY_C = bytes([0xCC]) + bytes(31)
-KEY_D = bytes([0xDD]) + bytes(31)
+# Valid secp256k1 x-only keys for use in happy-path and error tests.
+# Taken from TEST_VALID_KEYS (sorted ascending, all verified curve points).
+KEY_A = TEST_VALID_KEYS[0]
+KEY_B = TEST_VALID_KEYS[1]
+KEY_C = TEST_VALID_KEYS[2]
+KEY_D = TEST_VALID_KEYS[3]
 
 
 def _coin_type(network: str) -> int:
@@ -115,10 +118,10 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, bitcoin_network: st
 
 
 def test_keys_split_across_batches(client: RaggerClient, bitcoin_network: str):
-    """8 keepers + 8 challengers forces three P1=0x01 batches (7+7+2 keys)."""
-    keepers     = [bytes([0x10 + i]) + bytes(31) for i in range(8)]
-    challengers = [bytes([0x20 + i]) + bytes(31) for i in range(8)]
-    scalars = _make_scalars(bitcoin_network, keeper_count=8, challenger_count=8)
+    """4 keepers + 4 challengers forces two P1=0x01 batches (7+1 keys)."""
+    keepers     = TEST_VALID_KEYS[0:4]
+    challengers = TEST_VALID_KEYS[4:8]
+    scalars = _make_scalars(bitcoin_network, keeper_count=4, challenger_count=4)
     approve_vault_intent(client, scalars, keeper_pks=keepers, challenger_pks=challengers)
 
 
@@ -276,4 +279,23 @@ def test_duplicate_key_across_groups(client: RaggerClient, bitcoin_network: str)
     with pytest.raises(ExceptionRAPDU) as exc:
         # Keeper = KEY_A, Challenger = KEY_A (duplicate)
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_A)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_invalid_ec_point_keeper_rejected(client: RaggerClient, bitcoin_network: str):
+    """A keeper key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        # TEST_INVALID_XONLY_KEY = 0xFF * 32 which is >= secp256k1 prime p.
+        _raw_exchange(client, P1_KEY_BATCH, TEST_INVALID_XONLY_KEY + KEY_B)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_invalid_ec_point_challenger_rejected(client: RaggerClient, bitcoin_network: str):
+    """A challenger key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, KEY_A + TEST_INVALID_XONLY_KEY)
     assert exc.value.status == SW_INCORRECT_DATA
