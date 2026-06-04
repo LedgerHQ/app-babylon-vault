@@ -16,7 +16,7 @@ def vault_intent_approve_nav(firmware: DeviceType) -> Tuple[NavInsID, List[NavIn
         # VAULT_INTENT_FINISH_TITLE (no SCREEN_SIZE_WALLET) = "Approve intent?"
         return (NavInsID.RIGHT_CLICK,
                 [NavInsID.BOTH_CLICK],
-                r"Approve intent")
+                r"^Approve intent\?$")
     return (NavInsID.SWIPE_CENTER_TO_LEFT,
             [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS],
             "^Hold to sign$")

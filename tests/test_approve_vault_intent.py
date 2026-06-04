@@ -24,7 +24,6 @@ from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
 from .vault_client import (
-    approve_vault_intent,
     approve_vault_intent_with_nav,
     build_intent_tlv,
     derive_context_hash,
@@ -126,12 +125,14 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigato
                                   test_case_name=test_name + "_" + bitcoin_network)
 
 
-def test_keys_split_across_batches(client: RaggerClient, bitcoin_network: str):
+def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
+                                    firmware: DeviceType, bitcoin_network: str):
     """4 keepers + 4 challengers forces two P1=0x01 batches (7+1 keys)."""
     keepers     = TEST_VALID_KEYS[0:4]
     challengers = TEST_VALID_KEYS[4:8]
     scalars = _make_scalars(bitcoin_network, keeper_count=4, challenger_count=4)
-    approve_vault_intent(client, scalars, keeper_pks=keepers, challenger_pks=challengers)
+    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+                                  keeper_pks=keepers, challenger_pks=challengers)
 
 
 def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Navigator,
@@ -151,7 +152,8 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
                                   test_case_name=test_name + "_load2_" + bitcoin_network)
 
 
-def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, bitcoin_network: str):
+def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, navigator: Navigator,
+                                                          firmware: DeviceType, bitcoin_network: str):
     """Session 2 setup: DERIVE_CONTEXT_HASH (multi-chunk) followed by APPROVE_VAULT_INTENT
     must complete without error and leave the session in INTENT_LOADED.
 
@@ -168,7 +170,8 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, b
 
     # Step 2 — APPROVE_VAULT_INTENT must accept the HASH_DERIVED state and succeed.
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    approve_vault_intent(client, scalars, keeper_pks=[KEY_A], challenger_pks=[KEY_B])
+    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B])
 
     # Step 3 — state is INTENT_LOADED; P1=0x01 without a preceding P1=0x00 must fail
     # with SW_BAD_STATE (scalars_loaded == false).
@@ -177,7 +180,9 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, b
     assert exc.value.status == SW_BAD_STATE
 
 
-def test_approve_resets_session_derive_can_run(client: RaggerClient, bitcoin_network: str):
+def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: Navigator,
+                                                firmware: DeviceType, bitcoin_network: str,
+                                                test_name: str, default_screenshot_path: Path):
     """After a successful approve, DERIVE_CONTEXT_HASH must reset state back to IDLE.
 
     Replaces the skipped test in test_derive_context_hash.py.

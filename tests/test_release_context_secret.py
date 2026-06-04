@@ -26,14 +26,15 @@ from .vault_client import (
     SW_BAD_STATE,
     approve_vault_intent_with_nav,
     build_intent_tlv,
+    TEST_VALID_KEYS,
 )
 
 HARDENED = 0x80000000
 
 from .vault_client import TEST_VP_KEY
 
-_KEY_A = bytes([0xAA]) + bytes(31)
-_KEY_B = bytes([0xBB]) + bytes(31)
+_KEY_A = TEST_VALID_KEYS[0]
+_KEY_B = TEST_VALID_KEYS[1]
 
 
 def _make_scalars(bitcoin_network: str) -> bytes:

@@ -10,6 +10,13 @@
 
 static void review_choice(bool approved) {
     set_ux_flow_response(approved);  // sets the return value of io_ui_process
+    if (!approved) {
+        nbgl_useCaseReviewStatus(STATUS_TYPE_TRANSACTION_REJECTED, ui_menu_main);
+    }
+}
+
+static void vault_review_choice(bool approved) {
+    set_ux_flow_response(approved);
     nbgl_useCaseReviewStatus(
         approved ? STATUS_TYPE_OPERATION_SIGNED : STATUS_TYPE_OPERATION_REJECTED,
         ui_menu_main);
@@ -215,7 +222,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
                        VAULT_INTENT_REVIEW_TITLE,
                        NULL,
                        VAULT_INTENT_FINISH_TITLE,
-                       review_choice);
+                       vault_review_choice);
 
     bool approved = io_ui_process(dc);
     if (!approved) {

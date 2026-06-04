@@ -33,6 +33,7 @@ from .vault_client import (
     P1_KEY_BATCH,
     P2_UNUSED,
     TEST_VP_KEY,
+    TEST_VALID_KEYS,
     build_intent_tlv,
 )
 from .instructions import vault_intent_approve_nav, vault_intent_reject_nav
@@ -42,8 +43,8 @@ ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
 HARDENED = 0x80000000
 
 # Minimal 1-keeper + 1-challenger intent — enough to exercise all display fields.
-_KEY_A = bytes([0xAA]) + bytes(31)
-_KEY_B = bytes([0xBB]) + bytes(31)
+_KEY_A = TEST_VALID_KEYS[0]
+_KEY_B = TEST_VALID_KEYS[1]
 
 
 def _scalars(bitcoin_network: str) -> bytes:

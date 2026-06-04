@@ -28,7 +28,13 @@ void handler_release_context_secret(dispatcher_context_t *dc, const command_t *c
     // Transition SESSION2_COMPLETE → IDLE.  Internally calls
     // vault_context_invalidate, which explicit_bzero's htlc_preimage.
     // Secret is zeroed in device RAM before the packet leaves the device.
-    vault_context_transition(&G_vault_context, VAULT_STATE_SESSION2_COMPLETE, VAULT_STATE_IDLE);
+    if (!vault_context_transition(&G_vault_context,
+                                  VAULT_STATE_SESSION2_COMPLETE,
+                                  VAULT_STATE_IDLE)) {
+        // Unreachable: state was verified above. Guard against future refactors.
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
 
     dc->finalize_response(SW_OK);
     dc->send_response();
