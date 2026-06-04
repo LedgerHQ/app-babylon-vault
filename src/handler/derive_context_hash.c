@@ -62,6 +62,10 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
             return;
         }
         explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+        if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED)) {
+            SEND_SW(dc, SW_BAD_STATE);
+            return;
+        }
         send_hashlock(dc);
         return;
     }
@@ -102,6 +106,10 @@ static void handle_context_chunk(dispatcher_context_t *dc, const command_t *cmd)
             return;
         }
         explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+        if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED)) {
+            SEND_SW(dc, SW_BAD_STATE);
+            return;
+        }
         send_hashlock(dc);
     } else {
         SEND_SW(dc, SW_OK);

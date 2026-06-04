@@ -104,6 +104,16 @@ static void test_transition_idle_to_intent_loaded(void **state) {
     assert_int_equal(ctx.state, VAULT_STATE_INTENT_LOADED);
 }
 
+static void test_transition_idle_to_hash_derived(void **state) {
+    (void) state;
+    vault_context_t ctx;
+    vault_context_init(&ctx);
+
+    bool ok = vault_context_transition(&ctx, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED);
+    assert_true(ok);
+    assert_int_equal(ctx.state, VAULT_STATE_HASH_DERIVED);
+}
+
 static void test_transition_intent_loaded_to_session1(void **state) {
     (void) state;
     vault_context_t ctx;
@@ -246,6 +256,19 @@ static void test_transition_double_approve(void **state) {
                     VAULT_STATE_INTENT_LOADED);
 }
 
+static void test_transition_hash_derived_direct_to_intent_loaded_illegal(void **state) {
+    (void) state;
+    /*
+     * HASH_DERIVED → INTENT_LOADED directly via vault_context_transition must
+     * be rejected.  APPROVE_VAULT_INTENT handles this state by save/invalidate/
+     * restore; no code should ever call vault_context_transition with
+     * HASH_DERIVED as `from`.
+     */
+    _assert_illegal(VAULT_STATE_HASH_DERIVED,
+                    VAULT_STATE_HASH_DERIVED,
+                    VAULT_STATE_INTENT_LOADED);
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -261,6 +284,7 @@ int main(void) {
 
         /* valid transitions */
         cmocka_unit_test(test_transition_idle_to_intent_loaded),
+        cmocka_unit_test(test_transition_idle_to_hash_derived),
         cmocka_unit_test(test_transition_intent_loaded_to_session1),
         cmocka_unit_test(test_transition_session1_back_to_intent_loaded),
         cmocka_unit_test(test_transition_intent_loaded_to_session2_pegin),
@@ -273,6 +297,7 @@ int main(void) {
         cmocka_unit_test(test_transition_illegal_to_state),
         cmocka_unit_test(test_transition_backwards_without_valid_edge),
         cmocka_unit_test(test_transition_double_approve),
+        cmocka_unit_test(test_transition_hash_derived_direct_to_intent_loaded_illegal),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

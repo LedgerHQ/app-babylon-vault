@@ -36,8 +36,23 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    /* Always reset to IDLE — vault_context_invalidate zeroes all dependent globals. */
+    /* If DERIVE_CONTEXT_HASH completed (Session 2), preserve preimage/hashlock across the reset. */
+    uint8_t saved_preimage[VAULT_HASH256_LEN];
+    uint8_t saved_hashlock[VAULT_HASH256_LEN];
+    bool preserve_htlc = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
+    if (preserve_htlc) {
+        memcpy(saved_preimage, G_vault_context.htlc_preimage, VAULT_HASH256_LEN);
+        memcpy(saved_hashlock, G_vault_context.htlc_hashlock, VAULT_HASH256_LEN);
+    }
+
     vault_context_invalidate(&G_vault_context);
+
+    if (preserve_htlc) {
+        memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);
+        memcpy(G_vault_context.htlc_hashlock, saved_hashlock, VAULT_HASH256_LEN);
+        explicit_bzero(saved_preimage, sizeof(saved_preimage));
+        explicit_bzero(saved_hashlock, sizeof(saved_hashlock));
+    }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
     if (err != VAULT_TLV_OK) {

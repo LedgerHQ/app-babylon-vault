@@ -35,7 +35,9 @@ void vault_context_invalidate(vault_context_t *ctx) {
 static inline bool vault_transition_allowed(vault_state_t from, vault_state_t to) {
     switch (from) {
         case VAULT_STATE_IDLE:
-            return (to == VAULT_STATE_INTENT_LOADED);
+            return (to == VAULT_STATE_INTENT_LOADED || to == VAULT_STATE_HASH_DERIVED);
+        case VAULT_STATE_HASH_DERIVED:
+            return false;  // APPROVE saves/restores around invalidate; no direct transition needed
         case VAULT_STATE_INTENT_LOADED:
             return (to == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED ||
                     to == VAULT_STATE_SESSION2_PEGIN_EXPECTED);
