@@ -71,4 +71,4 @@
 #define VAULT_INTENT_ALL_TAGS_MASK ((1u << VAULT_INTENT_TAG_COUNT) - 1u)
 
 /** Convert a tag byte to its bitmask bit (tag must be in [0x01, 0x11]). */
-#define VAULT_TAG_BIT(tag) (1u << ((tag) - 1u))
+#define VAULT_TAG_BIT(tag) (1u << ((tag) -1u))
