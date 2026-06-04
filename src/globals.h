@@ -37,3 +37,20 @@ typedef struct {
 
 /** In-flight HKDF streaming state for the ongoing DERIVE_CONTEXT_HASH exchange. */
 extern hkdf_stream_t G_hkdf_stream;
+
+/**
+ * @brief In-flight state for a two-phase APPROVE_VAULT_INTENT exchange.
+ *
+ * Lives from the first P1=0x00 call until all keys are accepted or any
+ * error/invalidation occurs.  Zeroed at the start of every P1=0x00 call and
+ * inside vault_context_invalidate.
+ */
+typedef struct {
+    /** True after a valid P1=0x00; gates acceptance of P1=0x01 batches. */
+    bool scalars_loaded;
+    /** Total number of x-only keys stored so far (keepers then challengers). */
+    uint8_t keys_received;
+} approve_intent_state_t;
+
+/** In-flight APPROVE_VAULT_INTENT parse state. */
+extern approve_intent_state_t G_approve_intent_state;

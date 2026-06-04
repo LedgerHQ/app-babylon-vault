@@ -65,3 +65,24 @@ target_compile_definitions(test_derive_context_hash PRIVATE TEST)
 target_link_libraries(test_derive_context_hash cmocka)
 
 add_test(NAME test_derive_context_hash COMMAND test_derive_context_hash)
+
+# -----------------------------------------------------------------------
+# test_vault_tlv
+#
+# Tests vault_tlv_parse (src/vault_tlv.c) and the static-inline core
+# functions in src/handler/approve_vault_intent_core.h.
+# No mock_cx needed — vault_tlv.c only uses os_utils.h (mocked in mocks/).
+# BIP44_COIN_TYPE must match VALID_PATH[1] in the test fixture (coin type 1).
+# -----------------------------------------------------------------------
+add_executable(test_vault_tlv
+  test_vault_tlv.c
+  ${SRC_DIR}/vault_tlv.c
+)
+
+target_compile_definitions(test_vault_tlv PRIVATE
+  TEST
+  BIP44_COIN_TYPE=1
+)
+target_link_libraries(test_vault_tlv cmocka)
+
+add_test(NAME test_vault_tlv COMMAND test_vault_tlv)

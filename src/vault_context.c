@@ -20,8 +20,9 @@ void vault_context_invalidate(vault_context_t *ctx) {
     explicit_bzero(ctx, sizeof(*ctx));
     ctx->state = VAULT_STATE_IDLE;
 
-    // Mirror: wipe the intent as well — it is only valid when state != IDLE.
+    // Wipe all globals whose validity depends on state != IDLE.
     explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
 }
 
 /**
@@ -34,7 +35,9 @@ void vault_context_invalidate(vault_context_t *ctx) {
 static inline bool vault_transition_allowed(vault_state_t from, vault_state_t to) {
     switch (from) {
         case VAULT_STATE_IDLE:
-            return (to == VAULT_STATE_INTENT_LOADED);
+            return (to == VAULT_STATE_INTENT_LOADED || to == VAULT_STATE_HASH_DERIVED);
+        case VAULT_STATE_HASH_DERIVED:
+            return false;  // APPROVE saves/restores around invalidate; no direct transition needed
         case VAULT_STATE_INTENT_LOADED:
             return (to == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED ||
                     to == VAULT_STATE_SESSION2_PEGIN_EXPECTED);
