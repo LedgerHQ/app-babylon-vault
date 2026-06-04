@@ -35,7 +35,7 @@
  */
 typedef enum {
     VAULT_STATE_IDLE = 0,
-    VAULT_STATE_HASH_DERIVED,              // DERIVE_CONTEXT_HASH complete; preimage held, no intent yet
+    VAULT_STATE_HASH_DERIVED,  // DERIVE_CONTEXT_HASH complete; preimage held, no intent yet
     VAULT_STATE_INTENT_LOADED,
     VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
     VAULT_STATE_SESSION2_PEGIN_EXPECTED,
