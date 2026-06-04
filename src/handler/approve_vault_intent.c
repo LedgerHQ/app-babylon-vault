@@ -37,12 +37,28 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    /* Always reset to IDLE — vault_context_invalidate zeroes all dependent globals. */
+    /* If DERIVE_CONTEXT_HASH completed (Session 2), preserve preimage/hashlock across the reset. */
+    uint8_t saved_preimage[VAULT_HASH256_LEN];
+    uint8_t saved_hashlock[VAULT_HASH256_LEN];
+    bool preserve_htlc = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
+    if (preserve_htlc) {
+        memcpy(saved_preimage, G_vault_context.htlc_preimage, VAULT_HASH256_LEN);
+        memcpy(saved_hashlock, G_vault_context.htlc_hashlock, VAULT_HASH256_LEN);
+    }
+
     vault_context_invalidate(&G_vault_context);
+
+    if (preserve_htlc) {
+        memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);
+        memcpy(G_vault_context.htlc_hashlock, saved_hashlock, VAULT_HASH256_LEN);
+        explicit_bzero(saved_preimage, sizeof(saved_preimage));
+        explicit_bzero(saved_hashlock, sizeof(saved_hashlock));
+    }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
     if (err != VAULT_TLV_OK) {
         explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, tlv_err_to_sw(err));
         return;
     }
@@ -53,6 +69,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     uint8_t tmp_point[65];
     if (crypto_tr_lift_x(G_vault_intent.vault_provider_pk, tmp_point) != 0) {
         explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
@@ -88,6 +105,17 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
 
     for (uint8_t i = 0; i < n_keys; i++) {
         const uint8_t *key = cmd->data + i * VAULT_XONLY_PUBKEY_LEN;
+
+        /* Reject keys that are not valid secp256k1 x-only points. */
+        uint8_t tmp_point[65];
+        int lift_rc = crypto_tr_lift_x(key, tmp_point);
+        explicit_bzero(tmp_point, sizeof(tmp_point));
+        if (lift_rc != 0) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
         vault_key_err_t err = vault_validate_and_store_key(&G_vault_intent,
                                                            G_approve_intent_state.keys_received,
                                                            key);

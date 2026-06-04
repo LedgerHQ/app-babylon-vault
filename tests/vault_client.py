@@ -69,6 +69,25 @@ VAULT_PROTOCOL_VERSION   = 0x01
 # Must be a valid curve point because the firmware calls crypto_tr_lift_x on it.
 TEST_VP_KEY = bytes.fromhex('79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798')
 
+# Valid secp256k1 x-only public keys for use in tests, sorted ascending.
+# Mix of small multiples of G (2G..8G) and BIP-340 test-vector pubkeys — all
+# are verified valid curve points and do not equal TEST_VP_KEY (1G).
+TEST_VALID_KEYS = [
+    bytes.fromhex('25D1DFF95105F5253C4022F628A996AD3A0D95FBF21D468A1B33F8C160D8F517'),  # BIP-340 vector
+    bytes.fromhex('2F01E5E15CCA351DAFF3843FB70F3C2F0A1BDD05E5AF888A67784EF3E10A2A01'),  # 8G
+    bytes.fromhex('2F8BDE4D1A07209355B4A7250A5C5128E88B84BDDC619AB7CBA8D569B240EFE4'),  # 5G
+    bytes.fromhex('5CBDF0646E5DB4EAA398F365F2EA7A0E3D419B7E0330E39CE92BDDEDCAC4F9BC'),  # 7G
+    bytes.fromhex('C6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5'),  # 2G
+    bytes.fromhex('DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659'),   # BIP-340 vector
+    bytes.fromhex('E493DBF1C10D80F3581E4904930B1404CC6C13900EE0758474FA94ABE8C4CD13'),  # 4G
+    bytes.fromhex('F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9'),   # BIP-340 vector
+]
+
+# Guaranteed-invalid x-coordinate: x = p-2 gives (p-2)³+7 ≡ (-2)³+7 ≡ -1 (mod p).
+# -1 is never a quadratic residue when p ≡ 3 (mod 4), which secp256k1's prime satisfies,
+# so no point with this x exists. crypto_tr_lift_x must reject it.
+TEST_INVALID_XONLY_KEY = bytes.fromhex('FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D')
+
 
 def _exchange(client: RaggerClient, p1: int, data: bytes) -> bytes:
     """Send one DERIVE_CONTEXT_HASH APDU and return the response data.

@@ -185,12 +185,13 @@ def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
     Covered more thoroughly in test_approve_vault_intent.py::test_approve_resets_session_derive_can_run.
     This test just verifies the inverse: DERIVE_CONTEXT_HASH still works after an intent was loaded.
     """
-    from .vault_client import approve_vault_intent_with_nav, build_intent_tlv, TEST_VP_KEY
+    from .vault_client import approve_vault_intent, build_intent_tlv, VAULT_STRUCTURE_TYPE, VAULT_PROTOCOL_VERSION, TEST_VP_KEY, TEST_VALID_KEYS
 
     HARDENED = 0x80000000
     ct = 0 if bitcoin_network == "main" else 1
-    key_a = bytes([0xAA]) + bytes(31)
-    key_b = bytes([0xBB]) + bytes(31)
+    vp = TEST_VP_KEY
+    key_a = TEST_VALID_KEYS[0]
+    key_b = TEST_VALID_KEYS[1]
     scalars = build_intent_tlv(
         coin_type=ct, vault_provider_pk=TEST_VP_KEY,
         vault_amount=100_000, commission_fee=1_000,

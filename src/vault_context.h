@@ -11,13 +11,15 @@
  * Transition table:
  *
  *   IDLE
- *     └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED
+ *     ├─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED  [Session 1: no preimage]
+ *     │         │
+ *     │         └─(Session 1: Pre-PegIn signed)──► SESSION1_PREPEGIN_EXPECTED
+ *     │                                                  │
+ *     │                                                  └─(Pre-PegIn SIGN_PSBT)──► INTENT_LOADED
+ *     │
+ *     └─(DERIVE_CONTEXT_HASH complete)──► HASH_DERIVED
  *           │
- *           ├─(Session 1: Pre-PegIn signed)──► SESSION1_PREPEGIN_EXPECTED
- *           │                                        │
- *           │                                        └─(Pre-PegIn SIGN_PSBT)──► INTENT_LOADED
- *           │
- *           └─(Session 2: DERIVE_CONTEXT_HASH + APPROVE_VAULT_INTENT)
+ *           └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED  [preimage preserved → Session 2]
  *                 │
  *                 └─► SESSION2_PEGIN_EXPECTED
  *                           │
@@ -28,11 +30,12 @@
  *
  * Invalidation triggers (any of these → explicit_bzero(htlc_preimage) + IDLE):
  *   - Signing error in any hook
- *   - APPROVE_VAULT_INTENT while intent already loaded
+ *   - APPROVE_VAULT_INTENT while intent already loaded (state != IDLE and state != HASH_DERIVED)
  *   - DERIVE_CONTEXT_HASH while intent is loaded
  */
 typedef enum {
     VAULT_STATE_IDLE = 0,
+    VAULT_STATE_HASH_DERIVED,  // DERIVE_CONTEXT_HASH complete; preimage held, no intent yet
     VAULT_STATE_INTENT_LOADED,
     VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
     VAULT_STATE_SESSION2_PEGIN_EXPECTED,
