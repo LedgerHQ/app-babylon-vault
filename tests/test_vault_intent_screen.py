@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 import pytest
 
-from ledgered.devices import DeviceType
+from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
@@ -35,11 +35,11 @@ from .vault_client import (
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     build_intent_tlv,
+    approve_vault_intent_with_nav,
 )
 from .instructions import (
-    vault_intent_approve_instructions,
     vault_intent_reject_instructions,
-    VAULT_INTENT_1K1C_SWIPES,
+    vault_intent_1k1c_steps,
 )
 
 ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
@@ -87,27 +87,21 @@ def _send_scalars(client: "RaggerClient", bitcoin_network: str) -> None:
 # ---------------------------------------------------------------------------
 
 def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
-                                firmware: DeviceType, bitcoin_network: str,
+                                device: Device, bitcoin_network: str,
                                 test_name: str):
     """Navigate all vault intent review pages and approve.
 
     Captures every page as a snapshot — run with --golden_run to create goldens.
     """
-    _send_scalars(client, bitcoin_network)
-
-    with client.transport_client.exchange_async(
-        cla=CLA_VAULT,
-        ins=INS_APPROVE_VAULT_INTENT,
-        p1=P1_KEY_BATCH,
-        p2=P2_UNUSED,
-        data=_KEY_A + _KEY_B,
-    ):
-        navigator.navigate_and_compare(
-            path=ROOT_SCREENSHOT_PATH,
-            test_case_name=test_name + "_" + bitcoin_network,
-            instructions=vault_intent_approve_instructions(firmware, VAULT_INTENT_1K1C_SWIPES),
-            screen_change_before_first_instruction=False,
-        )
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv=_scalars(bitcoin_network),
+        keeper_pks=[_KEY_A],
+        challenger_pks=[_KEY_B],
+        path=ROOT_SCREENSHOT_PATH,
+        test_case_name=test_name + "_" + bitcoin_network,
+        n_swipes=vault_intent_1k1c_steps(device),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +109,7 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
 # ---------------------------------------------------------------------------
 
 def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
-                               firmware: DeviceType, bitcoin_network: str,
+                               device: Device, bitcoin_network: str,
                                test_name: str):
     """Navigate to the reject button and reject the vault intent → SW_DENY.
 
@@ -134,7 +128,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
             navigator.navigate_and_compare(
                 path=ROOT_SCREENSHOT_PATH,
                 test_case_name=test_name + "_" + bitcoin_network,
-                instructions=vault_intent_reject_instructions(firmware, VAULT_INTENT_1K1C_SWIPES),
-                screen_change_before_first_instruction=False,
+                instructions=vault_intent_reject_instructions(device, vault_intent_1k1c_steps(device)),
+                screen_change_before_first_instruction=True,
             )
     assert exc.value.status == 0x6985  # SW_DENY

@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 import pytest
 
-from ledgered.devices import DeviceType
+from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
@@ -177,7 +177,7 @@ def test_chunk_exceeds_declared_length_raises(client: RaggerClient):
 
 
 def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
-                                    firmware: DeviceType, bitcoin_network: str):
+                                    device: Device, bitcoin_network: str):
     """Calling DERIVE_CONTEXT_HASH while intent is loaded must invalidate the session.
 
     Covered more thoroughly in test_approve_vault_intent.py::test_approve_resets_session_derive_can_run.
@@ -198,7 +198,7 @@ def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
         depositor_path=[HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0],
         keeper_count=1, challenger_count=1,
     )
-    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+    approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[key_a], challenger_pks=[key_b])
 
     # DERIVE_CONTEXT_HASH must still work (and resets state to IDLE)

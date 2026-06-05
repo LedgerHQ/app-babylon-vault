@@ -82,6 +82,54 @@ def bitcoin_network(pytestconfig) -> Union[Literal['main'], Literal['test']]:
     return network
 
 
+@pytest.fixture(autouse=True)
+def check_no_extra_snapshots(request, test_name, device):
+    """After each test, verify no stale golden snapshots remain.
+
+    snapshots-tmp/<device>/<case>/ is reset by ragger at the start of each
+    navigate_and_compare call, so its post-test PNG count is the authoritative
+    "screens actually produced" count.
+
+    Normal run: fail if snapshots/ has more PNGs than snapshots-tmp/.
+    --golden_run: delete the extra files so goldens stay in sync automatically.
+    """
+    yield
+
+    golden_run = request.config.getoption("--golden_run", default=False)
+    tmp_base = TESTS_ROOT_DIR / "snapshots-tmp" / device.name
+    golden_base = TESTS_ROOT_DIR / "snapshots" / device.name
+
+    if not tmp_base.exists():
+        return
+
+    for tmp_dir in tmp_base.iterdir():
+        if tmp_dir.name != test_name and not tmp_dir.name.startswith(test_name + "_"):
+            continue
+
+        golden_dir = golden_base / tmp_dir.name
+        if not golden_dir.exists():
+            continue
+
+        expected_count = len(list(tmp_dir.glob("*.png")))
+        if expected_count == 0:
+            continue  # test produced no snapshots (skipped/early error) — leave goldens alone
+
+        extra = sorted(p for p in golden_dir.glob("*.png") if int(p.stem) >= expected_count)
+        if not extra:
+            continue
+
+        if golden_run:
+            for png in extra:
+                png.unlink()
+        else:
+            rel = golden_dir.relative_to(TESTS_ROOT_DIR)
+            pytest.fail(
+                f"Stale golden snapshots in '{rel}': {[p.name for p in extra]}. "
+                f"Test produced {expected_count} screen(s) but {expected_count + len(extra)} golden(s) exist. "
+                f"Run with --golden_run to regenerate."
+            )
+
+
 @pytest.fixture
 def client(bitcoin_network: str, backend: BackendInterface) -> RaggerClient:
     if bitcoin_network == "main":

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, List, Optional, Union
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
     from ragger.navigator import Navigator
-    from ledgered.devices import DeviceType
+    from ledgered.devices import Device
 
 CLA_VAULT                    = 0xE1
 INS_DERIVE_CONTEXT_HASH      = 0x81
@@ -87,6 +87,15 @@ TEST_VALID_KEYS = [
 # -1 is never a quadratic residue when p ≡ 3 (mod 4), which secp256k1's prime satisfies,
 # so no point with this x exists. crypto_tr_lift_x must reject it.
 TEST_INVALID_XONLY_KEY = bytes.fromhex('FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D')
+
+# Pre-computed x-only depositor pubkeys for the test mnemonic (see conftest.py) at
+# BIP-86 path m/86'/coin_type'/0'/0/0.  The firmware derives this key at the end of
+# P1=0x01 batch processing via crypto_get_compressed_pubkey_at_path and checks that
+# it doesn't collide with any role key (vault_check_depositor_uniqueness in
+# approve_vault_intent_core.h).
+# Derivation: PBKDF2(mnemonic) → BIP-32 master key → path → x-only (strip parity byte).
+TEST_DEPOSITOR_XONLY_MAINNET = bytes.fromhex('FBB1F6159D2D75F87CD29137D3D58C3C52D6EB5E1F43D7433EF85840F3D97367')
+TEST_DEPOSITOR_XONLY_TESTNET = bytes.fromhex('DC8D2F9EFF0C4F4DBDE070A48E330EFC908B62A766568D91E658F284B324B878')
 
 
 def _exchange(client: RaggerClient, p1: int, data: bytes) -> bytes:
@@ -232,7 +241,7 @@ def _approve_exchange(client: "RaggerClient", p1: int, data: bytes) -> bytes:
 def approve_vault_intent_with_nav(
     client: "RaggerClient",
     navigator: "Navigator",
-    firmware: "DeviceType",
+    device: "Device",
     scalars_tlv: bytes,
     keeper_pks: List[bytes],
     challenger_pks: List[bytes],
@@ -248,7 +257,8 @@ def approve_vault_intent_with_nav(
 
     When path and test_case_name are provided, snapshot comparison is performed:
       - If n_swipes is given, navigate_and_compare is used with an explicit instruction
-        list (deterministic — use instructions.VAULT_INTENT_1K1C_SWIPES for 1K+1C data).
+        list (deterministic — use instructions.vault_intent_1k1c_steps(device) for
+        standard 1K+1C data).
       - If n_swipes is None, navigate_until_text_and_compare is used (timing-sensitive).
     When path is None, navigate_until_text is used (no comparison).
     """
@@ -274,11 +284,11 @@ def approve_vault_intent_with_nav(
                 navigator.navigate_and_compare(
                     path=path,
                     test_case_name=test_case_name,
-                    instructions=vault_intent_approve_instructions(firmware, n_swipes),
-                    screen_change_before_first_instruction=False,
+                    instructions=vault_intent_approve_instructions(device, n_swipes),
+                    screen_change_before_first_instruction=True,
                 )
             else:
-                navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(firmware)
+                navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
                 navigator.navigate_until_text_and_compare(
                     navigate_instruction=navigate_instr,
                     validation_instructions=confirm_instrs,
@@ -288,7 +298,7 @@ def approve_vault_intent_with_nav(
                     screen_change_before_first_instruction=False,
                 )
         else:
-            navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(firmware)
+            navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
             navigator.navigate_until_text(
                 navigate_instruction=navigate_instr,
                 validation_instructions=confirm_instrs,

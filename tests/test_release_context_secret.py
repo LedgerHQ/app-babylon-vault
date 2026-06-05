@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
 import pytest
-from ledgered.devices import DeviceType
+from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
@@ -112,14 +112,14 @@ def test_from_idle_rejected(client: RaggerClient):
 
 
 def test_from_intent_loaded_rejected(client: RaggerClient, navigator: Navigator,
-                                     firmware: DeviceType, bitcoin_network: str):
+                                     device: Device, bitcoin_network: str):
     """Calling RELEASE_CONTEXT_SECRET after APPROVE_VAULT_INTENT must return SW_BAD_STATE.
 
     State is INTENT_LOADED after a successful approval, not SESSION2_COMPLETE.
     The secret is only released at the end of a full Session 2 signing sequence.
     """
     scalars = _make_scalars(bitcoin_network)
-    approve_vault_intent_with_nav(client, navigator, firmware, scalars,
+    approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[_KEY_A], challenger_pks=[_KEY_B])
 
     with pytest.raises(ExceptionRAPDU) as exc:
