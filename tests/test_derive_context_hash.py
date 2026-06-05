@@ -24,7 +24,6 @@ Reference values were pre-computed with Python using the same mnemonic:
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
@@ -178,8 +177,7 @@ def test_chunk_exceeds_declared_length_raises(client: RaggerClient):
 
 
 def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
-                                    firmware: DeviceType, bitcoin_network: str,
-                                    test_name: str, default_screenshot_path: Path):
+                                    firmware: DeviceType, bitcoin_network: str):
     """Calling DERIVE_CONTEXT_HASH while intent is loaded must invalidate the session.
 
     Covered more thoroughly in test_approve_vault_intent.py::test_approve_resets_session_derive_can_run.
@@ -189,7 +187,6 @@ def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
 
     HARDENED = 0x80000000
     ct = 0 if bitcoin_network == "main" else 1
-    vp = TEST_VP_KEY
     key_a = TEST_VALID_KEYS[0]
     key_b = TEST_VALID_KEYS[1]
     scalars = build_intent_tlv(
@@ -202,9 +199,7 @@ def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
         keeper_count=1, challenger_count=1,
     )
     approve_vault_intent_with_nav(client, navigator, firmware, scalars,
-                                  keeper_pks=[key_a], challenger_pks=[key_b],
-                                  path=default_screenshot_path,
-                                  test_case_name=test_name + "_" + bitcoin_network)
+                                  keeper_pks=[key_a], challenger_pks=[key_b])
 
     # DERIVE_CONTEXT_HASH must still work (and resets state to IDLE)
     hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")

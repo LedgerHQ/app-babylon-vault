@@ -238,6 +238,7 @@ def approve_vault_intent_with_nav(
     challenger_pks: List[bytes],
     path: Optional[Path] = None,
     test_case_name: Optional[Union[Path, str]] = None,
+    n_swipes: Optional[int] = None,
 ) -> None:
     """Send APPROVE_VAULT_INTENT APDUs and navigate the approval screen.
 
@@ -245,11 +246,13 @@ def approve_vault_intent_with_nav(
     The final batch triggers the display; it is sent asynchronously while the navigator
     confirms the review screen.
 
-    When path and test_case_name are provided, golden snapshot comparison is performed
-    via navigate_until_text_and_compare.  Otherwise navigate_until_text is used (no
-    snapshot saving or comparison).
+    When path and test_case_name are provided, snapshot comparison is performed:
+      - If n_swipes is given, navigate_and_compare is used with an explicit instruction
+        list (deterministic — use instructions.VAULT_INTENT_1K1C_SWIPES for 1K+1C data).
+      - If n_swipes is None, navigate_until_text_and_compare is used (timing-sensitive).
+    When path is None, navigate_until_text is used (no comparison).
     """
-    from .instructions import vault_intent_approve_nav
+    from .instructions import vault_intent_approve_nav, vault_intent_approve_instructions
 
     _approve_exchange(client, P1_SCALARS, scalars_tlv)
 
@@ -259,7 +262,6 @@ def approve_vault_intent_with_nav(
     for batch in batches[:-1]:
         _approve_exchange(client, P1_KEY_BATCH, b"".join(batch))
 
-    navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(firmware)
     with client.transport_client.exchange_async(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
@@ -268,15 +270,25 @@ def approve_vault_intent_with_nav(
         data=b"".join(batches[-1]),
     ):
         if path is not None and test_case_name is not None:
-            navigator.navigate_until_text_and_compare(
-                navigate_instruction=navigate_instr,
-                validation_instructions=confirm_instrs,
-                text=search_text,
-                path=path,
-                test_case_name=test_case_name,
-                screen_change_before_first_instruction=False,
-            )
+            if n_swipes is not None:
+                navigator.navigate_and_compare(
+                    path=path,
+                    test_case_name=test_case_name,
+                    instructions=vault_intent_approve_instructions(firmware, n_swipes),
+                    screen_change_before_first_instruction=False,
+                )
+            else:
+                navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(firmware)
+                navigator.navigate_until_text_and_compare(
+                    navigate_instruction=navigate_instr,
+                    validation_instructions=confirm_instrs,
+                    text=search_text,
+                    path=path,
+                    test_case_name=test_case_name,
+                    screen_change_before_first_instruction=False,
+                )
         else:
+            navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(firmware)
             navigator.navigate_until_text(
                 navigate_instruction=navigate_instr,
                 validation_instructions=confirm_instrs,

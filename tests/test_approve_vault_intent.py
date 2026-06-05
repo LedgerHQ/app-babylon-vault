@@ -46,6 +46,7 @@ from .vault_client import (
     TEST_VALID_KEYS,
     TEST_INVALID_XONLY_KEY,
 )
+from .instructions import VAULT_INTENT_1K1C_SWIPES
 
 # ---------------------------------------------------------------------------
 # Test fixtures and helpers
@@ -122,7 +123,8 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigato
     approve_vault_intent_with_nav(client, navigator, firmware, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=default_screenshot_path,
-                                  test_case_name=test_name + "_" + bitcoin_network)
+                                  test_case_name=test_name + "_" + bitcoin_network,
+                                  n_swipes=VAULT_INTENT_1K1C_SWIPES)
 
 
 def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
@@ -144,12 +146,14 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
     approve_vault_intent_with_nav(client, navigator, firmware, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=default_screenshot_path,
-                                  test_case_name=test_name + "_load1_" + bitcoin_network)
+                                  test_case_name=test_name + "_load1_" + bitcoin_network,
+                                  n_swipes=VAULT_INTENT_1K1C_SWIPES)
     # Second load — handler invalidates the first session and shows the screen again
     approve_vault_intent_with_nav(client, navigator, firmware, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=default_screenshot_path,
-                                  test_case_name=test_name + "_load2_" + bitcoin_network)
+                                  test_case_name=test_name + "_load2_" + bitcoin_network,
+                                  n_swipes=VAULT_INTENT_1K1C_SWIPES)
 
 
 def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, navigator: Navigator,
@@ -191,7 +195,8 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
     approve_vault_intent_with_nav(client, navigator, firmware, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=default_screenshot_path,
-                                  test_case_name=test_name + "_" + bitcoin_network)
+                                  test_case_name=test_name + "_" + bitcoin_network,
+                                  n_swipes=VAULT_INTENT_1K1C_SWIPES)
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
     hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")

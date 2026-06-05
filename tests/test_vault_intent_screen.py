@@ -36,7 +36,11 @@ from .vault_client import (
     TEST_VALID_KEYS,
     build_intent_tlv,
 )
-from .instructions import vault_intent_approve_nav, vault_intent_reject_nav
+from .instructions import (
+    vault_intent_approve_instructions,
+    vault_intent_reject_instructions,
+    VAULT_INTENT_1K1C_SWIPES,
+)
 
 ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
 
@@ -91,8 +95,6 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
     """
     _send_scalars(client, bitcoin_network)
 
-    navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(firmware)
-
     with client.transport_client.exchange_async(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
@@ -100,12 +102,10 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
         p2=P2_UNUSED,
         data=_KEY_A + _KEY_B,
     ):
-        navigator.navigate_until_text_and_compare(
-            navigate_instruction=navigate_instr,
-            validation_instructions=confirm_instrs,
-            text=search_text,
+        navigator.navigate_and_compare(
             path=ROOT_SCREENSHOT_PATH,
             test_case_name=test_name + "_" + bitcoin_network,
+            instructions=vault_intent_approve_instructions(firmware, VAULT_INTENT_1K1C_SWIPES),
             screen_change_before_first_instruction=False,
         )
 
@@ -123,8 +123,6 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
     """
     _send_scalars(client, bitcoin_network)
 
-    navigate_instr, reject_instrs, search_text = vault_intent_reject_nav(firmware)
-
     with pytest.raises(ExceptionRAPDU) as exc:
         with client.transport_client.exchange_async(
             cla=CLA_VAULT,
@@ -133,12 +131,10 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
             p2=P2_UNUSED,
             data=_KEY_A + _KEY_B,
         ):
-            navigator.navigate_until_text_and_compare(
-                navigate_instruction=navigate_instr,
-                validation_instructions=reject_instrs,
-                text=search_text,
+            navigator.navigate_and_compare(
                 path=ROOT_SCREENSHOT_PATH,
                 test_case_name=test_name + "_" + bitcoin_network,
+                instructions=vault_intent_reject_instructions(firmware, VAULT_INTENT_1K1C_SWIPES),
                 screen_change_before_first_instruction=False,
             )
     assert exc.value.status == 0x6985  # SW_DENY
