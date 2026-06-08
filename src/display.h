@@ -12,7 +12,7 @@ bool display_transaction(dispatcher_context_t *dc,
 /**
  * @brief Display the loaded vault intent for user review and approval.
  *
- * Shows all fields specified by NAPPS-1373: vault provider key, amounts, fee rate,
+ * Shows vault provider key, amounts, fee rate,
  * timelocks, and all keeper / challenger public keys.
  *
  * @return true   User approved; caller may proceed.

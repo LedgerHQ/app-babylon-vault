@@ -28,7 +28,8 @@ static void vault_review_choice(bool approved) {
 // stores pointers to them that must remain valid long term.
 static nbgl_layoutTagValue_t pairs[MAX_N_PAIRS];
 static nbgl_layoutTagValueList_t pairList;
-static char value_str[32], magic_value_str[32], fee_str[32];
+static char value_str[MAX_AMOUNT_LENGTH + 1], magic_value_str[MAX_AMOUNT_LENGTH + 1],
+    fee_str[MAX_AMOUNT_LENGTH + 1];
 
 bool display_transaction(dispatcher_context_t *dc,
                          int64_t value_spent,
@@ -101,20 +102,29 @@ bool display_transaction(dispatcher_context_t *dc,
 static nbgl_layoutTagValue_t vault_pairs[VAULT_INTENT_MAX_PAIRS];
 static nbgl_layoutTagValueList_t vault_pair_list;
 
+// 64 hex chars + NUL for a 32-byte x-only public key
+#define VAULT_HEX_KEY_STR_SIZE (2 * VAULT_XONLY_PUBKEY_LEN + 1)
+// "Challenger 32\0" is the longest possible key label
+#define VAULT_KEY_LABEL_SIZE 14
+// "4294967295 sat/vB\0" — base_fee_rate is cast to unsigned before formatting
+#define VAULT_FEE_RATE_STR_SIZE 20
+// "1008 blocks (~7 days)\0" + headroom
+#define VAULT_TIMELOCK_STR_SIZE 32
+
 // Scalar value string buffers
-static char vault_vp_key_str[65];  // 32-byte hex
+static char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];
 static char vault_amount_str[MAX_AMOUNT_LENGTH + 1];
 static char vault_commission_str[MAX_AMOUNT_LENGTH + 1];
 static char vault_claim_str[MAX_AMOUNT_LENGTH + 1];
-static char vault_fee_rate_str[20];  // "9999 sat/vB\0"
+static char vault_fee_rate_str[VAULT_FEE_RATE_STR_SIZE];
 static char vault_pegin_fee_str[MAX_AMOUNT_LENGTH + 1];
-static char vault_pegin_csv_str[32];
-static char vault_payout_tl_str[32];
-static char vault_refund_tl_str[32];
+static char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
+static char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
+static char vault_refund_tl_str[VAULT_TIMELOCK_STR_SIZE];
 
 // Key value and label string buffers (one entry per key slot)
-static char vault_key_strs[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][65];
-static char vault_key_labels[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][14];
+static char vault_key_strs[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_HEX_KEY_STR_SIZE];
+static char vault_key_labels[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_KEY_LABEL_SIZE];
 
 // 1 block ≈ 10 minutes. Examples: "100 blocks (~17 h)", "1008 blocks (~7 days)"
 static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
@@ -131,9 +141,11 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 #ifdef SCREEN_SIZE_WALLET
 #define VAULT_INTENT_REVIEW_TITLE "Review vault intent\nto approve vault\nparameters"
 #define VAULT_INTENT_FINISH_TITLE "Approve vault\nintent?"
+#define VAULT_VP_KEY_LABEL        "Vault provider key"
 #else
 #define VAULT_INTENT_REVIEW_TITLE "Review vault intent"
 #define VAULT_INTENT_FINISH_TITLE "Approve intent?"
+#define VAULT_VP_KEY_LABEL        "Provider key"
 #endif
 
 bool display_vault_intent(dispatcher_context_t *dc) {
@@ -146,7 +158,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
                vault_vp_key_str,
                sizeof(vault_vp_key_str));
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = "Vault provider key", .value = vault_vp_key_str};
+        (nbgl_layoutTagValue_t){.item = VAULT_VP_KEY_LABEL, .value = vault_vp_key_str};
 
     format_sats_amount(COIN_COINID_SHORT, G_vault_intent.vault_amount, vault_amount_str);
     vault_pairs[n++] = (nbgl_layoutTagValue_t){.item = "Vault amount", .value = vault_amount_str};

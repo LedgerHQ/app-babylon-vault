@@ -152,7 +152,6 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
     if (!display_vault_intent(dc)) {
-        // SW_DENY already sent; zero G_vault_intent and reset to IDLE.
         vault_context_invalidate(&G_vault_context);
         return;
     }

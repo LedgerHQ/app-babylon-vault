@@ -3,9 +3,8 @@
 #include "../../bitcoin_app_base/src/boilerplate/dispatcher.h"
 
 /**
- * @brief Stub handler for RELEASE_CONTEXT_SECRET (INS 0x82).
+ * @brief Handler for RELEASE_CONTEXT_SECRET (INS 0x82).
  *
- * Full implementation: NAPPS-1373.
  * Returns the 32-byte session secret s only when state == SESSION2_COMPLETE.
  * After returning: explicit_bzero(s), reset state to IDLE.
  * Rejected in all other states with SW_BAD_STATE.
