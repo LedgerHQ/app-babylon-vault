@@ -36,11 +36,12 @@ _CHUNK_SIZE     = 255
 _KEYS_PER_BATCH = 7   # 7 × 32 = 224 bytes ≤ 255
 
 # APDU status words
-SW_OK               = 0x9000
-SW_INCORRECT_DATA   = 0x6A80
+SW_OK                = 0x9000
+SW_DENY              = 0x6985
+SW_INCORRECT_DATA    = 0x6A80
 SW_WRONG_DATA_LENGTH = 0x6A87
-SW_WRONG_P1P2       = 0x6A86
-SW_BAD_STATE        = 0xB007
+SW_WRONG_P1P2        = 0x6A86
+SW_BAD_STATE         = 0xB007
 
 # Tag byte assignments — must match src/vault_intent_tags.h
 TAG_STRUCTURE_TYPE            = 0x01

@@ -32,6 +32,7 @@ from .vault_client import (
     P1_SCALARS,
     P1_KEY_BATCH,
     P2_UNUSED,
+    SW_DENY,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     build_intent_tlv,
@@ -131,4 +132,4 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
                 instructions=vault_intent_reject_instructions(device, vault_intent_1k1c_steps(device)),
                 screen_change_before_first_instruction=True,
             )
-    assert exc.value.status == 0x6985  # SW_DENY
+    assert exc.value.status == SW_DENY
