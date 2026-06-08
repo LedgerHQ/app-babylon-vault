@@ -41,29 +41,29 @@ bool display_transaction(dispatcher_context_t *dc,
     format_sats_amount(COIN_COINID_SHORT, fee, fee_str);
 
     int n_pairs = 0;
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t){
+    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
         .item = "Transaction type",
         .value = "FOO",
     };
 
     if (value_spent >= 0) {
-        pairs[n_pairs++] = (nbgl_layoutTagValue_t){
+        pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
             .item = "Value spent",
             .value = value_str,
         };
     } else {
-        pairs[n_pairs++] = (nbgl_layoutTagValue_t){
+        pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
             .item = "Value received",
             .value = value_str,
         };
     }
 
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t){
+    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
         .item = "Magic value",
         .value = magic_value_str,
     };
 
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t){
+    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
         .item = "Fee",
         .value = fee_str,
     };
@@ -158,46 +158,47 @@ bool display_vault_intent(dispatcher_context_t *dc) {
                vault_vp_key_str,
                sizeof(vault_vp_key_str));
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = VAULT_VP_KEY_LABEL, .value = vault_vp_key_str};
+        (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = vault_vp_key_str};
 
     format_sats_amount(COIN_COINID_SHORT, G_vault_intent.vault_amount, vault_amount_str);
-    vault_pairs[n++] = (nbgl_layoutTagValue_t){.item = "Vault amount", .value = vault_amount_str};
+    vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = vault_amount_str};
 
     format_sats_amount(COIN_COINID_SHORT, G_vault_intent.commission_fee, vault_commission_str);
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = "Commission fee", .value = vault_commission_str};
+        (nbgl_layoutTagValue_t) {.item = "Commission fee", .value = vault_commission_str};
 
     format_sats_amount(COIN_COINID_SHORT, G_vault_intent.depositor_claim_value, vault_claim_str);
-    vault_pairs[n++] = (nbgl_layoutTagValue_t){.item = "Depositor claim", .value = vault_claim_str};
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Depositor claim", .value = vault_claim_str};
 
     snprintf(vault_fee_rate_str,
              sizeof(vault_fee_rate_str),
              "%u sat/vB",
              (unsigned) G_vault_intent.base_fee_rate);
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = "Base fee rate", .value = vault_fee_rate_str};
+        (nbgl_layoutTagValue_t) {.item = "Base fee rate", .value = vault_fee_rate_str};
 
     format_sats_amount(COIN_COINID_SHORT, G_vault_intent.pegin_max_fee, vault_pegin_fee_str);
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = "Max PegIn fee", .value = vault_pegin_fee_str};
+        (nbgl_layoutTagValue_t) {.item = "Max PegIn fee", .value = vault_pegin_fee_str};
 
     format_timelock_blocks(G_vault_intent.pegin_csv_timelock,
                            vault_pegin_csv_str,
                            sizeof(vault_pegin_csv_str));
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = "PegIn timelock", .value = vault_pegin_csv_str};
+        (nbgl_layoutTagValue_t) {.item = "PegIn timelock", .value = vault_pegin_csv_str};
 
     format_timelock_blocks(G_vault_intent.payout_timelock,
                            vault_payout_tl_str,
                            sizeof(vault_payout_tl_str));
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = "Payout timelock", .value = vault_payout_tl_str};
+        (nbgl_layoutTagValue_t) {.item = "Payout timelock", .value = vault_payout_tl_str};
 
     format_timelock_blocks(G_vault_intent.htlc_refund_timelock,
                            vault_refund_tl_str,
                            sizeof(vault_refund_tl_str));
     vault_pairs[n++] =
-        (nbgl_layoutTagValue_t){.item = "Refund timelock", .value = vault_refund_tl_str};
+        (nbgl_layoutTagValue_t) {.item = "Refund timelock", .value = vault_refund_tl_str};
 
     // ---- Keeper public keys ----
 
@@ -208,7 +209,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
                    sizeof(vault_key_strs[i]));
         snprintf(vault_key_labels[i], sizeof(vault_key_labels[i]), "Keeper %u", i + 1u);
         vault_pairs[n++] =
-            (nbgl_layoutTagValue_t){.item = vault_key_labels[i], .value = vault_key_strs[i]};
+            (nbgl_layoutTagValue_t) {.item = vault_key_labels[i], .value = vault_key_strs[i]};
     }
 
     // ---- Challenger public keys ----
@@ -221,7 +222,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
                    sizeof(vault_key_strs[slot]));
         snprintf(vault_key_labels[slot], sizeof(vault_key_labels[slot]), "Challenger %u", i + 1u);
         vault_pairs[n++] =
-            (nbgl_layoutTagValue_t){.item = vault_key_labels[slot], .value = vault_key_strs[slot]};
+            (nbgl_layoutTagValue_t) {.item = vault_key_labels[slot], .value = vault_key_strs[slot]};
     }
 
     assert(n <= VAULT_INTENT_MAX_PAIRS);
