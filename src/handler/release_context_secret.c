@@ -19,23 +19,22 @@ void handler_release_context_secret(dispatcher_context_t *dc, const command_t *c
         return;
     }
 
-    // Copy the secret into the APDU staging buffer before zeroing it.
-    // add_to_response makes a copy, so the transition below (which calls
-    // vault_context_invalidate → explicit_bzero(htlc_preimage)) does not
-    // corrupt the staged bytes.
-    dc->add_to_response(G_vault_context.htlc_preimage, VAULT_HASH256_LEN);
+    // copy before transition; success path leaves htlc_preimage intact (we zero it below)
+    uint8_t preimage_copy[VAULT_HASH256_LEN];
+    memcpy(preimage_copy, G_vault_context.htlc_preimage, sizeof(preimage_copy));
 
-    // Transition SESSION2_COMPLETE → IDLE.  Internally calls
-    // vault_context_invalidate, which explicit_bzero's htlc_preimage.
-    // Secret is zeroed in device RAM before the packet leaves the device.
     if (!vault_context_transition(&G_vault_context,
                                   VAULT_STATE_SESSION2_COMPLETE,
                                   VAULT_STATE_IDLE)) {
-        // Unreachable: state was verified above. Guard against future refactors.
+        explicit_bzero(preimage_copy, sizeof(preimage_copy));
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
 
+    explicit_bzero(G_vault_context.htlc_preimage, VAULT_HASH256_LEN);
+
+    dc->add_to_response(preimage_copy, VAULT_HASH256_LEN);
+    explicit_bzero(preimage_copy, sizeof(preimage_copy));
     dc->finalize_response(SW_OK);
     dc->send_response();
 }

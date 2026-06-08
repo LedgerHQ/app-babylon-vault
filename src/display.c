@@ -224,6 +224,8 @@ bool display_vault_intent(dispatcher_context_t *dc) {
             (nbgl_layoutTagValue_t){.item = vault_key_labels[slot], .value = vault_key_strs[slot]};
     }
 
+    assert(n <= VAULT_INTENT_MAX_PAIRS);
+
     vault_pair_list.pairs = vault_pairs;
     vault_pair_list.nbPairs = n;
     vault_pair_list.nbMaxLinesForValue = 0;

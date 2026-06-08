@@ -267,6 +267,7 @@ def approve_vault_intent_with_nav(
     _approve_exchange(client, P1_SCALARS, scalars_tlv)
 
     all_keys = keeper_pks + challenger_pks
+    assert len(all_keys) > 0, "keeper_pks + challenger_pks must not be empty"
     batches = [all_keys[i : i + _KEYS_PER_BATCH] for i in range(0, len(all_keys), _KEYS_PER_BATCH)]
 
     for batch in batches[:-1]:
