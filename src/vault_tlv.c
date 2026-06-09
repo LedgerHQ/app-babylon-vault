@@ -81,10 +81,13 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 out->depositor_claim_value = U8BE(v, 0);
                 break;
 
-            case TAG_BASE_FEE_RATE:
+            case TAG_BASE_FEE_RATE: {
                 if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
-                out->base_fee_rate = U8BE(v, 0);
+                uint64_t rate = U8BE(v, 0);
+                if (rate > UINT32_MAX) return VAULT_TLV_ERR_VALIDATION;
+                out->base_fee_rate = rate;
                 break;
+            }
 
             case TAG_PEGIN_MAX_FEE:
                 if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;

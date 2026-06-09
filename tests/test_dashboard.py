@@ -1,14 +1,14 @@
-from ledgered.devices import Devices, DeviceType
+from ledgered.devices import Device
 from ragger.navigator import NavInsID, Navigator
 from pathlib import Path
 
 ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
 
 
-def test_dashboard(navigator: Navigator, firmware: DeviceType, test_name: str, bitcoin_network: str):
+def test_dashboard(navigator: Navigator, device: Device, test_name: str, bitcoin_network: str):
     # Tests that the text shown in the dashboard screens are the expected ones
 
-    if Devices.get_by_type(firmware).is_nano:
+    if device.is_nano:
         instructions = [
             NavInsID.RIGHT_CLICK,
             NavInsID.RIGHT_CLICK,

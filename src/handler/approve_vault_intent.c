@@ -1,6 +1,7 @@
 #include "approve_vault_intent.h"
 #include "approve_vault_intent_core.h"
 
+#include "../display.h"
 #include "../globals.h"
 #include "../vault_context.h"
 #include "../vault_tlv.h"
@@ -46,6 +47,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     }
 
     vault_context_invalidate(&G_vault_context);
+    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
 
     if (preserve_htlc) {
         memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);
@@ -89,6 +91,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     }
 
     if (cmd->lc == 0 || cmd->lc % VAULT_XONLY_PUBKEY_LEN != 0) {
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_WRONG_DATA_LENGTH);
         return;
     }
@@ -148,9 +151,12 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         return;
     }
 
-    /* Intent fully loaded.
-     * NOTE: NAPPS-1373 inserts display_vault_intent(dc) here before the transition. */
+    /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
+    if (!display_vault_intent(dc)) {
+        vault_context_invalidate(&G_vault_context);
+        return;
+    }
     if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_INTENT_LOADED)) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
