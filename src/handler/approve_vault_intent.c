@@ -47,6 +47,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     }
 
     vault_context_invalidate(&G_vault_context);
+    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
 
     if (preserve_htlc) {
         memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);
@@ -90,6 +91,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     }
 
     if (cmd->lc == 0 || cmd->lc % VAULT_XONLY_PUBKEY_LEN != 0) {
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_WRONG_DATA_LENGTH);
         return;
     }

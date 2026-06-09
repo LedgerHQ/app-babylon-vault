@@ -106,7 +106,7 @@ static nbgl_layoutTagValueList_t vault_pair_list;
 #define VAULT_HEX_KEY_STR_SIZE (2 * VAULT_XONLY_PUBKEY_LEN + 1)
 // "Challenger 32\0" is the longest possible key label
 #define VAULT_KEY_LABEL_SIZE 14
-// "4294967295 sat/vB\0" — base_fee_rate is cast to unsigned before formatting
+// "4294967295 sat/vB\0" — TLV parser rejects base_fee_rate > UINT32_MAX, so cast is safe
 #define VAULT_FEE_RATE_STR_SIZE 20
 // "1008 blocks (~7 days)\0" + headroom
 #define VAULT_TIMELOCK_STR_SIZE 32

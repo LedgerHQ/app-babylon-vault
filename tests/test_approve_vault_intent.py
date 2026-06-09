@@ -29,8 +29,11 @@ from .vault_client import (
     derive_context_hash,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
+    INS_DERIVE_CONTEXT_HASH,
     P1_SCALARS,
     P1_KEY_BATCH,
+    P1_INITIAL,
+    P1_CONTINUE,
     P2_UNUSED,
     SW_INCORRECT_DATA,
     SW_WRONG_DATA_LENGTH,
@@ -498,4 +501,81 @@ def test_depositor_key_collision_as_challenger(client: RaggerClient, bitcoin_net
     # → no lex-order check; KEY_A != depositor_key so no duplicate rejection).
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + depositor_key)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# Streaming state isolation
+# ---------------------------------------------------------------------------
+
+def test_approve_p1_scalars_clears_hkdf_stream(client: RaggerClient, bitcoin_network: str):
+    """APPROVE_VAULT_INTENT P1=0x00 must clear an in-flight DERIVE_CONTEXT_HASH stream.
+
+    Before the fix, vault_context_invalidate() did not touch G_hkdf_stream, so
+    G_hkdf_stream.active remained true after the approve scalar payload was processed.
+    A subsequent DERIVE_CONTEXT_HASH P1=0x01 would then pass its sole active-check
+    gate and feed adversary-controlled bytes into the HKDF.
+
+    After the fix, the approve handler zeroes G_hkdf_stream, so the continuation
+    must be rejected with SW_BAD_STATE.
+    """
+    app_name = b"BabylonVault"
+    # Start a DERIVE_CONTEXT_HASH stream (declare 10 bytes of context, send none).
+    # This sets G_hkdf_stream.active = true and leaves the stream incomplete.
+    initial = bytes([len(app_name)]) + app_name + (10).to_bytes(2, "big")
+    client.transport_client.exchange(
+        cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+        p1=P1_INITIAL, p2=P2_UNUSED, data=initial,
+    )
+
+    # Send APPROVE_VAULT_INTENT P1=0x00 — must clear G_hkdf_stream.
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # DERIVE_CONTEXT_HASH P1=0x01 must now be rejected because active == false.
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(
+            cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+            p1=P1_CONTINUE, p2=P2_UNUSED, data=b"A" * 10,
+        )
+    assert exc.value.status == SW_BAD_STATE
+
+
+def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_network: str):
+    """DERIVE_CONTEXT_HASH P1=0x00 must clear G_approve_intent_state even when state is IDLE.
+
+    Before the fix, handle_initial_chunk only called vault_context_invalidate() when
+    state != IDLE, so G_approve_intent_state.scalars_loaded survived a mid-approve
+    injection of DERIVE_CONTEXT_HASH P1=0x00.  A subsequent APPROVE_VAULT_INTENT P1=0x01
+    would then pass its scalars_loaded gate with stale state.
+
+    After the fix, handle_initial_chunk unconditionally zeroes G_approve_intent_state,
+    so the key-batch must be rejected with SW_BAD_STATE.
+    """
+    # Send APPROVE_VAULT_INTENT P1=0x00 — sets scalars_loaded=true, state stays IDLE.
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Inject DERIVE_CONTEXT_HASH P1=0x00 — must clear G_approve_intent_state.
+    derive_context_hash(client, app_name=b"BabylonVault", context=b"")
+
+    # APPROVE_VAULT_INTENT P1=0x01 must now fail because scalars_loaded == false.
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
+    assert exc.value.status == SW_BAD_STATE
+
+
+# ---------------------------------------------------------------------------
+# TLV field range validation
+# ---------------------------------------------------------------------------
+
+def test_base_fee_rate_overflow_rejected(client: RaggerClient, bitcoin_network: str):
+    """base_fee_rate > UINT32_MAX must return SW_INCORRECT_DATA.
+
+    The field is encoded as a uint64 on the wire; the firmware rejects values that
+    exceed UINT32_MAX so the display cast to (unsigned) is always safe.
+    """
+    scalars = _make_scalars(bitcoin_network, base_fee_rate=0x100000000)  # 2^32
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
     assert exc.value.status == SW_INCORRECT_DATA
