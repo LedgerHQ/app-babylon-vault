@@ -57,6 +57,9 @@ typedef struct {
     /** Depositor BIP-32 derivation path: m/86'/coin_type'/account'/change/index. */
     uint32_t depositor_path[VAULT_DEPOSITOR_PATH_LEN];
 
+    /** Depositor x-only public key. Derived from depositor_path at APPROVE_VAULT_INTENT time. */
+    uint8_t depositor_pk[VAULT_XONLY_PUBKEY_LEN];
+
     /** Total vault amount in satoshis. Must be > commission_fee + 2*DUST. */
     uint64_t vault_amount;
 

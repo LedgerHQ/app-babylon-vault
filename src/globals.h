@@ -5,6 +5,7 @@
 
 #include "vault_intent.h"
 #include "vault_context.h"
+#include "vault_script.h"
 
 #include "cx.h"
 
@@ -54,3 +55,12 @@ typedef struct {
 
 /** In-flight APPROVE_VAULT_INTENT parse state. */
 extern approve_intent_state_t G_approve_intent_state;
+
+/**
+ * Shared scratch buffer for vault leaf script construction.
+ *
+ * Used by vault_build_*_scriptpubkey and vault_build_htlc_merkle_root to hold
+ * one leaf script at a time before hashing it.  Never live across a function
+ * return — callers must not assume its contents are preserved.
+ */
+extern uint8_t G_vault_script_scratch[VAULT_SCRIPT_MAX_LEN];

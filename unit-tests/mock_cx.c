@@ -1,14 +1,19 @@
 /**
- * Software implementations of Ledger SDK cx_ functions used by derive_context_hash_core.h.
+ * Software implementations of Ledger SDK cx_ functions used by vault unit tests.
  *
- * SHA-256 implementation: public domain, FIPS 180-4 (Brad Conte / multiple contributors).
- * HMAC-SHA256: standard RFC 2104 construction on top of the software SHA-256.
+ * SHA-256: public domain, FIPS 180-4 (Brad Conte / multiple contributors).
+ * HMAC-SHA256: RFC 2104 construction on top of the software SHA-256.
+ * Tagged hashes (BIP-340/341): software construction using sha256_sw.
+ * Taproot key tweak: secp256k1_xonly_pubkey_tweak_add from libsecp256k1.
  * BIP-32 mock: returns a fixed 0x42-filled private key for reproducible test vectors.
  */
 
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
 
 #include "mocks/cx.h"
 #include "mocks/crypto_helpers.h"
@@ -213,4 +218,114 @@ cx_err_t bip32_derive_init_privkey_256(cx_curve_t                 curve,
     privkey->d_len = 32u;
     memset(privkey->d, 0x42, 32u);
     return CX_OK;
+}
+
+// ---------------------------------------------------------------------------
+// cx_hash_no_throw — streaming SHA-256 via sha256_sw
+// ---------------------------------------------------------------------------
+
+cx_err_t cx_hash_no_throw(cx_hash_t     *hash,
+                           int            mode,
+                           const uint8_t *in,
+                           size_t         in_len,
+                           uint8_t       *out,
+                           size_t         out_len) {
+    if (in_len > 0 && in != NULL) {
+        sha256_sw_update(hash, in, in_len);
+    }
+    if (mode & (int)CX_LAST) {
+        if (out == NULL || out_len < 32u) return CX_ERROR;
+        sha256_sw_final(hash, out);
+    }
+    return CX_OK;
+}
+
+void cx_sha256_init(cx_sha256_t *ctx) {
+    sha256_sw_init(&ctx->header);
+}
+
+// ---------------------------------------------------------------------------
+// Taproot tagged-hash helpers (BIP-340 / BIP-341)
+// ---------------------------------------------------------------------------
+
+void crypto_tr_tagged_hash_init(cx_sha256_t   *ctx,
+                                 const uint8_t *tag,
+                                 uint16_t       tag_len) {
+    uint8_t tag_hash[32];
+    sha256_sw_oneshot(tag, tag_len, tag_hash);
+    sha256_sw_init(&ctx->header);
+    sha256_sw_update(&ctx->header, tag_hash, 32u);
+    sha256_sw_update(&ctx->header, tag_hash, 32u);
+}
+
+void crypto_tr_tapleaf_hash_init(cx_sha256_t *ctx) {
+    static const uint8_t TAG[] = {'T', 'a', 'p', 'L', 'e', 'a', 'f'};
+    crypto_tr_tagged_hash_init(ctx, TAG, sizeof(TAG));
+}
+
+void crypto_tr_combine_taptree_hashes(const uint8_t left[32],
+                                       const uint8_t right[32],
+                                       uint8_t       out[32]) {
+    static const uint8_t TAG[] = {'T', 'a', 'p', 'B', 'r', 'a', 'n', 'c', 'h'};
+    // BIP-341: sort the two children lexicographically before hashing.
+    const uint8_t *a = left, *b = right;
+    if (memcmp(a, b, 32) > 0) { const uint8_t *t = a; a = b; b = t; }
+
+    uint8_t tag_hash[32];
+    sha256_sw_oneshot(TAG, sizeof(TAG), tag_hash);
+
+    sha256_sw_t ctx;
+    sha256_sw_init(&ctx);
+    sha256_sw_update(&ctx, tag_hash, 32u);
+    sha256_sw_update(&ctx, tag_hash, 32u);
+    sha256_sw_update(&ctx, a, 32u);
+    sha256_sw_update(&ctx, b, 32u);
+    sha256_sw_final(&ctx, out);
+}
+
+// ---------------------------------------------------------------------------
+// crypto_tr_tweak_pubkey — BIP-341 taproot key tweak via libsecp256k1
+// ---------------------------------------------------------------------------
+
+int crypto_tr_tweak_pubkey(const uint8_t  pubkey[32],
+                            const uint8_t *h,
+                            size_t         h_len,
+                            uint8_t       *y_parity,
+                            uint8_t        out[32]) {
+    // t = tagged_hash("TapTweak", pubkey || h)
+    static const uint8_t TAG[] = {'T', 'a', 'p', 'T', 'w', 'e', 'a', 'k'};
+    uint8_t tag_hash[32], tweak[32];
+    sha256_sw_oneshot(TAG, sizeof(TAG), tag_hash);
+
+    sha256_sw_t ctx;
+    sha256_sw_init(&ctx);
+    sha256_sw_update(&ctx, tag_hash, 32u);
+    sha256_sw_update(&ctx, tag_hash, 32u);
+    sha256_sw_update(&ctx, pubkey, 32u);
+    if (h != NULL && h_len > 0) sha256_sw_update(&ctx, h, h_len);
+    sha256_sw_final(&ctx, tweak);
+
+    secp256k1_context *sctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    if (sctx == NULL) return -1;
+
+    secp256k1_xonly_pubkey xonly_pk;
+    if (!secp256k1_xonly_pubkey_parse(sctx, &xonly_pk, pubkey)) {
+        secp256k1_context_destroy(sctx);
+        return -1;
+    }
+
+    secp256k1_pubkey tweaked_pk;
+    if (!secp256k1_xonly_pubkey_tweak_add(sctx, &tweaked_pk, &xonly_pk, tweak)) {
+        secp256k1_context_destroy(sctx);
+        return -1;
+    }
+
+    secp256k1_xonly_pubkey tweaked_xonly;
+    int parity = 0;
+    secp256k1_xonly_pubkey_from_pubkey(sctx, &tweaked_xonly, &parity, &tweaked_pk);
+    secp256k1_xonly_pubkey_serialize(sctx, out, &tweaked_xonly);
+    if (y_parity != NULL) *y_parity = (uint8_t)parity;
+
+    secp256k1_context_destroy(sctx);
+    return 0;
 }

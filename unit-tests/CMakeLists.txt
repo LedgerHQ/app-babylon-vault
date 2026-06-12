@@ -48,7 +48,7 @@ add_executable(test_vault_context
 )
 
 target_compile_definitions(test_vault_context PRIVATE TEST)
-target_link_libraries(test_vault_context cmocka)
+target_link_libraries(test_vault_context cmocka secp256k1)
 
 add_test(NAME test_vault_context COMMAND test_vault_context)
 
@@ -62,7 +62,7 @@ add_executable(test_derive_context_hash
 )
 
 target_compile_definitions(test_derive_context_hash PRIVATE TEST)
-target_link_libraries(test_derive_context_hash cmocka)
+target_link_libraries(test_derive_context_hash cmocka secp256k1)
 
 add_test(NAME test_derive_context_hash COMMAND test_derive_context_hash)
 
@@ -86,3 +86,25 @@ target_compile_definitions(test_vault_tlv PRIVATE
 target_link_libraries(test_vault_tlv cmocka)
 
 add_test(NAME test_vault_tlv COMMAND test_vault_tlv)
+
+# -----------------------------------------------------------------------
+# test_vault_script
+#
+# Tests vault_script.c leaf builders, taproot primitives, scriptpubkey
+# derivation, and PegIn txid computation.
+# mock_cx.c provides SHA-256 + taproot tagged-hash + secp256k1 tweak.
+# -----------------------------------------------------------------------
+add_executable(test_vault_script
+  test_vault_script.c
+  mock_cx.c
+  ${SRC_DIR}/vault_script.c
+  ${SRC_DIR}/globals.c
+)
+
+target_compile_definitions(test_vault_script PRIVATE
+  TEST
+  BIP44_COIN_TYPE=1
+)
+target_link_libraries(test_vault_script cmocka secp256k1)
+
+add_test(NAME test_vault_script COMMAND test_vault_script)

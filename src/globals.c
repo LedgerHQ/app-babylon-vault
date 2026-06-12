@@ -18,7 +18,8 @@
 // Combined globals budget (Nano S+ has 40 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t        ≤ 3072 B
 //   vault_context_t       ≤  128 B
-//   combined              ≤ 3200 B  (well within remaining ~31.8 KB)
+//   G_vault_script_scratch  2560 B  (shared leaf-script scratch; never live across a return)
+//   combined              ≤ 5760 B  (well within remaining ~31.8 KB)
 // ---------------------------------------------------------------------------
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
@@ -26,8 +27,11 @@ _Static_assert(sizeof(vault_intent_t) <= 3072,
 _Static_assert(sizeof(vault_context_t) <= 128, "vault_context_t exceeds expected size");
 _Static_assert(sizeof(hkdf_stream_t) <= 512, "hkdf_stream_t exceeds expected size");
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
+_Static_assert(VAULT_SCRIPT_MAX_LEN == 2560,
+               "G_vault_script_scratch size changed; update budget comment");
 
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
 hkdf_stream_t G_hkdf_stream;
 approve_intent_state_t G_approve_intent_state;
+uint8_t G_vault_script_scratch[VAULT_SCRIPT_MAX_LEN];
