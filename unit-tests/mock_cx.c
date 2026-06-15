@@ -12,9 +12,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#include <secp256k1.h>
-#include <secp256k1_extrakeys.h>
-
 #include "mocks/cx.h"
 #include "mocks/crypto_helpers.h"
 
@@ -198,10 +195,12 @@ void cx_hkdf_extract(cx_md_t        hash_id,
                      uint8_t       *prk) {
     (void)hash_id;
     cx_hmac_sha256_t hmac;
-    (void)cx_hmac_sha256_init_no_throw(&hmac, salt, salt_len);
-    (void)cx_hmac_update(&hmac, ikm, ikm_len);
     size_t len = 32u;
-    (void)cx_hmac_final(&hmac, prk, &len);
+    cx_err_t rc;
+    rc = cx_hmac_sha256_init_no_throw(&hmac, salt, salt_len);
+    rc = cx_hmac_update(&hmac, ikm, ikm_len);
+    rc = cx_hmac_final(&hmac, prk, &len);
+    (void)rc;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +283,10 @@ void crypto_tr_combine_taptree_hashes(const uint8_t left[32],
 }
 
 // ---------------------------------------------------------------------------
-// crypto_tr_tweak_pubkey — BIP-341 taproot key tweak via libsecp256k1
+// crypto_tr_tweak_pubkey — stub for unit tests (no libsecp256k1 needed)
+//
+// Real EC tweak replaced by SHA-256(pubkey || h): deterministic, input-sensitive,
+// and sufficient for tests that only check P2TR format and cross-intent uniqueness.
 // ---------------------------------------------------------------------------
 
 int crypto_tr_tweak_pubkey(const uint8_t  pubkey[32],
@@ -292,40 +294,11 @@ int crypto_tr_tweak_pubkey(const uint8_t  pubkey[32],
                             size_t         h_len,
                             uint8_t       *y_parity,
                             uint8_t        out[32]) {
-    // t = tagged_hash("TapTweak", pubkey || h)
-    static const uint8_t TAG[] = {'T', 'a', 'p', 'T', 'w', 'e', 'a', 'k'};
-    uint8_t tag_hash[32], tweak[32];
-    sha256_sw_oneshot(TAG, sizeof(TAG), tag_hash);
-
     sha256_sw_t ctx;
     sha256_sw_init(&ctx);
-    sha256_sw_update(&ctx, tag_hash, 32u);
-    sha256_sw_update(&ctx, tag_hash, 32u);
     sha256_sw_update(&ctx, pubkey, 32u);
     if (h != NULL && h_len > 0) sha256_sw_update(&ctx, h, h_len);
-    sha256_sw_final(&ctx, tweak);
-
-    secp256k1_context *sctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
-    if (sctx == NULL) return -1;
-
-    secp256k1_xonly_pubkey xonly_pk;
-    if (!secp256k1_xonly_pubkey_parse(sctx, &xonly_pk, pubkey)) {
-        secp256k1_context_destroy(sctx);
-        return -1;
-    }
-
-    secp256k1_pubkey tweaked_pk;
-    if (!secp256k1_xonly_pubkey_tweak_add(sctx, &tweaked_pk, &xonly_pk, tweak)) {
-        secp256k1_context_destroy(sctx);
-        return -1;
-    }
-
-    secp256k1_xonly_pubkey tweaked_xonly;
-    int parity = 0;
-    secp256k1_xonly_pubkey_from_pubkey(sctx, &tweaked_xonly, &parity, &tweaked_pk);
-    secp256k1_xonly_pubkey_serialize(sctx, out, &tweaked_xonly);
-    if (y_parity != NULL) *y_parity = (uint8_t)parity;
-
-    secp256k1_context_destroy(sctx);
+    sha256_sw_final(&ctx, out);
+    if (y_parity != NULL) *y_parity = 0;
     return 0;
 }

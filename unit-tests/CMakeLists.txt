@@ -48,7 +48,7 @@ add_executable(test_vault_context
 )
 
 target_compile_definitions(test_vault_context PRIVATE TEST)
-target_link_libraries(test_vault_context cmocka secp256k1)
+target_link_libraries(test_vault_context cmocka)
 
 add_test(NAME test_vault_context COMMAND test_vault_context)
 
@@ -62,7 +62,7 @@ add_executable(test_derive_context_hash
 )
 
 target_compile_definitions(test_derive_context_hash PRIVATE TEST)
-target_link_libraries(test_derive_context_hash cmocka secp256k1)
+target_link_libraries(test_derive_context_hash cmocka)
 
 add_test(NAME test_derive_context_hash COMMAND test_derive_context_hash)
 
@@ -105,6 +105,6 @@ target_compile_definitions(test_vault_script PRIVATE
   TEST
   BIP44_COIN_TYPE=1
 )
-target_link_libraries(test_vault_script cmocka secp256k1)
+target_link_libraries(test_vault_script cmocka)
 
 add_test(NAME test_vault_script COMMAND test_vault_script)
