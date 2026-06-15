@@ -47,7 +47,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     }
 
     vault_context_invalidate(&G_vault_context);
-    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+    explicit_bzero(&G_scratch.hkdf, sizeof(G_scratch.hkdf));
 
     if (preserve_htlc) {
         memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);
@@ -76,7 +76,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     }
     explicit_bzero(tmp_point, sizeof(tmp_point));
 
-    G_approve_intent_state.scalars_loaded = true;
+    G_scratch.approve.scalars_loaded = true;
     SEND_SW(dc, SW_OK);
 }
 
@@ -85,7 +85,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
  * ---------------------------------------------------------------------- */
 
 static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
-    if (!G_approve_intent_state.scalars_loaded) {
+    if (!G_scratch.approve.scalars_loaded) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
@@ -99,7 +99,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     uint8_t n_keys = cmd->lc / VAULT_XONLY_PUBKEY_LEN;
     uint8_t total_expected = G_vault_intent.keeper_count + G_vault_intent.challenger_count;
 
-    if ((uint16_t) G_approve_intent_state.keys_received + n_keys > total_expected) {
+    if ((uint16_t) G_scratch.approve.keys_received + n_keys > total_expected) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
@@ -119,17 +119,17 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         }
 
         vault_key_err_t err = vault_validate_and_store_key(&G_vault_intent,
-                                                           G_approve_intent_state.keys_received,
+                                                           G_scratch.approve.keys_received,
                                                            key);
         if (err != VAULT_KEY_OK) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return;
         }
-        G_approve_intent_state.keys_received++;
+        G_scratch.approve.keys_received++;
     }
 
-    if (G_approve_intent_state.keys_received < total_expected) {
+    if (G_scratch.approve.keys_received < total_expected) {
         SEND_SW(dc, SW_OK);
         return;
     }
@@ -152,7 +152,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     }
 
     /* Intent fully loaded — show approval screen before committing the transition. */
-    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
+    explicit_bzero(&G_scratch.approve, sizeof(G_scratch.approve));
     if (!display_vault_intent(dc)) {
         vault_context_invalidate(&G_vault_context);
         return;

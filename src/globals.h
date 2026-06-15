@@ -36,9 +36,6 @@ typedef struct {
     cx_hmac_sha256_t hmac;
 } hkdf_stream_t;
 
-/** In-flight HKDF streaming state for the ongoing DERIVE_CONTEXT_HASH exchange. */
-extern hkdf_stream_t G_hkdf_stream;
-
 /**
  * @brief In-flight state for a two-phase APPROVE_VAULT_INTENT exchange.
  *
@@ -53,14 +50,20 @@ typedef struct {
     uint8_t keys_received;
 } approve_intent_state_t;
 
-/** In-flight APPROVE_VAULT_INTENT parse state. */
-extern approve_intent_state_t G_approve_intent_state;
-
 /**
- * Shared scratch buffer for vault leaf script construction.
+ * Mutually-exclusive scratch union.
  *
- * Used by vault_build_*_scriptpubkey and vault_build_htlc_merkle_root to hold
- * one leaf script at a time before hashing it.  Never live across a function
- * return — callers must not assume its contents are preserved.
+ * Each member is live in exactly one handler and is zeroed before use:
+ *   - hkdf          DERIVE_CONTEXT_HASH only
+ *   - approve       APPROVE_VAULT_INTENT only
+ *   - script_scratch  vault_build_* signing hooks (never live during either above)
+ *
+ * Union saves ~520 B vs three separate globals (3080 B → 2560 B).
  */
-extern uint8_t G_vault_script_scratch[VAULT_SCRIPT_MAX_LEN];
+typedef union {
+    hkdf_stream_t          hkdf;
+    approve_intent_state_t approve;
+    uint8_t                script_scratch[VAULT_SCRIPT_MAX_LEN];
+} vault_scratch_t;
+
+extern vault_scratch_t G_scratch;

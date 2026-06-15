@@ -14,7 +14,7 @@
 
 static inline void abort_stream(void) {
     vault_context_invalidate(&G_vault_context);
-    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+    explicit_bzero(&G_scratch.hkdf, sizeof(G_scratch.hkdf));
 }
 
 static inline void send_hashlock(dispatcher_context_t *dc) {
@@ -29,8 +29,8 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
     if (G_vault_context.state != VAULT_STATE_IDLE) {
         vault_context_invalidate(&G_vault_context);
     }
-    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
-    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
+    explicit_bzero(&G_scratch.hkdf, sizeof(G_scratch.hkdf));
+    explicit_bzero(&G_scratch.approve, sizeof(G_scratch.approve));
 
     // Parse: app_name_len(1B) | app_name(≤64B) | context_total_len(2B BE)
     if (cmd->lc < 3u) {
@@ -48,21 +48,21 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
     uint16_t context_total_len =
         ((uint16_t) cmd->data[1u + app_name_len] << 8) | (uint16_t) cmd->data[2u + app_name_len];
 
-    if (!hkdf_stream_begin(&G_hkdf_stream, app_name, app_name_len, context_total_len)) {
+    if (!hkdf_stream_begin(&G_scratch.hkdf, app_name, app_name_len, context_total_len)) {
         abort_stream();
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
 
     if (context_total_len == 0u) {
-        if (!hkdf_stream_finalize(&G_hkdf_stream,
+        if (!hkdf_stream_finalize(&G_scratch.hkdf,
                                   G_vault_context.htlc_preimage,
                                   G_vault_context.htlc_hashlock)) {
             abort_stream();
             SEND_SW(dc, SW_BAD_STATE);
             return;
         }
-        explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+        explicit_bzero(&G_scratch.hkdf, sizeof(G_scratch.hkdf));
         if (!vault_context_transition(&G_vault_context,
                                       VAULT_STATE_IDLE,
                                       VAULT_STATE_HASH_DERIVED)) {
@@ -73,42 +73,42 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
 
-    G_hkdf_stream.active = true;
+    G_scratch.hkdf.active = true;
     SEND_SW(dc, SW_OK);
 }
 
 static void handle_context_chunk(dispatcher_context_t *dc, const command_t *cmd) {
-    if (!G_hkdf_stream.active) {
+    if (!G_scratch.hkdf.active) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
 
-    uint16_t remaining = G_hkdf_stream.context_total_len - G_hkdf_stream.context_received_len;
+    uint16_t remaining = G_scratch.hkdf.context_total_len - G_scratch.hkdf.context_received_len;
     if (cmd->lc > remaining) {
         abort_stream();
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
 
-    if (!hkdf_stream_feed(&G_hkdf_stream, cmd->data, cmd->lc)) {
+    if (!hkdf_stream_feed(&G_scratch.hkdf, cmd->data, cmd->lc)) {
         abort_stream();
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
 
-    G_hkdf_stream.context_received_len += cmd->lc;
+    G_scratch.hkdf.context_received_len += cmd->lc;
 
     bool all_context_received =
-        (G_hkdf_stream.context_received_len == G_hkdf_stream.context_total_len);
+        (G_scratch.hkdf.context_received_len == G_scratch.hkdf.context_total_len);
     if (all_context_received) {
-        if (!hkdf_stream_finalize(&G_hkdf_stream,
+        if (!hkdf_stream_finalize(&G_scratch.hkdf,
                                   G_vault_context.htlc_preimage,
                                   G_vault_context.htlc_hashlock)) {
             abort_stream();
             SEND_SW(dc, SW_BAD_STATE);
             return;
         }
-        explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+        explicit_bzero(&G_scratch.hkdf, sizeof(G_scratch.hkdf));
         if (!vault_context_transition(&G_vault_context,
                                       VAULT_STATE_IDLE,
                                       VAULT_STATE_HASH_DERIVED)) {

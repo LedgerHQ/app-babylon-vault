@@ -11,19 +11,34 @@
  *   Unit tests   : unit-tests/mocks/cx.h + unit-tests/mock_cx.c
  */
 #include "cx.h"
+#include "common/script.h"
+
+#define OP_PUSHBYTES_32        0x20u  /* push exactly 32 bytes (x-only pubkey or hash) */
+#define TAPSCRIPT_LEAF_VERSION 0xC0u  /* BIP-341 tapscript leaf version */
+
+/* Bitcoin compact-size (varint) prefix bytes */
+#define VARINT_PREFIX_2BYTE    0xFDu
+#define VARINT_PREFIX_4BYTE    0xFEu
+#define VARINT_PREFIX_8BYTE    0xFFu
+
+/* PegIn transaction serialization constants */
+#define PEGIN_TX_VERSION       2u           /* version 2 required for CSV (BIP-68) */
+#define PEGIN_TX_SEQUENCE      0xFFFFFFFEu  /* enables nLockTime; one below SEQUENCE_FINAL */
+#define PEGIN_TX_LOCKTIME      0u
+#define PEGIN_TX_SIZE          137u         /* exact non-witness serialization length */
 
 /* Forward-declare the three btcext taproot functions vault_script.c uses.
  * On device these are implemented in bitcoin_app_base/src/crypto.c and
  * linked via the btcext base; in tests they come from mock_cx.c. */
 void crypto_tr_tapleaf_hash_init(cx_sha256_t *ctx);
-void crypto_tr_combine_taptree_hashes(const uint8_t left[32],
-                                      const uint8_t right[32],
-                                      uint8_t out[32]);
-int crypto_tr_tweak_pubkey(const uint8_t pubkey[32],
+void crypto_tr_combine_taptree_hashes(const uint8_t left[VAULT_HASH256_LEN],
+                                      const uint8_t right[VAULT_HASH256_LEN],
+                                      uint8_t out[VAULT_HASH256_LEN]);
+int crypto_tr_tweak_pubkey(const uint8_t pubkey[VAULT_XONLY_PUBKEY_LEN],
                            const uint8_t *h,
                            size_t h_len,
                            uint8_t *y_parity,
-                           uint8_t out[32]);
+                           uint8_t out[VAULT_XONLY_PUBKEY_LEN]);
 
 /* --------------------------------------------------------------------------
  * Local streaming-hash helpers — thin wrappers around cx_hash_no_throw.
@@ -37,8 +52,8 @@ static inline void _hash_update_u8(cx_hash_t *ctx, uint8_t b) {
     (void) cx_hash_no_throw(ctx, 0, &b, 1u, NULL, 0);
 }
 
-static inline void _hash_final(cx_hash_t *ctx, uint8_t out[32]) {
-    (void) cx_hash_no_throw(ctx, (int) CX_LAST, NULL, 0, out, 32u);
+static inline void _hash_final(cx_hash_t *ctx, uint8_t out[VAULT_HASH256_LEN]) {
+    (void) cx_hash_no_throw(ctx, (int) CX_LAST, NULL, 0, out, VAULT_HASH256_LEN);
 }
 
 /* --------------------------------------------------------------------------
@@ -48,22 +63,22 @@ static inline void _hash_final(cx_hash_t *ctx, uint8_t out[32]) {
  * ----------------------------------------------------------------------- */
 
 static int _varint_write(uint8_t *buf, uint64_t v) {
-    if (v < 0xFDu) {
+    if (v < VARINT_PREFIX_2BYTE) {
         buf[0] = (uint8_t) v;
         return 1;
     }
     if (v <= 0xFFFFu) {
-        buf[0] = 0xFDu;
+        buf[0] = VARINT_PREFIX_2BYTE;
         buf[1] = (uint8_t) (v);
         buf[2] = (uint8_t) (v >> 8);
         return 3;
     }
     if (v <= 0xFFFFFFFFu) {
-        buf[0] = 0xFEu;
+        buf[0] = VARINT_PREFIX_4BYTE;
         for (int i = 1; i <= 4; i++) buf[i] = (uint8_t) (v >> ((i - 1) * 8));
         return 5;
     }
-    buf[0] = 0xFFu;
+    buf[0] = VARINT_PREFIX_8BYTE;
     for (int i = 1; i <= 8; i++) buf[i] = (uint8_t) (v >> ((i - 1) * 8));
     return 9;
 }
@@ -74,7 +89,7 @@ static int _varint_write(uint8_t *buf, uint64_t v) {
  * All vault P2TR outputs use this x-only key so no key-path spend is possible.
  * ----------------------------------------------------------------------- */
 
-static const uint8_t VAULT_NUMS_XONLY[32] = {
+static const uint8_t VAULT_NUMS_XONLY[VAULT_XONLY_PUBKEY_LEN] = {
     0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
     0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
 };
@@ -96,11 +111,11 @@ static const uint8_t VAULT_NUMS_XONLY[32] = {
 
 static int _push_number(uint32_t value, uint8_t *buf) {
     if (value == 0u) {
-        buf[0] = 0x00u;
+        buf[0] = OP_0;
         return 1;
     }
     if (value <= 16u) {
-        buf[0] = (uint8_t) (0x50u + value);
+        buf[0] = (uint8_t) (OP_1 - 1u + value);
         return 1;
     }
     uint8_t tmp[5]; /* 4 data bytes + 1 possible sign-byte extension */
@@ -123,14 +138,14 @@ static int _push_number(uint32_t value, uint8_t *buf) {
  * where 0xC0 is the tapscript leaf version.
  * ----------------------------------------------------------------------- */
 
-void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[32]) {
+void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[VAULT_HASH256_LEN]) {
     if (script_len < 0) {
-        memset(out, 0, 32u);
+        memset(out, 0, VAULT_HASH256_LEN);
         return;
     }
     cx_sha256_t ctx;
     crypto_tr_tapleaf_hash_init(&ctx);
-    _hash_update_u8(&ctx.header, 0xC0u);
+    _hash_update_u8(&ctx.header, TAPSCRIPT_LEAF_VERSION);
     uint8_t vbuf[5];
     int vlen = _varint_write(vbuf, (uint64_t) script_len);
     _hash_update(&ctx.header, vbuf, (size_t) vlen);
@@ -138,19 +153,6 @@ void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[
     _hash_final(&ctx.header, out);
 }
 
-/* --------------------------------------------------------------------------
- * vault_taproot_branch_hash  (static — callers use the public scriptpubkey /
- * merkle-root builders)
- *
- * BIP-341: tagged_hash("TapBranch", sort(left, right))
- * Sorting is handled inside crypto_tr_combine_taptree_hashes.
- * ----------------------------------------------------------------------- */
-
-static void vault_taproot_branch_hash(const uint8_t left[32],
-                                      const uint8_t right[32],
-                                      uint8_t out[32]) {
-    crypto_tr_combine_taptree_hashes(left, right, out);
-}
 
 /* --------------------------------------------------------------------------
  * vault_taproot_tweak_scriptpubkey  (static)
@@ -161,19 +163,19 @@ static void vault_taproot_branch_hash(const uint8_t left[32],
 
 /* parity_out may be NULL when the caller does not need the parity bit.
  * NAPPS-1377 (signing) will pass a non-NULL pointer for the control block. */
-static void vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[32],
+static void vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[VAULT_HASH256_LEN],
                                              uint8_t *parity_out,
-                                             uint8_t out[34]) {
+                                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t parity;
-    uint8_t tweaked[32];
-    if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, merkle_root, 32u, &parity, tweaked) != 0) {
-        memset(out, 0, 34u);
+    uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
+    if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, merkle_root, VAULT_XONLY_PUBKEY_LEN, &parity, tweaked) != 0) {
+        memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
         return;
     }
     if (parity_out) *parity_out = parity;
-    out[0] = 0x51u; /* OP_1  */
-    out[1] = 0x20u; /* OP_PUSHBYTES_32 */
-    memcpy(out + 2, tweaked, 32u);
+    out[0] = OP_1;
+    out[1] = OP_PUSHBYTES_32;
+    memcpy(out + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
 }
 
 /* --------------------------------------------------------------------------
@@ -193,7 +195,7 @@ static void vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[32],
  * Returns bytes written, or -1 if buf_max is too small.
  * ----------------------------------------------------------------------- */
 
-static int encode_multisig_group(const uint8_t keys[][32],
+static int encode_multisig_group(const uint8_t keys[][VAULT_XONLY_PUBKEY_LEN],
                                  int key_count,
                                  int is_final,
                                  uint8_t *buf,
@@ -204,26 +206,26 @@ static int encode_multisig_group(const uint8_t keys[][32],
     int off = 0;
 
     if (key_count == 1) {
-        buf[off++] = 0x20u;
-        memcpy(buf + off, keys[0], 32u);
+        buf[off++] = OP_PUSHBYTES_32;
+        memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
         off += 32;
-        buf[off++] = is_final ? 0xACu : 0xADu; /* OP_CHECKSIG / OP_CHECKSIGVERIFY */
+        buf[off++] = is_final ? OP_CHECKSIG : OP_CHECKSIGVERIFY;
     } else {
-        buf[off++] = 0x20u;
-        memcpy(buf + off, keys[0], 32u);
+        buf[off++] = OP_PUSHBYTES_32;
+        memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
         off += 32;
-        buf[off++] = 0xACu; /* OP_CHECKSIG */
+        buf[off++] = OP_CHECKSIG;
 
         for (int i = 1; i < key_count; i++) {
-            buf[off++] = 0x20u;
-            memcpy(buf + off, keys[i], 32u);
+            buf[off++] = OP_PUSHBYTES_32;
+            memcpy(buf + off, keys[i], VAULT_XONLY_PUBKEY_LEN);
             off += 32;
-            buf[off++] = 0xBAu; /* OP_CHECKSIGADD */
+            buf[off++] = OP_CHECKSIGADD;
         }
 
         int n_len = _push_number((uint32_t) key_count, buf + off);
         off += n_len;
-        buf[off++] = is_final ? 0x9Cu : 0x9Du; /* OP_NUMEQUAL / OP_NUMEQUALVERIFY */
+        buf[off++] = is_final ? OP_NUMEQUAL : OP_NUMEQUALVERIFY;
     }
 
     return off;
@@ -242,9 +244,9 @@ static int encode_multisig_group(const uint8_t keys[][32],
 
 int vault_build_depositor_claim_leaf(const vault_intent_t *intent, uint8_t *buf, int buf_max) {
     if (buf_max < 34) return -1;
-    buf[0] = 0x20u;
-    memcpy(buf + 1, intent->depositor_pk, 32u);
-    buf[33] = 0xACu; /* OP_CHECKSIG */
+    buf[0] = OP_PUSHBYTES_32;
+    memcpy(buf + 1, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN);
+    buf[33] = OP_CHECKSIG;
     return 34;
 }
 
@@ -257,12 +259,12 @@ int vault_build_depositor_claim_leaf(const vault_intent_t *intent, uint8_t *buf,
 int vault_build_htlc_leaf1(const vault_intent_t *intent, uint8_t *buf, int buf_max) {
     if (buf_max < 39) return -1; /* conservative upper bound */
     int off = 0;
-    buf[off++] = 0x20u;
-    memcpy(buf + off, intent->depositor_pk, 32u);
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
-    buf[off++] = 0xADu; /* OP_CHECKSIGVERIFY */
+    buf[off++] = OP_CHECKSIGVERIFY;
     off += _push_number(intent->htlc_refund_timelock, buf + off);
-    buf[off++] = 0xB2u; /* OP_CSV */
+    buf[off++] = OP_CSV;
     return off;
 }
 
@@ -280,16 +282,16 @@ int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int 
     int off = 0, r;
 
     if (off + 34 > buf_max) return -1;
-    buf[off++] = 0x20u;
-    memcpy(buf + off, intent->depositor_pk, 32u);
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
-    buf[off++] = 0xADu; /* OP_CHECKSIGVERIFY */
+    buf[off++] = OP_CHECKSIGVERIFY;
 
     if (off + 34 > buf_max) return -1;
-    buf[off++] = 0x20u;
-    memcpy(buf + off, intent->vault_provider_pk, 32u);
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
-    buf[off++] = 0xADu; /* OP_CHECKSIGVERIFY */
+    buf[off++] = OP_CHECKSIGVERIFY;
 
     r = encode_multisig_group(intent->keeper_pks,
                               (int) intent->keeper_count,
@@ -309,7 +311,7 @@ int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int 
 
     if (off + 6 > buf_max) return -1;
     off += _push_number(intent->pegin_csv_timelock, buf + off);
-    buf[off++] = 0xB2u; /* OP_CSV */
+    buf[off++] = OP_CSV;
 
     return off;
 }
@@ -326,38 +328,38 @@ int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int 
  * ----------------------------------------------------------------------- */
 
 int vault_build_htlc_leaf0(const vault_intent_t *intent,
-                           const uint8_t h[32],
+                           const uint8_t h[VAULT_HASH256_LEN],
                            uint8_t *buf,
                            int buf_max) {
     int off = 0, r;
 
     /* OP_SIZE <32> OP_EQUALVERIFY */
     if (off + 4 > buf_max) return -1;
-    buf[off++] = 0x82u;                  /* OP_SIZE */
-    off += _push_number(32u, buf + off); /* 0x01 0x20 */
-    buf[off++] = 0x88u;                  /* OP_EQUALVERIFY */
+    buf[off++] = OP_SIZE;
+    off += _push_number(VAULT_XONLY_PUBKEY_LEN, buf + off);
+    buf[off++] = OP_EQUALVERIFY;
 
     /* OP_SHA256 <h> OP_EQUALVERIFY */
     if (off + 35 > buf_max) return -1;
-    buf[off++] = 0xA8u; /* OP_SHA256 */
-    buf[off++] = 0x20u; /* OP_PUSHBYTES_32 */
-    memcpy(buf + off, h, 32u);
+    buf[off++] = OP_SHA256;
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, h, VAULT_HASH256_LEN);
     off += 32;
-    buf[off++] = 0x88u; /* OP_EQUALVERIFY */
+    buf[off++] = OP_EQUALVERIFY;
 
     /* <D> OP_CHECKSIGVERIFY */
     if (off + 34 > buf_max) return -1;
-    buf[off++] = 0x20u;
-    memcpy(buf + off, intent->depositor_pk, 32u);
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
-    buf[off++] = 0xADu;
+    buf[off++] = OP_CHECKSIGVERIFY;
 
     /* <VP> OP_CHECKSIGVERIFY */
     if (off + 34 > buf_max) return -1;
-    buf[off++] = 0x20u;
-    memcpy(buf + off, intent->vault_provider_pk, 32u);
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
-    buf[off++] = 0xADu;
+    buf[off++] = OP_CHECKSIGVERIFY;
 
     /* <VK N-of-N> intermediate */
     r = encode_multisig_group(intent->keeper_pks,
@@ -392,24 +394,24 @@ int vault_build_htlc_leaf0(const vault_intent_t *intent,
  * Returns the number of keys written, which always equals intent->keeper_count.
  * ----------------------------------------------------------------------- */
 
-static int build_app_challengers(const vault_intent_t *intent, int claimer_idx, uint8_t out[][32]) {
+static int build_app_challengers(const vault_intent_t *intent, int claimer_idx, uint8_t out[][VAULT_XONLY_PUBKEY_LEN]) {
     int k = 0;
     if (claimer_idx == 0) {
         for (int i = 0; i < (int) intent->keeper_count; i++) {
-            memcpy(out[k++], intent->keeper_pks[i], 32u);
+            memcpy(out[k++], intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN);
         }
     } else {
         int vp_inserted = 0;
         for (int i = 0; i < (int) intent->keeper_count; i++) {
             if (i == claimer_idx - 1) continue;
-            if (!vp_inserted && memcmp(intent->vault_provider_pk, intent->keeper_pks[i], 32u) < 0) {
-                memcpy(out[k++], intent->vault_provider_pk, 32u);
+            if (!vp_inserted && memcmp(intent->vault_provider_pk, intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN) < 0) {
+                memcpy(out[k++], intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
                 vp_inserted = 1;
             }
-            memcpy(out[k++], intent->keeper_pks[i], 32u);
+            memcpy(out[k++], intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN);
         }
         if (!vp_inserted) {
-            memcpy(out[k++], intent->vault_provider_pk, 32u);
+            memcpy(out[k++], intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
         }
     }
     return k;
@@ -443,12 +445,12 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
     int off = 0, r;
 
     if (off + 34 > buf_max) return -1;
-    buf[off++] = 0x20u;
-    memcpy(buf + off, claimer_pk, 32u);
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, claimer_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
-    buf[off++] = 0xADu; /* OP_CHECKSIGVERIFY */
+    buf[off++] = OP_CHECKSIGVERIFY;
 
-    r = encode_multisig_group((const uint8_t (*)[32]) _app_challengers,
+    r = encode_multisig_group((const uint8_t (*)[VAULT_XONLY_PUBKEY_LEN]) _app_challengers,
                               k,
                               0,
                               buf + off,
@@ -466,7 +468,7 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
 
     if (off + 6 > buf_max) return -1;
     off += _push_number(intent->payout_timelock, buf + off);
-    buf[off++] = 0xB2u; /* OP_CSV */
+    buf[off++] = OP_CSV;
 
     return off;
 }
@@ -483,25 +485,25 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 void vault_build_htlc_merkle_root(const vault_intent_t *intent,
-                                  const uint8_t h[32],
-                                  uint8_t out[32]) {
-    uint8_t lh0[32], lh1[32];
+                                  const uint8_t h[VAULT_HASH256_LEN],
+                                  uint8_t out[VAULT_HASH256_LEN]) {
+    uint8_t lh0[VAULT_HASH256_LEN], lh1[VAULT_HASH256_LEN];
 
-    int len0 = vault_build_htlc_leaf0(intent, h, G_vault_script_scratch, VAULT_SCRIPT_MAX_LEN);
+    int len0 = vault_build_htlc_leaf0(intent, h, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
     if (len0 < 0) {
-        memset(out, 0, 32u);
+        memset(out, 0, VAULT_HASH256_LEN);
         return;
     }
-    vault_taproot_leaf_hash(G_vault_script_scratch, len0, lh0);
+    vault_taproot_leaf_hash(G_scratch.script_scratch, len0, lh0);
 
-    int len1 = vault_build_htlc_leaf1(intent, G_vault_script_scratch, VAULT_SCRIPT_MAX_LEN);
+    int len1 = vault_build_htlc_leaf1(intent, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
     if (len1 < 0) {
-        memset(out, 0, 32u);
+        memset(out, 0, VAULT_HASH256_LEN);
         return;
     }
-    vault_taproot_leaf_hash(G_vault_script_scratch, len1, lh1);
+    vault_taproot_leaf_hash(G_scratch.script_scratch, len1, lh1);
 
-    vault_taproot_branch_hash(lh0, lh1, out);
+    crypto_tr_combine_taptree_hashes(lh0, lh1, out);
 }
 
 /* --------------------------------------------------------------------------
@@ -511,9 +513,9 @@ void vault_build_htlc_merkle_root(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 void vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
-                                   const uint8_t h[32],
-                                   uint8_t out[34]) {
-    uint8_t merkle_root[32];
+                                   const uint8_t h[VAULT_HASH256_LEN],
+                                   uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+    uint8_t merkle_root[VAULT_HASH256_LEN];
     vault_build_htlc_merkle_root(intent, h, merkle_root);
     vault_taproot_tweak_scriptpubkey(merkle_root, NULL, out);
 }
@@ -524,15 +526,15 @@ void vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
  * P2TR scriptPubKey (34 bytes) for the Vault UTXO (single-leaf taptree).
  * ----------------------------------------------------------------------- */
 
-void vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent, uint8_t out[34]) {
-    uint8_t leaf_hash[32];
+void vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent, uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+    uint8_t leaf_hash[VAULT_HASH256_LEN];
 
-    int len = vault_build_vault_utxo_leaf(intent, G_vault_script_scratch, VAULT_SCRIPT_MAX_LEN);
+    int len = vault_build_vault_utxo_leaf(intent, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
     if (len < 0) {
-        memset(out, 0, 34u);
+        memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
         return;
     }
-    vault_taproot_leaf_hash(G_vault_script_scratch, len, leaf_hash);
+    vault_taproot_leaf_hash(G_scratch.script_scratch, len, leaf_hash);
     vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
 }
 
@@ -542,13 +544,13 @@ void vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent, uint8_t o
  * P2TR scriptPubKey (34 bytes) for the Depositor Claim UTXO.
  * ----------------------------------------------------------------------- */
 
-void vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent, uint8_t out[34]) {
-    uint8_t script[34];
-    uint8_t leaf_hash[32];
+void vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent, uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+    uint8_t script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    uint8_t leaf_hash[VAULT_HASH256_LEN];
 
     int len = vault_build_depositor_claim_leaf(intent, script, (int) sizeof(script));
     if (len < 0) {
-        memset(out, 0, 34u);
+        memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
         return;
     }
     vault_taproot_leaf_hash(script, len, leaf_hash);
@@ -564,18 +566,18 @@ void vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent, uint
 
 void vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
                                              int claimer_idx,
-                                             uint8_t out[34]) {
-    uint8_t leaf_hash[32];
+                                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+    uint8_t leaf_hash[VAULT_HASH256_LEN];
 
     int len = vault_build_assert0_payout_leaf(intent,
                                               claimer_idx,
-                                              G_vault_script_scratch,
+                                              G_scratch.script_scratch,
                                               VAULT_SCRIPT_MAX_LEN);
     if (len < 0) {
-        memset(out, 0, 34u);
+        memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
         return;
     }
-    vault_taproot_leaf_hash(G_vault_script_scratch, len, leaf_hash);
+    vault_taproot_leaf_hash(G_scratch.script_scratch, len, leaf_hash);
     vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
 }
 
@@ -593,64 +595,64 @@ void vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
  * The serialization is exactly 137 bytes (no segwit marker / witness data).
  * ----------------------------------------------------------------------- */
 
-void vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[32]) {
-    uint8_t vault_spk[34], claim_spk[34];
+void vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]) {
+    uint8_t vault_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN], claim_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     vault_build_vault_utxo_scriptpubkey(intent, vault_spk);
     vault_build_depositor_claim_scriptpubkey(intent, claim_spk);
 
-    uint8_t tx[137];
+    uint8_t tx[PEGIN_TX_SIZE];
     int off = 0;
 
-    /* version: 2 */
-    tx[off++] = 0x02u;
-    tx[off++] = 0x00u;
-    tx[off++] = 0x00u;
-    tx[off++] = 0x00u;
+    /* version: 2 (LE) */
+    tx[off++] = (uint8_t) (PEGIN_TX_VERSION);
+    tx[off++] = (uint8_t) (PEGIN_TX_VERSION >> 8);
+    tx[off++] = (uint8_t) (PEGIN_TX_VERSION >> 16);
+    tx[off++] = (uint8_t) (PEGIN_TX_VERSION >> 24);
 
     /* input count: 1 */
-    tx[off++] = 0x01u;
+    tx[off++] = 1u;
     /* prevout txid (LE as stored) */
-    memcpy(tx + off, intent->prepegin_txid, 32u);
+    memcpy(tx + off, intent->prepegin_txid, VAULT_HASH256_LEN);
     off += 32;
-    /* prevout index */
+    /* prevout index (LE) */
     tx[off++] = (uint8_t) (intent->htlc_vout);
     tx[off++] = (uint8_t) (intent->htlc_vout >> 8);
     tx[off++] = (uint8_t) (intent->htlc_vout >> 16);
     tx[off++] = (uint8_t) (intent->htlc_vout >> 24);
     /* scriptSig: empty */
-    tx[off++] = 0x00u;
-    /* sequence: 0xFFFFFFFE */
-    tx[off++] = 0xFEu;
-    tx[off++] = 0xFFu;
-    tx[off++] = 0xFFu;
-    tx[off++] = 0xFFu;
+    tx[off++] = 0u;
+    /* sequence (LE) */
+    tx[off++] = (uint8_t) (PEGIN_TX_SEQUENCE);
+    tx[off++] = (uint8_t) (PEGIN_TX_SEQUENCE >> 8);
+    tx[off++] = (uint8_t) (PEGIN_TX_SEQUENCE >> 16);
+    tx[off++] = (uint8_t) (PEGIN_TX_SEQUENCE >> 24);
 
     /* output count: 2 */
-    tx[off++] = 0x02u;
+    tx[off++] = 2u;
     /* output 0: Vault UTXO */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->vault_amount >> (i * 8));
-    tx[off++] = 0x22u; /* scriptPubKey length = 34 */
-    memcpy(tx + off, vault_spk, 34u);
-    off += 34;
+    tx[off++] = (uint8_t) sizeof(vault_spk);
+    memcpy(tx + off, vault_spk, sizeof(vault_spk));
+    off += sizeof(vault_spk);
     /* output 1: Depositor Claim */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->depositor_claim_value >> (i * 8));
-    tx[off++] = 0x22u;
-    memcpy(tx + off, claim_spk, 34u);
-    off += 34;
+    tx[off++] = (uint8_t) sizeof(claim_spk);
+    memcpy(tx + off, claim_spk, sizeof(claim_spk));
+    off += sizeof(claim_spk);
 
-    /* locktime: 0 */
-    tx[off++] = 0x00u;
-    tx[off++] = 0x00u;
-    tx[off++] = 0x00u;
-    tx[off++] = 0x00u;
+    /* locktime (LE) */
+    tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME);
+    tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME >> 8);
+    tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME >> 16);
+    tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME >> 24);
 
     /* double-SHA256 */
     cx_sha256_t ctx;
     cx_sha256_init(&ctx);
     _hash_update(&ctx.header, tx, (size_t) off);
-    uint8_t mid[32];
+    uint8_t mid[VAULT_HASH256_LEN];
     _hash_final(&ctx.header, mid);
     cx_sha256_init(&ctx);
-    _hash_update(&ctx.header, mid, 32u);
+    _hash_update(&ctx.header, mid, VAULT_HASH256_LEN);
     _hash_final(&ctx.header, out);
 }
