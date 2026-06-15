@@ -16,10 +16,11 @@
 //   total                 72 B
 //
 // Combined globals budget (Nano S+ has 40 KB SRAM; base app BSS ~8.2 KB):
-//   vault_intent_t        ≤ 3072 B
-//   vault_context_t       ≤  128 B
-//   G_scratch (union)       2560 B  (max of hkdf 512 B / approve 8 B / script_scratch 2560 B)
-//   combined              ≤ 5760 B  (well within remaining ~31.8 KB)
+//   vault_intent_t              ≤ 3072 B
+//   vault_context_t             ≤  128 B
+//   G_scratch (union)             2560 B  (max of hkdf 512 B / script_scratch 2560 B)
+//   G_approve_intent_state           8 B
+//   combined                    ≤ 5768 B  (well within remaining ~31.8 KB)
 // ---------------------------------------------------------------------------
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
@@ -33,3 +34,4 @@ _Static_assert(sizeof(vault_scratch_t) == VAULT_SCRIPT_MAX_LEN,
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
 vault_scratch_t G_scratch;
+approve_intent_state_t G_approve_intent_state;

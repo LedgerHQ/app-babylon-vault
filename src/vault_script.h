@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "vault_intent.h"
 
@@ -13,7 +14,7 @@
  * prefer a static or global buffer for the largest leaves.
  */
 #define VAULT_SCRIPT_MAX_LEN        2560
-#define VAULT_P2TR_SCRIPTPUBKEY_LEN (2 + VAULT_XONLY_PUBKEY_LEN)  /* OP_1 OP_PUSHBYTES_32 <key> */
+#define VAULT_P2TR_SCRIPTPUBKEY_LEN (2 + VAULT_XONLY_PUBKEY_LEN) /* OP_1 OP_PUSHBYTES_32 <key> */
 
 /* --------------------------------------------------------------------------
  * Taproot primitive
@@ -26,9 +27,7 @@
  * @param script_len  Length of the script in bytes.
  * @param out         Output buffer for the leaf hash (VAULT_HASH256_LEN bytes).
  */
-void vault_taproot_leaf_hash(const uint8_t *script,
-                             int script_len,
-                             uint8_t out[VAULT_HASH256_LEN]);
+void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[VAULT_HASH256_LEN]);
 
 /* --------------------------------------------------------------------------
  * Per-leaf raw script builders
@@ -68,20 +67,20 @@ void vault_build_htlc_merkle_root(const vault_intent_t *intent,
                                   const uint8_t h[VAULT_HASH256_LEN],
                                   uint8_t out[VAULT_HASH256_LEN]);
 
-void vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
+bool vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
                                    const uint8_t h[VAULT_HASH256_LEN],
                                    uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
-void vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent,
+bool vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent,
                                          uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
-void vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
+bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
                                               uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
 /**
  * @param claimer_idx  0 = VP; 1..keeper_count = VK_i.
  */
-void vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
+bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
                                              int claimer_idx,
                                              uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
@@ -89,5 +88,6 @@ void vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
  * Compute the SegWit txid of the PegIn transaction from the loaded intent.
  *
  * Valid only in Session 2: uses prepegin_txid and htlc_vout from the intent.
+ * Returns false if key derivation fails (clears out to zero).
  */
-void vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]);
+bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]);

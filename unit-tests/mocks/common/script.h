@@ -6,6 +6,9 @@
 enum opcodetype {
     OP_0 = 0x00,
     OP_FALSE = OP_0,
+    OP_PUSHBYTES_1  = 0x01,
+    OP_PUSHBYTES_2  = 0x02,
+    OP_PUSHBYTES_32 = 0x20,
     OP_1 = 0x51,
     OP_TRUE = OP_1,
     OP_2 = 0x52,
@@ -21,3 +24,6 @@ enum opcodetype {
     OP_CSV = OP_CHECKSEQUENCEVERIFY,
     OP_CHECKSIGADD = 0xba,
 };
+
+/* BIP-341 tapscript leaf version — not a Script opcode but a taproot constant */
+#define TAPSCRIPT_LEAF_VERSION 0xC0u

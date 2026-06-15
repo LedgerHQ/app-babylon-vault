@@ -134,7 +134,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // All display buffers live on the stack of this function.
     // NBGL holds pointers into them, but this frame stays alive throughout
     // the blocking io_ui_process() call, so the pointers remain valid.
-    nbgl_layoutTagValue_t    vault_pairs[VAULT_INTENT_MAX_PAIRS];
+    nbgl_layoutTagValue_t vault_pairs[VAULT_INTENT_MAX_PAIRS];
     nbgl_layoutTagValueList_t vault_pair_list;
     char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];
     char vault_amount_str[MAX_AMOUNT_LENGTH + 1];

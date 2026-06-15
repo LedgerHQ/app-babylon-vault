@@ -2,6 +2,7 @@
 #include "vault_intent.h"
 #include "globals.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -13,19 +14,19 @@
 #include "cx.h"
 #include "common/script.h"
 
-#define OP_PUSHBYTES_32        0x20u  /* push exactly 32 bytes (x-only pubkey or hash) */
-#define TAPSCRIPT_LEAF_VERSION 0xC0u  /* BIP-341 tapscript leaf version */
+#define OP_PUSHBYTES_32        0x20u /* push exactly 32 bytes (x-only pubkey or hash) */
+#define TAPSCRIPT_LEAF_VERSION 0xC0u /* BIP-341 tapscript leaf version */
 
 /* Bitcoin compact-size (varint) prefix bytes */
-#define VARINT_PREFIX_2BYTE    0xFDu
-#define VARINT_PREFIX_4BYTE    0xFEu
-#define VARINT_PREFIX_8BYTE    0xFFu
+#define VARINT_PREFIX_2BYTE 0xFDu
+#define VARINT_PREFIX_4BYTE 0xFEu
+#define VARINT_PREFIX_8BYTE 0xFFu
 
 /* PegIn transaction serialization constants */
-#define PEGIN_TX_VERSION       2u           /* version 2 required for CSV (BIP-68) */
-#define PEGIN_TX_SEQUENCE      0xFFFFFFFEu  /* enables nLockTime; one below SEQUENCE_FINAL */
-#define PEGIN_TX_LOCKTIME      0u
-#define PEGIN_TX_SIZE          137u         /* exact non-witness serialization length */
+#define PEGIN_TX_VERSION  2u          /* version 2 required for CSV (BIP-68) */
+#define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
+#define PEGIN_TX_LOCKTIME 0u
+#define PEGIN_TX_SIZE     137u /* exact non-witness serialization length */
 
 /* Forward-declare the three btcext taproot functions vault_script.c uses.
  * On device these are implemented in bitcoin_app_base/src/crypto.c and
@@ -138,7 +139,9 @@ static int _push_number(uint32_t value, uint8_t *buf) {
  * where 0xC0 is the tapscript leaf version.
  * ----------------------------------------------------------------------- */
 
-void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[VAULT_HASH256_LEN]) {
+void vault_taproot_leaf_hash(const uint8_t *script,
+                             int script_len,
+                             uint8_t out[VAULT_HASH256_LEN]) {
     if (script_len < 0) {
         memset(out, 0, VAULT_HASH256_LEN);
         return;
@@ -153,7 +156,6 @@ void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[
     _hash_final(&ctx.header, out);
 }
 
-
 /* --------------------------------------------------------------------------
  * vault_taproot_tweak_scriptpubkey  (static)
  *
@@ -163,19 +165,24 @@ void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[
 
 /* parity_out may be NULL when the caller does not need the parity bit.
  * NAPPS-1377 (signing) will pass a non-NULL pointer for the control block. */
-static void vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[VAULT_HASH256_LEN],
+static bool vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[VAULT_HASH256_LEN],
                                              uint8_t *parity_out,
                                              uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t parity;
     uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-    if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, merkle_root, VAULT_XONLY_PUBKEY_LEN, &parity, tweaked) != 0) {
+    if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY,
+                               merkle_root,
+                               VAULT_HASH256_LEN,
+                               &parity,
+                               tweaked) != 0) {
         memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
-        return;
+        return false;
     }
     if (parity_out) *parity_out = parity;
     out[0] = OP_1;
     out[1] = OP_PUSHBYTES_32;
     memcpy(out + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
+    return true;
 }
 
 /* --------------------------------------------------------------------------
@@ -394,7 +401,9 @@ int vault_build_htlc_leaf0(const vault_intent_t *intent,
  * Returns the number of keys written, which always equals intent->keeper_count.
  * ----------------------------------------------------------------------- */
 
-static int build_app_challengers(const vault_intent_t *intent, int claimer_idx, uint8_t out[][VAULT_XONLY_PUBKEY_LEN]) {
+static int build_app_challengers(const vault_intent_t *intent,
+                                 int claimer_idx,
+                                 uint8_t out[][VAULT_XONLY_PUBKEY_LEN]) {
     int k = 0;
     if (claimer_idx == 0) {
         for (int i = 0; i < (int) intent->keeper_count; i++) {
@@ -404,7 +413,9 @@ static int build_app_challengers(const vault_intent_t *intent, int claimer_idx, 
         int vp_inserted = 0;
         for (int i = 0; i < (int) intent->keeper_count; i++) {
             if (i == claimer_idx - 1) continue;
-            if (!vp_inserted && memcmp(intent->vault_provider_pk, intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN) < 0) {
+            if (!vp_inserted &&
+                memcmp(intent->vault_provider_pk, intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN) <
+                    0) {
                 memcpy(out[k++], intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
                 vp_inserted = 1;
             }
@@ -435,8 +446,7 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
                                     int buf_max) {
     if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count) return -1;
 
-    /* Static avoids a 1 KB stack frame (32 keys × 32 bytes). */
-    static uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];
+    uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];
     int k = build_app_challengers(intent, claimer_idx, _app_challengers);
 
     const uint8_t *claimer_pk =
@@ -512,12 +522,12 @@ void vault_build_htlc_merkle_root(const vault_intent_t *intent,
  * P2TR scriptPubKey (34 bytes) for the HTLC output.
  * ----------------------------------------------------------------------- */
 
-void vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
+bool vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
                                    const uint8_t h[VAULT_HASH256_LEN],
                                    uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t merkle_root[VAULT_HASH256_LEN];
     vault_build_htlc_merkle_root(intent, h, merkle_root);
-    vault_taproot_tweak_scriptpubkey(merkle_root, NULL, out);
+    return vault_taproot_tweak_scriptpubkey(merkle_root, NULL, out);
 }
 
 /* --------------------------------------------------------------------------
@@ -526,16 +536,17 @@ void vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
  * P2TR scriptPubKey (34 bytes) for the Vault UTXO (single-leaf taptree).
  * ----------------------------------------------------------------------- */
 
-void vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent, uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+bool vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent,
+                                         uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t leaf_hash[VAULT_HASH256_LEN];
 
     int len = vault_build_vault_utxo_leaf(intent, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
     if (len < 0) {
         memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
-        return;
+        return false;
     }
     vault_taproot_leaf_hash(G_scratch.script_scratch, len, leaf_hash);
-    vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
+    return vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
 }
 
 /* --------------------------------------------------------------------------
@@ -544,17 +555,18 @@ void vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent, uint8_t o
  * P2TR scriptPubKey (34 bytes) for the Depositor Claim UTXO.
  * ----------------------------------------------------------------------- */
 
-void vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent, uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
+                                              uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint8_t leaf_hash[VAULT_HASH256_LEN];
 
     int len = vault_build_depositor_claim_leaf(intent, script, (int) sizeof(script));
     if (len < 0) {
         memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
-        return;
+        return false;
     }
     vault_taproot_leaf_hash(script, len, leaf_hash);
-    vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
+    return vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
 }
 
 /* --------------------------------------------------------------------------
@@ -564,7 +576,7 @@ void vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent, uint
  * (single-leaf taptree; one variant per claimer_idx).
  * ----------------------------------------------------------------------- */
 
-void vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
+bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
                                              int claimer_idx,
                                              uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t leaf_hash[VAULT_HASH256_LEN];
@@ -575,10 +587,10 @@ void vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
                                               VAULT_SCRIPT_MAX_LEN);
     if (len < 0) {
         memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
-        return;
+        return false;
     }
     vault_taproot_leaf_hash(G_scratch.script_scratch, len, leaf_hash);
-    vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
+    return vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
 }
 
 /* --------------------------------------------------------------------------
@@ -595,10 +607,13 @@ void vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
  * The serialization is exactly 137 bytes (no segwit marker / witness data).
  * ----------------------------------------------------------------------- */
 
-void vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]) {
+bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]) {
     uint8_t vault_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN], claim_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-    vault_build_vault_utxo_scriptpubkey(intent, vault_spk);
-    vault_build_depositor_claim_scriptpubkey(intent, claim_spk);
+    if (!vault_build_vault_utxo_scriptpubkey(intent, vault_spk) ||
+        !vault_build_depositor_claim_scriptpubkey(intent, claim_spk)) {
+        memset(out, 0, VAULT_HASH256_LEN);
+        return false;
+    }
 
     uint8_t tx[PEGIN_TX_SIZE];
     int off = 0;
@@ -655,4 +670,5 @@ void vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     cx_sha256_init(&ctx);
     _hash_update(&ctx.header, mid, VAULT_HASH256_LEN);
     _hash_final(&ctx.header, out);
+    return true;
 }

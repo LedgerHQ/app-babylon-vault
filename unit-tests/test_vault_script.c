@@ -16,6 +16,7 @@
 
 #include <cmocka.h>
 
+#include "common/script.h"
 #include "vault_script.h"
 #include "vault_intent.h"
 #include "cx.h"  /* mock SHA-256 / tagged-hash helpers for cross-validation tests */
@@ -58,7 +59,7 @@ static vault_intent_t make_n2m1(void) {
 /* ---------------------------------------------------------------------------
  * vault_build_depositor_claim_leaf
  *
- * Expected: 0x20 | depositor_pk[32] | OP_CHECKSIG (0xAC) = 34 bytes
+ * Expected: OP_PUSHBYTES_32 | depositor_pk[32] | OP_CHECKSIG = 34 bytes
  * ------------------------------------------------------------------------- */
 
 static void test_depositor_claim_leaf_length(void **state) {
@@ -74,16 +75,16 @@ static void test_depositor_claim_leaf_bytes(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[64];
     vault_build_depositor_claim_leaf(&intent, buf, sizeof(buf));
-    assert_int_equal(buf[0],  0x20);  /* OP_PUSHBYTES_32 */
+    assert_int_equal(buf[0],  OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[1 + i], 0x01);
-    assert_int_equal(buf[33], 0xAC);  /* OP_CHECKSIG */
+    assert_int_equal(buf[33], OP_CHECKSIG);
 }
 
 /* ---------------------------------------------------------------------------
  * vault_build_htlc_leaf1
  *
  * Expected: <D> OP_CHECKSIGVERIFY | <T_refund> OP_CSV
- * With T_refund=144 (0x90, high-bit set) → push = 0x02 0x90 0x00
+ * With T_refund=144 (0x90, high-bit set) → push = OP_PUSHBYTES_2 0x90 0x00
  * = 34 + 3 + 1 = 38 bytes
  * ------------------------------------------------------------------------- */
 
@@ -100,12 +101,12 @@ static void test_htlc_leaf1_bytes(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[64];
     vault_build_htlc_leaf1(&intent, buf, sizeof(buf));
-    assert_int_equal(buf[0],  0x20);  /* OP_PUSHBYTES_32 for D */
-    assert_int_equal(buf[33], 0xAD);  /* OP_CHECKSIGVERIFY */
-    assert_int_equal(buf[34], 0x02);  /* OP_PUSHBYTES_2 (sign-byte encoding) */
-    assert_int_equal(buf[35], 0x90);  /* 144 lo */
-    assert_int_equal(buf[36], 0x00);  /* sign byte */
-    assert_int_equal(buf[37], 0xB2);  /* OP_CSV */
+    assert_int_equal(buf[0],  OP_PUSHBYTES_32);  /* D */
+    assert_int_equal(buf[33], OP_CHECKSIGVERIFY);
+    assert_int_equal(buf[34], OP_PUSHBYTES_2);   /* sign-byte encoding of 144 */
+    assert_int_equal(buf[35], 0x90);             /* 144 lo */
+    assert_int_equal(buf[36], 0x00);             /* sign byte */
+    assert_int_equal(buf[37], OP_CSV);
 }
 
 /* ---------------------------------------------------------------------------
@@ -128,23 +129,23 @@ static void test_vault_utxo_leaf_n1m1_opcodes(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     vault_build_vault_utxo_leaf(&intent, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(buf[0],   0x20);  /* D push */
-    assert_int_equal(buf[33],  0xAD);  /* OP_CHECKSIGVERIFY */
-    assert_int_equal(buf[34],  0x20);  /* VP push */
-    assert_int_equal(buf[67],  0xAD);  /* OP_CHECKSIGVERIFY */
-    assert_int_equal(buf[68],  0x20);  /* VK push */
-    assert_int_equal(buf[101], 0xAD);  /* OP_CHECKSIGVERIFY (N=1 intermediate) */
-    assert_int_equal(buf[102], 0x20);  /* UC push */
-    assert_int_equal(buf[135], 0xAD);  /* OP_CHECKSIGVERIFY (M=1 intermediate) */
-    assert_int_equal(buf[139], 0xB2);  /* OP_CSV */
+    assert_int_equal(buf[0],   OP_PUSHBYTES_32);   /* D push */
+    assert_int_equal(buf[33],  OP_CHECKSIGVERIFY);
+    assert_int_equal(buf[34],  OP_PUSHBYTES_32);   /* VP push */
+    assert_int_equal(buf[67],  OP_CHECKSIGVERIFY);
+    assert_int_equal(buf[68],  OP_PUSHBYTES_32);   /* VK push */
+    assert_int_equal(buf[101], OP_CHECKSIGVERIFY); /* N=1 intermediate */
+    assert_int_equal(buf[102], OP_PUSHBYTES_32);   /* UC push */
+    assert_int_equal(buf[135], OP_CHECKSIGVERIFY); /* M=1 intermediate */
+    assert_int_equal(buf[139], OP_CSV);
 }
 
 /* ---------------------------------------------------------------------------
  * vault_build_vault_utxo_leaf  (N=2 — exercises CHECKSIGADD path)
  *
  * VK group (2-of-2 intermediate):
- *   0x20 VK0 0xAC | 0x20 VK1 0xBA | OP_2(0x52) | OP_NUMEQUALVERIFY(0x9D)
- *   = 34 + 34 + 1 + 1 = 70 bytes
+ *   OP_PUSHBYTES_32 VK0 OP_CHECKSIG | OP_PUSHBYTES_32 VK1 OP_CHECKSIGADD
+ *   | OP_2 | OP_NUMEQUALVERIFY = 34 + 34 + 1 + 1 = 70 bytes
  * UC group (1-of-1 intermediate): 34 bytes
  *
  * Total: D(34) + VP(34) + VK2-of-2(70) + UC1-of-1(34) + push+CSV(4) = 176
@@ -157,20 +158,20 @@ static void test_vault_utxo_leaf_n2_checksigadd(void **state) {
     int len = vault_build_vault_utxo_leaf(&intent, buf, VAULT_SCRIPT_MAX_LEN);
     assert_int_equal(len, 176);
     /* VK group starts at offset 68 */
-    assert_int_equal(buf[68],  0x20);  /* VK0 push */
-    assert_int_equal(buf[101], 0xAC);  /* OP_CHECKSIG (first of group) */
-    assert_int_equal(buf[102], 0x20);  /* VK1 push */
-    assert_int_equal(buf[135], 0xBA);  /* OP_CHECKSIGADD */
-    assert_int_equal(buf[136], 0x52);  /* OP_2 (N=2 threshold) */
-    assert_int_equal(buf[137], 0x9D);  /* OP_NUMEQUALVERIFY (intermediate) */
+    assert_int_equal(buf[68],  OP_PUSHBYTES_32);    /* VK0 push */
+    assert_int_equal(buf[101], OP_CHECKSIG);        /* first of group */
+    assert_int_equal(buf[102], OP_PUSHBYTES_32);    /* VK1 push */
+    assert_int_equal(buf[135], OP_CHECKSIGADD);
+    assert_int_equal(buf[136], OP_2);               /* N=2 threshold */
+    assert_int_equal(buf[137], OP_NUMEQUALVERIFY);  /* intermediate */
 }
 
 /* ---------------------------------------------------------------------------
  * vault_build_htlc_leaf0  (N=1, M=1)
  *
  * Expected:
- *   OP_SIZE(1) + <32>(2) + OP_EV(1)    = 4 bytes  @ off 0
- *   OP_SHA256(1) + 0x20(1) + h(32) + OP_EV(1) = 35 bytes @ off 4
+ *   OP_SIZE(1) + OP_PUSHBYTES_1 <32>(2) + OP_EQUALVERIFY(1) = 4 bytes @ off 0
+ *   OP_SHA256(1) + OP_PUSHBYTES_32(1) + h(32) + OP_EQUALVERIFY(1) = 35 bytes @ off 4
  *   <D>(34)                             @ off 39
  *   <VP>(34)                            @ off 73
  *   VK 1-of-1 intermediate(34)          @ off 107
@@ -196,14 +197,14 @@ static void test_htlc_leaf0_hashlock_bytes(void **state) {
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     vault_build_htlc_leaf0(&intent, h, buf, VAULT_SCRIPT_MAX_LEN);
     /* hashlock preamble */
-    assert_int_equal(buf[0],  0x82);  /* OP_SIZE */
-    assert_int_equal(buf[1],  0x01);  /* push 1 byte */
-    assert_int_equal(buf[2],  0x20);  /* 32 */
-    assert_int_equal(buf[3],  0x88);  /* OP_EQUALVERIFY */
-    assert_int_equal(buf[4],  0xA8);  /* OP_SHA256 */
-    assert_int_equal(buf[5],  0x20);  /* push h[32] */
+    assert_int_equal(buf[0],  OP_SIZE);
+    assert_int_equal(buf[1],  OP_PUSHBYTES_1);
+    assert_int_equal(buf[2],  32);               /* expected preimage length */
+    assert_int_equal(buf[3],  OP_EQUALVERIFY);
+    assert_int_equal(buf[4],  OP_SHA256);
+    assert_int_equal(buf[5],  OP_PUSHBYTES_32);  /* push h[32] */
     for (int i = 0; i < 32; i++) assert_int_equal(buf[6 + i], 0xAA);
-    assert_int_equal(buf[38], 0x88);  /* OP_EQUALVERIFY */
+    assert_int_equal(buf[38], OP_EQUALVERIFY);
 }
 
 static void test_htlc_leaf0_party_opcodes(void **state) {
@@ -214,17 +215,17 @@ static void test_htlc_leaf0_party_opcodes(void **state) {
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     vault_build_htlc_leaf0(&intent, h, buf, VAULT_SCRIPT_MAX_LEN);
     /* D at 39..72 */
-    assert_int_equal(buf[39],  0x20);
-    assert_int_equal(buf[72],  0xAD);  /* OP_CHECKSIGVERIFY */
+    assert_int_equal(buf[39],  OP_PUSHBYTES_32);
+    assert_int_equal(buf[72],  OP_CHECKSIGVERIFY);
     /* VP at 73..106 */
-    assert_int_equal(buf[73],  0x20);
-    assert_int_equal(buf[106], 0xAD);  /* OP_CHECKSIGVERIFY */
+    assert_int_equal(buf[73],  OP_PUSHBYTES_32);
+    assert_int_equal(buf[106], OP_CHECKSIGVERIFY);
     /* VK 1-of-1 intermediate at 107..140 */
-    assert_int_equal(buf[107], 0x20);
-    assert_int_equal(buf[140], 0xAD);  /* OP_CHECKSIGVERIFY */
+    assert_int_equal(buf[107], OP_PUSHBYTES_32);
+    assert_int_equal(buf[140], OP_CHECKSIGVERIFY);
     /* UC 1-of-1 final at 141..174 */
-    assert_int_equal(buf[141], 0x20);
-    assert_int_equal(buf[174], 0xAC);  /* OP_CHECKSIG (final) */
+    assert_int_equal(buf[141], OP_PUSHBYTES_32);
+    assert_int_equal(buf[174], OP_CHECKSIG);  /* final */
 }
 
 /* ---------------------------------------------------------------------------
@@ -247,13 +248,13 @@ static void test_assert0_vp_claimer_bytes(void **state) {
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     int len = vault_build_assert0_payout_leaf(&intent, 0, buf, VAULT_SCRIPT_MAX_LEN);
     assert_int_equal(len, 106);
-    assert_int_equal(buf[0],  0x20);
+    assert_int_equal(buf[0],  OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[1 + i], 0x02); /* VP as claimer */
-    assert_int_equal(buf[33], 0xAD);
+    assert_int_equal(buf[33], OP_CHECKSIGVERIFY);
     /* AppChallengers[0] = VK0 = 0x03 */
-    assert_int_equal(buf[34], 0x20);
+    assert_int_equal(buf[34], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[35 + i], 0x03);
-    assert_int_equal(buf[67], 0xAD);
+    assert_int_equal(buf[67], OP_CHECKSIGVERIFY);
 }
 
 static void test_assert0_vk_claimer_vp_inserted(void **state) {
@@ -263,13 +264,13 @@ static void test_assert0_vk_claimer_vp_inserted(void **state) {
     int len = vault_build_assert0_payout_leaf(&intent, 1, buf, VAULT_SCRIPT_MAX_LEN);
     assert_int_equal(len, 106);
     /* Claimer is VK0 = 0x03 */
-    assert_int_equal(buf[0], 0x20);
+    assert_int_equal(buf[0], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[1 + i], 0x03);
-    assert_int_equal(buf[33], 0xAD);
+    assert_int_equal(buf[33], OP_CHECKSIGVERIFY);
     /* AppChallengers[0] = VP = 0x02 (only challenger with keeper_count=1) */
-    assert_int_equal(buf[34], 0x20);
+    assert_int_equal(buf[34], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[35 + i], 0x02);
-    assert_int_equal(buf[67], 0xAD);
+    assert_int_equal(buf[67], OP_CHECKSIGVERIFY);
 }
 
 /**
@@ -285,16 +286,16 @@ static void test_assert0_vp_sorted_into_challengers(void **state) {
     /* Claimer = VK0 = 0x03 */
     for (int i = 0; i < 32; i++) assert_int_equal(buf[1 + i], 0x03);
     /* AppChallengers must be sorted: VP=0x04 before VK1=0x05 */
-    assert_int_equal(buf[34], 0x20);
+    assert_int_equal(buf[34], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[35 + i], 0x04); /* VP first */
-    assert_int_equal(buf[67], 0xAC);  /* OP_CHECKSIG (first key of 2-of-2 group) */
-    assert_int_equal(buf[68], 0x20);
+    assert_int_equal(buf[67], OP_CHECKSIG);  /* first key of 2-of-2 group */
+    assert_int_equal(buf[68], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[69 + i], 0x05); /* VK1 second */
-    assert_int_equal(buf[101], 0xBA); /* OP_CHECKSIGADD */
+    assert_int_equal(buf[101], OP_CHECKSIGADD);
 }
 
 /* ---------------------------------------------------------------------------
- * scriptpubkey builders — P2TR format: OP_1 (0x51) OP_PUSHBYTES_32 (0x20) key
+ * scriptpubkey builders — P2TR format: OP_1 OP_PUSHBYTES_32 <key>
  * ------------------------------------------------------------------------- */
 
 static void test_all_scriptpubkeys_are_p2tr(void **state) {
@@ -302,23 +303,23 @@ static void test_all_scriptpubkeys_are_p2tr(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t h[32];
     memset(h, 0xBB, 32);
-    uint8_t spk[34];
+    uint8_t spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
 
-    vault_build_htlc_scriptpubkey(&intent, h, spk);
-    assert_int_equal(spk[0], 0x51);
-    assert_int_equal(spk[1], 0x20);
+    assert_true(vault_build_htlc_scriptpubkey(&intent, h, spk));
+    assert_int_equal(spk[0], OP_1);
+    assert_int_equal(spk[1], OP_PUSHBYTES_32);
 
-    vault_build_vault_utxo_scriptpubkey(&intent, spk);
-    assert_int_equal(spk[0], 0x51);
-    assert_int_equal(spk[1], 0x20);
+    assert_true(vault_build_vault_utxo_scriptpubkey(&intent, spk));
+    assert_int_equal(spk[0], OP_1);
+    assert_int_equal(spk[1], OP_PUSHBYTES_32);
 
-    vault_build_depositor_claim_scriptpubkey(&intent, spk);
-    assert_int_equal(spk[0], 0x51);
-    assert_int_equal(spk[1], 0x20);
+    assert_true(vault_build_depositor_claim_scriptpubkey(&intent, spk));
+    assert_int_equal(spk[0], OP_1);
+    assert_int_equal(spk[1], OP_PUSHBYTES_32);
 
-    vault_build_assert0_payout_scriptpubkey(&intent, 0, spk);
-    assert_int_equal(spk[0], 0x51);
-    assert_int_equal(spk[1], 0x20);
+    assert_true(vault_build_assert0_payout_scriptpubkey(&intent, 0, spk));
+    assert_int_equal(spk[0], OP_1);
+    assert_int_equal(spk[1], OP_PUSHBYTES_32);
 }
 
 /** Different intents must produce different scriptpubkeys. */
@@ -327,11 +328,11 @@ static void test_scriptpubkeys_differ_across_intents(void **state) {
     vault_intent_t i1 = make_n1m1();
     vault_intent_t i2 = make_n1m1();
     memset(i2.keeper_pks[0], 0xEE, 32); /* different keeper key */
-    uint8_t spk1[34], spk2[34];
+    uint8_t spk1[VAULT_P2TR_SCRIPTPUBKEY_LEN], spk2[VAULT_P2TR_SCRIPTPUBKEY_LEN];
 
-    vault_build_vault_utxo_scriptpubkey(&i1, spk1);
-    vault_build_vault_utxo_scriptpubkey(&i2, spk2);
-    assert_memory_not_equal(spk1, spk2, 34);
+    assert_true(vault_build_vault_utxo_scriptpubkey(&i1, spk1));
+    assert_true(vault_build_vault_utxo_scriptpubkey(&i2, spk2));
+    assert_memory_not_equal(spk1, spk2, VAULT_P2TR_SCRIPTPUBKEY_LEN);
 }
 
 /** Same h → same HTLC scriptpubkey (deterministic). */
@@ -340,11 +341,11 @@ static void test_htlc_scriptpubkey_deterministic(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t h[32];
     memset(h, 0xCC, 32);
-    uint8_t spk1[34], spk2[34];
+    uint8_t spk1[VAULT_P2TR_SCRIPTPUBKEY_LEN], spk2[VAULT_P2TR_SCRIPTPUBKEY_LEN];
 
-    vault_build_htlc_scriptpubkey(&intent, h, spk1);
-    vault_build_htlc_scriptpubkey(&intent, h, spk2);
-    assert_memory_equal(spk1, spk2, 34);
+    assert_true(vault_build_htlc_scriptpubkey(&intent, h, spk1));
+    assert_true(vault_build_htlc_scriptpubkey(&intent, h, spk2));
+    assert_memory_equal(spk1, spk2, VAULT_P2TR_SCRIPTPUBKEY_LEN);
 }
 
 /* ---------------------------------------------------------------------------
@@ -358,8 +359,8 @@ static void test_pegin_txid_deterministic(void **state) {
     intent.htlc_vout = 2;
 
     uint8_t txid1[32], txid2[32];
-    vault_compute_pegin_txid(&intent, txid1);
-    vault_compute_pegin_txid(&intent, txid2);
+    assert_true(vault_compute_pegin_txid(&intent, txid1));
+    assert_true(vault_compute_pegin_txid(&intent, txid2));
     assert_memory_equal(txid1, txid2, 32);
 }
 
@@ -370,7 +371,7 @@ static void test_pegin_txid_not_zero(void **state) {
     intent.htlc_vout = 0;
 
     uint8_t txid[32];
-    vault_compute_pegin_txid(&intent, txid);
+    assert_true(vault_compute_pegin_txid(&intent, txid));
     bool all_zero = true;
     for (int i = 0; i < 32; i++) if (txid[i]) { all_zero = false; break; }
     assert_false(all_zero);
@@ -385,8 +386,8 @@ static void test_pegin_txid_varies_with_input(void **state) {
     memset(i2.prepegin_txid, 0x22, 32);
 
     uint8_t txid1[32], txid2[32];
-    vault_compute_pegin_txid(&i1, txid1);
-    vault_compute_pegin_txid(&i2, txid2);
+    assert_true(vault_compute_pegin_txid(&i1, txid1));
+    assert_true(vault_compute_pegin_txid(&i2, txid2));
     assert_memory_not_equal(txid1, txid2, 32);
 }
 
@@ -396,7 +397,7 @@ static void test_pegin_txid_varies_with_input(void **state) {
 
 static void test_leaf_hash_deterministic(void **state) {
     (void)state;
-    uint8_t script[1] = {0xAC};
+    uint8_t script[1] = {OP_CHECKSIG};
     uint8_t h1[32], h2[32];
     vault_taproot_leaf_hash(script, 1, h1);
     vault_taproot_leaf_hash(script, 1, h2);
@@ -405,8 +406,8 @@ static void test_leaf_hash_deterministic(void **state) {
 
 static void test_leaf_hash_varies_with_script(void **state) {
     (void)state;
-    uint8_t s1[1] = {0xAC};
-    uint8_t s2[1] = {0xAD};
+    uint8_t s1[1] = {OP_CHECKSIG};
+    uint8_t s2[1] = {OP_CHECKSIGVERIFY};
     uint8_t h1[32], h2[32];
     vault_taproot_leaf_hash(s1, 1, h1);
     vault_taproot_leaf_hash(s2, 1, h2);
@@ -492,18 +493,18 @@ static void test_htlc_leaf0_n2_vk_group_opcodes(void **state) {
     vault_build_htlc_leaf0(&intent, h, buf, VAULT_SCRIPT_MAX_LEN);
 
     /* VK group starts at offset 107 */
-    assert_int_equal(buf[107], 0x20);   /* VK0 push */
+    assert_int_equal(buf[107], OP_PUSHBYTES_32);   /* VK0 push */
     for (int i = 0; i < 32; i++) assert_int_equal(buf[108 + i], 0x03); /* VK0=0x03 */
-    assert_int_equal(buf[140], 0xAC);   /* OP_CHECKSIG (first of CHECKSIGADD group) */
-    assert_int_equal(buf[141], 0x20);   /* VK1 push */
+    assert_int_equal(buf[140], OP_CHECKSIG);        /* first of CHECKSIGADD group */
+    assert_int_equal(buf[141], OP_PUSHBYTES_32);   /* VK1 push */
     for (int i = 0; i < 32; i++) assert_int_equal(buf[142 + i], 0x05); /* VK1=0x05 */
-    assert_int_equal(buf[174], 0xBA);   /* OP_CHECKSIGADD */
-    assert_int_equal(buf[175], 0x52);   /* OP_2 (N=2 threshold) */
-    assert_int_equal(buf[176], 0x9D);   /* OP_NUMEQUALVERIFY (intermediate) */
+    assert_int_equal(buf[174], OP_CHECKSIGADD);
+    assert_int_equal(buf[175], OP_2);               /* N=2 threshold */
+    assert_int_equal(buf[176], OP_NUMEQUALVERIFY);  /* intermediate */
 
     /* UC 1-of-1 final at offset 177 */
-    assert_int_equal(buf[177], 0x20);
-    assert_int_equal(buf[210], 0xAC);   /* OP_CHECKSIG (final) */
+    assert_int_equal(buf[177], OP_PUSHBYTES_32);
+    assert_int_equal(buf[210], OP_CHECKSIG);        /* final */
 }
 
 /* ---------------------------------------------------------------------------
@@ -531,19 +532,19 @@ static void test_assert0_last_vk_claimer(void **state) {
     assert_int_equal(len, 142);
 
     /* Claimer = VK1 = 0x05 */
-    assert_int_equal(buf[0],  0x20);
+    assert_int_equal(buf[0],  OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[1 + i], 0x05);
-    assert_int_equal(buf[33], 0xAD);
+    assert_int_equal(buf[33], OP_CHECKSIGVERIFY);
 
     /* AppChallengers sorted: VK0=0x03 first (smaller), VP=0x04 second (larger) */
-    assert_int_equal(buf[34], 0x20);
+    assert_int_equal(buf[34], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[35 + i], 0x03); /* VK0 first */
-    assert_int_equal(buf[67], 0xAC);   /* OP_CHECKSIG (first of 2-of-2 group) */
-    assert_int_equal(buf[68], 0x20);
+    assert_int_equal(buf[67], OP_CHECKSIG);    /* first of 2-of-2 group */
+    assert_int_equal(buf[68], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[69 + i], 0x04); /* VP second */
-    assert_int_equal(buf[101], 0xBA);  /* OP_CHECKSIGADD */
-    assert_int_equal(buf[102], 0x52);  /* OP_2 */
-    assert_int_equal(buf[103], 0x9D);  /* OP_NUMEQUALVERIFY */
+    assert_int_equal(buf[101], OP_CHECKSIGADD);
+    assert_int_equal(buf[102], OP_2);
+    assert_int_equal(buf[103], OP_NUMEQUALVERIFY);
 }
 
 /* ---------------------------------------------------------------------------
@@ -558,16 +559,16 @@ static void test_assert0_last_vk_claimer(void **state) {
 static void test_leaf_hash_matches_bip341_formula(void **state) {
     (void)state;
     vault_intent_t intent = make_n1m1();
-    uint8_t script[34];
+    uint8_t script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     int len = vault_build_depositor_claim_leaf(&intent, script, sizeof(script));
     assert_int_equal(len, 34);
 
     /* Reference: manually feed BIP-341 TapLeaf formula */
     cx_sha256_t ref_ctx;
     crypto_tr_tapleaf_hash_init(&ref_ctx);
-    uint8_t ver = 0xC0u;                  /* tapscript leaf version */
+    uint8_t ver = TAPSCRIPT_LEAF_VERSION;
     cx_hash_no_throw(&ref_ctx.header, 0, &ver, 1u, NULL, 0u);
-    uint8_t vl  = 0x22u;                  /* compact_size(34) = 0x22 since 34 < 0xFD */
+    uint8_t vl  = (uint8_t) len;  /* compact_size(34) fits in one byte since 34 < 0xFD */
     cx_hash_no_throw(&ref_ctx.header, 0, &vl, 1u, NULL, 0u);
     cx_hash_no_throw(&ref_ctx.header, 0, script, (size_t) len, NULL, 0u);
     uint8_t expected[32];
@@ -594,9 +595,9 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     intent.htlc_vout = 1;
 
     /* Build both output scriptPubKeys the same way vault_compute_pegin_txid does */
-    uint8_t vault_spk[34], claim_spk[34];
-    vault_build_vault_utxo_scriptpubkey(&intent, vault_spk);
-    vault_build_depositor_claim_scriptpubkey(&intent, claim_spk);
+    uint8_t vault_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN], claim_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    assert_true(vault_build_vault_utxo_scriptpubkey(&intent, vault_spk));
+    assert_true(vault_build_depositor_claim_scriptpubkey(&intent, claim_spk));
 
     /* Manually assemble the 137-byte non-witness transaction */
     uint8_t tx[137];
@@ -618,10 +619,12 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     tx[off++] = 0x02u;
     /* output 0: Vault UTXO */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.vault_amount >> (i * 8));
-    tx[off++] = 0x22u; memcpy(tx + off, vault_spk, 34u); off += 34;
+    tx[off++] = (uint8_t) VAULT_P2TR_SCRIPTPUBKEY_LEN;
+    memcpy(tx + off, vault_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN); off += VAULT_P2TR_SCRIPTPUBKEY_LEN;
     /* output 1: Depositor Claim */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.depositor_claim_value >> (i * 8));
-    tx[off++] = 0x22u; memcpy(tx + off, claim_spk, 34u); off += 34;
+    tx[off++] = (uint8_t) VAULT_P2TR_SCRIPTPUBKEY_LEN;
+    memcpy(tx + off, claim_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN); off += VAULT_P2TR_SCRIPTPUBKEY_LEN;
     /* locktime: 0 */
     tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
 
@@ -638,7 +641,7 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     cx_hash_no_throw(&ctx.header, (int) CX_LAST, NULL, 0u, expected, 32u);
 
     uint8_t actual[32];
-    vault_compute_pegin_txid(&intent, actual);
+    assert_true(vault_compute_pegin_txid(&intent, actual));
     assert_memory_equal(expected, actual, 32);
 }
 

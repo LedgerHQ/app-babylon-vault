@@ -29,8 +29,8 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
     if (G_vault_context.state != VAULT_STATE_IDLE) {
         vault_context_invalidate(&G_vault_context);
     }
-    explicit_bzero(&G_scratch.hkdf, sizeof(G_scratch.hkdf));
-    explicit_bzero(&G_scratch.approve, sizeof(G_scratch.approve));
+    explicit_bzero(&G_scratch, sizeof(G_scratch));
+    explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
 
     // Parse: app_name_len(1B) | app_name(≤64B) | context_total_len(2B BE)
     if (cmd->lc < 3u) {

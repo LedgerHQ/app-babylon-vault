@@ -54,16 +54,19 @@ typedef struct {
  * Mutually-exclusive scratch union.
  *
  * Each member is live in exactly one handler and is zeroed before use:
- *   - hkdf          DERIVE_CONTEXT_HASH only
- *   - approve       APPROVE_VAULT_INTENT only
- *   - script_scratch  vault_build_* signing hooks (never live during either above)
+ *   - hkdf            DERIVE_CONTEXT_HASH only
+ *   - script_scratch  vault_build_* signing hooks (never live during DERIVE_CONTEXT_HASH)
  *
- * Union saves ~520 B vs three separate globals (3080 B → 2560 B).
+ * approve_intent_state_t is intentionally NOT in this union: its first field
+ * (scalars_loaded) aliases hkdf.active at offset 0, causing false-positive
+ * active checks after APPROVE_VAULT_INTENT sets scalars_loaded=true.
  */
 typedef union {
-    hkdf_stream_t          hkdf;
-    approve_intent_state_t approve;
-    uint8_t                script_scratch[VAULT_SCRIPT_MAX_LEN];
+    hkdf_stream_t hkdf;
+    uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
 } vault_scratch_t;
 
 extern vault_scratch_t G_scratch;
+
+/** In-flight state for APPROVE_VAULT_INTENT multi-step exchange. */
+extern approve_intent_state_t G_approve_intent_state;
