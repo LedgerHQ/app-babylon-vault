@@ -215,6 +215,10 @@ static bool _validate_display_prepegin(
                                                        (uint8_t[]){PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash_type);
+        if (res >= 0 && res != 4) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         if (res == 4 && sighash_type != 0 && sighash_type != 1) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -254,7 +258,15 @@ static bool _validate_display_prepegin(
 
     /* 8-9. HTLC amount ∈ [V + Dcv, V + Dcv + pegin_max_fee] */
     uint64_t min_htlc = intent->vault_amount + intent->depositor_claim_value;
+    if (min_htlc < intent->vault_amount) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     uint64_t max_htlc = min_htlc + intent->pegin_max_fee;
+    if (max_htlc < min_htlc) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     if (htlc_value < min_htlc || htlc_value > max_htlc) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -270,6 +282,10 @@ static bool _validate_display_prepegin(
     }
 
     /* 11. Fee */
+    if (st->outputs.total_amount > st->inputs_total_amount) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     uint64_t fee = st->inputs_total_amount - st->outputs.total_amount;
 
     /* 12. Convert HTLC scriptPubKey to address string */
@@ -321,6 +337,10 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
                                                        (uint8_t[]){PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash_type);
+        if (res >= 0 && res != 4) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         if (res == 4 && sighash_type != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -459,6 +479,11 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        /* BIP-341: control block parity bit must match output key parity */
+        if ((cb[0] & 1) != parity) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         /* htlc_spk: [0x51, 0x20, tweaked[32]] */
         if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20
             || memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
@@ -552,10 +577,16 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
 
 static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
+    /* Internal state guard — defence in depth against caller mis-dispatch */
+    if (G_vault_context.state != VAULT_STATE_SESSION2_PEGIN_EXPECTED) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return false;
+    }
+
     const vault_intent_t *intent = &G_vault_intent;
 
-    /* 1. Version == 2, locktime == 0 */
-    if (st->tx_version != 2 || st->locktime != 0) {
+    /* 1. Version >= 2, locktime == 0 */
+    if (st->tx_version < 2 || st->locktime != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -627,14 +658,19 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
                                                        (uint8_t[]){PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash_type);
+        if (res >= 0 && res != 4) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         if (res == 4 && sighash_type != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
     }
 
-    /* 8. WITNESS_UTXO → htlc_value + confirm 34-byte P2TR spk */
+    /* 8. WITNESS_UTXO → htlc_value + htlc_spk (spk verified against reconstructed key in step 11) */
     uint64_t htlc_value;
+    uint8_t htlc_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -653,6 +689,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        memcpy(htlc_spk, witness_utxo + 9, VAULT_P2TR_SCRIPTPUBKEY_LEN);
     }
 
     /* 9. TAP_INTERNAL_KEY must be NUMS_XONLY */
@@ -673,7 +710,10 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* 10. TAP_MERKLE_ROOT must match vault_build_htlc_merkle_root */
     {
         uint8_t expected_root[VAULT_HASH256_LEN];
-        vault_build_htlc_merkle_root(intent, G_vault_context.htlc_hashlock, expected_root);
+        if (!vault_build_htlc_merkle_root(intent, G_vault_context.htlc_hashlock, expected_root)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
 
         uint8_t psbt_root[VAULT_HASH256_LEN];
         if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
@@ -725,6 +765,13 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
 
+        /* Verify WITNESS_UTXO scriptPubKey matches the reconstructed output key */
+        if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20
+            || memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
         /* Construct PSBT key for TAP_LEAF_SCRIPT of Leaf 0:
          * key = 0x15 || (0xC0 | parity) || NUMS_XONLY || leaf1_hash */
         uint8_t psbt_key[1 + 1 + VAULT_XONLY_PUBKEY_LEN + VAULT_HASH256_LEN];
@@ -735,11 +782,11 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         size_t psbt_key_len = sizeof(psbt_key);
 
         /* Value = expected_leaf0_script || 0xC0.  We expect l0_len + 1 bytes. */
-        /* Rebuild Leaf 0 script for comparison */
-        uint8_t expected_leaf0[VAULT_SCRIPT_MAX_LEN];
+        /* Rebuild Leaf 0 script for comparison — reuse scratch (leaf1 already hashed above) */
+        memset(G_scratch.script_scratch, 0, VAULT_SCRIPT_MAX_LEN);
         int expected_l0_len = vault_build_htlc_leaf0(intent,
                                                       G_vault_context.htlc_hashlock,
-                                                      expected_leaf0,
+                                                      G_scratch.script_scratch,
                                                       VAULT_SCRIPT_MAX_LEN);
         if (expected_l0_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -762,7 +809,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (memcmp(value_buf, expected_leaf0, expected_l0_len) != 0) {
+        if (memcmp(value_buf, G_scratch.script_scratch, expected_l0_len) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -827,7 +874,15 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
     }
 
-    /* 15. PegIn is silent — no display needed */
+    /* 15. PegIn is silent — no display needed.
+     * Advance state: SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED so the same
+     * PSBT cannot be validated a second time before NAPPS-1377 implements signing. */
+    if (!vault_context_transition(&G_vault_context,
+                                  VAULT_STATE_SESSION2_PEGIN_EXPECTED,
+                                  VAULT_STATE_SESSION2_PAYOUT_EXPECTED)) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return false;
+    }
     return true;
 }
 
