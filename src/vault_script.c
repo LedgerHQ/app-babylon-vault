@@ -149,6 +149,9 @@ void vault_taproot_leaf_hash(const uint8_t *script,
     cx_sha256_t ctx;
     crypto_tr_tapleaf_hash_init(&ctx);
     _hash_update_u8(&ctx.header, TAPSCRIPT_LEAF_VERSION);
+    /* VAULT_SCRIPT_MAX_LEN ≤ 0xFFFF → varint fits in 3 bytes; vbuf[5] is sufficient. */
+    _Static_assert(VAULT_SCRIPT_MAX_LEN <= 0xFFFFu,
+                   "varint buffer vbuf[5] assumes script length fits in 2 bytes; update if scripts can exceed 64 KB");
     uint8_t vbuf[5];
     int vlen = _varint_write(vbuf, (uint64_t) script_len);
     _hash_update(&ctx.header, vbuf, (size_t) vlen);
@@ -264,7 +267,8 @@ int vault_build_depositor_claim_leaf(const vault_intent_t *intent, uint8_t *buf,
  * ----------------------------------------------------------------------- */
 
 int vault_build_htlc_leaf1(const vault_intent_t *intent, uint8_t *buf, int buf_max) {
-    if (buf_max < 39) return -1; /* conservative upper bound */
+    /* Max output: 1 + 32 + 1 + _push_number(VAULT_TIMELOCK_MAX=1008)=3 + 1 = 38 bytes */
+    if (buf_max < 38) return -1;
     int off = 0;
     buf[off++] = OP_PUSHBYTES_32;
     memcpy(buf + off, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN);
@@ -446,6 +450,10 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
                                     int buf_max) {
     if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count) return -1;
 
+    /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.
+     * Cannot use G_scratch here — buf already points into it. */
+    _Static_assert(VAULT_MAX_KEEPERS * VAULT_XONLY_PUBKEY_LEN <= 1024u,
+                   "AppChallengers scratch exceeds 1 KB; revisit if target RAM shrinks");
     uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];
     int k = build_app_challengers(intent, claimer_idx, _app_challengers);
 

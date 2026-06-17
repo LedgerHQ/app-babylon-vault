@@ -48,6 +48,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
 
     vault_context_invalidate(&G_vault_context);
     explicit_bzero(&G_scratch, sizeof(G_scratch));
+    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
 
     if (preserve_htlc) {
         memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);

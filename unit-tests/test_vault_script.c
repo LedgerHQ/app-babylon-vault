@@ -430,9 +430,8 @@ static void test_htlc_leaf1_buf_too_small(void **state) {
     (void)state;
     vault_intent_t intent = make_n1m1();
     uint8_t buf[64];
-    /* conservative guard rejects buf_max < 39 even though actual output is 38 bytes */
-    assert_int_equal(vault_build_htlc_leaf1(&intent, buf, 38), -1);
-    assert_int_equal(vault_build_htlc_leaf1(&intent, buf, 39), 38); /* passes guard, succeeds */
+    assert_int_equal(vault_build_htlc_leaf1(&intent, buf, 37), -1); /* too small */
+    assert_int_equal(vault_build_htlc_leaf1(&intent, buf, 38), 38); /* exact fit */
 }
 
 static void test_vault_utxo_leaf_buf_too_small(void **state) {

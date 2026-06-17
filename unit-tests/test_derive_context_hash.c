@@ -69,7 +69,7 @@ static const uint8_t REF_PREIMAGE_OTHER_APP[32] = {
 // ---------------------------------------------------------------------------
 
 static void reset_stream(void) {
-    explicit_bzero(&G_scratch.hkdf, sizeof(G_scratch.hkdf));
+    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
 }
 
 static bool all_zero(const uint8_t *buf, size_t len) {
@@ -89,11 +89,11 @@ static void test_zero_context_matches_reference(void **state) {
     uint8_t preimage[32] = {0};
     uint8_t hashlock[32] = {0};
 
-    bool ok = hkdf_stream_begin(&G_scratch.hkdf,
+    bool ok = hkdf_stream_begin(&G_hkdf_stream,
                                 (const uint8_t *)"TestApp", 7, 0);
     assert_true(ok);
 
-    ok = hkdf_stream_finalize(&G_scratch.hkdf, preimage, hashlock);
+    ok = hkdf_stream_finalize(&G_hkdf_stream, preimage, hashlock);
     assert_true(ok);
 
     assert_memory_equal(preimage, REF_PREIMAGE_NO_CTX, 32);
@@ -111,16 +111,16 @@ static void test_single_feed_matches_reference(void **state) {
     uint8_t hashlock[32] = {0};
     const uint8_t ctx_data[] = "hello_context";
 
-    bool ok = hkdf_stream_begin(&G_scratch.hkdf,
+    bool ok = hkdf_stream_begin(&G_hkdf_stream,
                                 (const uint8_t *)"TestApp", 7, sizeof(ctx_data) - 1);
     assert_true(ok);
 
-    ok = hkdf_stream_feed(&G_scratch.hkdf, ctx_data, sizeof(ctx_data) - 1);
+    ok = hkdf_stream_feed(&G_hkdf_stream, ctx_data, sizeof(ctx_data) - 1);
     assert_true(ok);
 
-    G_scratch.hkdf.context_received_len = (uint16_t)(sizeof(ctx_data) - 1);
+    G_hkdf_stream.context_received_len = (uint16_t)(sizeof(ctx_data) - 1);
 
-    ok = hkdf_stream_finalize(&G_scratch.hkdf, preimage, hashlock);
+    ok = hkdf_stream_finalize(&G_hkdf_stream, preimage, hashlock);
     assert_true(ok);
 
     assert_memory_equal(preimage, REF_PREIMAGE_WITH_CTX, 32);
@@ -141,9 +141,9 @@ static void test_multi_chunk_equals_single_chunk(void **state) {
     const uint8_t full[]  = "hello_context";
     const uint16_t ctx_len = sizeof(full) - 1;
 
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"TestApp", 7, ctx_len);
-    hkdf_stream_feed(&G_scratch.hkdf, full, ctx_len);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage_single, hashlock_single);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"TestApp", 7, ctx_len);
+    hkdf_stream_feed(&G_hkdf_stream, full, ctx_len);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage_single, hashlock_single);
 
     // Two chunks: "hello_" then "context"
     reset_stream();
@@ -152,10 +152,10 @@ static void test_multi_chunk_equals_single_chunk(void **state) {
     const uint8_t part1[] = "hello_";
     const uint8_t part2[] = "context";
 
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"TestApp", 7, ctx_len);
-    hkdf_stream_feed(&G_scratch.hkdf, part1, sizeof(part1) - 1);
-    hkdf_stream_feed(&G_scratch.hkdf, part2, sizeof(part2) - 1);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage_multi, hashlock_multi);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"TestApp", 7, ctx_len);
+    hkdf_stream_feed(&G_hkdf_stream, part1, sizeof(part1) - 1);
+    hkdf_stream_feed(&G_hkdf_stream, part2, sizeof(part2) - 1);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage_multi, hashlock_multi);
 
     assert_memory_equal(preimage_single, preimage_multi, 32);
     assert_memory_equal(hashlock_single, hashlock_multi, 32);
@@ -171,12 +171,12 @@ static void test_deterministic(void **state) {
     uint8_t preimage_b[32], hashlock_b[32];
 
     reset_stream();
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"TestApp", 7, 0);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage_a, hashlock_a);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"TestApp", 7, 0);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage_a, hashlock_a);
 
     reset_stream();
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"TestApp", 7, 0);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage_b, hashlock_b);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"TestApp", 7, 0);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage_b, hashlock_b);
 
     assert_memory_equal(preimage_a, preimage_b, 32);
     assert_memory_equal(hashlock_a, hashlock_b, 32);
@@ -191,8 +191,8 @@ static void test_different_app_name_produces_different_output(void **state) {
     uint8_t preimage_a[32], hashlock_a[32];
 
     reset_stream();
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"OtherApp", 8, 0);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage_a, hashlock_a);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"OtherApp", 8, 0);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage_a, hashlock_a);
 
     assert_memory_equal(preimage_a, REF_PREIMAGE_OTHER_APP, 32);
     // Must differ from "TestApp" output
@@ -209,9 +209,9 @@ static void test_different_context_produces_different_output(void **state) {
     const uint8_t ctx[] = "different_context";
 
     reset_stream();
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"TestApp", 7, sizeof(ctx) - 1);
-    hkdf_stream_feed(&G_scratch.hkdf, ctx, sizeof(ctx) - 1);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage_a, hashlock_a);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"TestApp", 7, sizeof(ctx) - 1);
+    hkdf_stream_feed(&G_hkdf_stream, ctx, sizeof(ctx) - 1);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage_a, hashlock_a);
 
     assert_memory_not_equal(preimage_a, REF_PREIMAGE_WITH_CTX, 32);
     assert_memory_not_equal(preimage_a, REF_PREIMAGE_NO_CTX, 32);
@@ -226,8 +226,8 @@ static void test_hashlock_is_sha256_of_preimage(void **state) {
     uint8_t preimage[32], hashlock[32], expected_hashlock[32];
 
     reset_stream();
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"TestApp", 7, 0);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage, hashlock);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"TestApp", 7, 0);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage, hashlock);
 
     cx_hash_sha256(preimage, 32, expected_hashlock, 32);
     assert_memory_equal(hashlock, expected_hashlock, 32);
@@ -243,8 +243,8 @@ static void test_outputs_are_nonzero(void **state) {
     uint8_t hashlock[32] = {0};
 
     reset_stream();
-    hkdf_stream_begin(&G_scratch.hkdf, (const uint8_t *)"TestApp", 7, 0);
-    hkdf_stream_finalize(&G_scratch.hkdf, preimage, hashlock);
+    hkdf_stream_begin(&G_hkdf_stream, (const uint8_t *)"TestApp", 7, 0);
+    hkdf_stream_finalize(&G_hkdf_stream, preimage, hashlock);
 
     assert_false(all_zero(preimage, 32));
     assert_false(all_zero(hashlock, 32));
@@ -260,9 +260,9 @@ static void test_empty_app_name_accepted(void **state) {
     uint8_t hashlock[32] = {0};
 
     reset_stream();
-    bool ok = hkdf_stream_begin(&G_scratch.hkdf, NULL, 0, 0);
+    bool ok = hkdf_stream_begin(&G_hkdf_stream, NULL, 0, 0);
     assert_true(ok);
-    ok = hkdf_stream_finalize(&G_scratch.hkdf, preimage, hashlock);
+    ok = hkdf_stream_finalize(&G_hkdf_stream, preimage, hashlock);
     assert_true(ok);
 
     assert_false(all_zero(preimage, 32));

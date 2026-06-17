@@ -12,6 +12,10 @@ build/
 unit-tests/build/
 unit-tests/coverage/
 unit-tests/coverage.info
+unit-tests/CMakeCache.txt
+unit-tests/CMakeFiles/
+unit-tests/DartConfiguration.tcl
+unit-tests/Testing/
 
 # temporary folder used during tests
 tests/.test_bitcoin

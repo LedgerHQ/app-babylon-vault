@@ -64,21 +64,26 @@ typedef struct {
  * Mutually-exclusive scratch union.
  *
  * Each member is live in exactly one handler and is zeroed before use:
- *   - hkdf            DERIVE_CONTEXT_HASH only
- *   - script_scratch  vault_build_* signing hooks (never live during DERIVE_CONTEXT_HASH)
+ *   - script_scratch  vault_build_* signing hooks
  *   - display         display_vault_intent only (blocks on io_ui_process)
  *
- * approve_intent_state_t is intentionally NOT in this union: its first field
- * (scalars_loaded) aliases hkdf.active at offset 0, causing false-positive
- * active checks after APPROVE_VAULT_INTENT sets scalars_loaded=true.
+ * hkdf_stream_t and approve_intent_state_t are intentionally NOT in this
+ * union.  Both have a boolean guard at their first byte (hkdf.active /
+ * scalars_loaded).  If either were a union member, stale non-zero bytes
+ * left by script_scratch or display (e.g. an opcode or ASCII hex char at
+ * offset 0) would alias that guard and cause handle_context_chunk() or
+ * handle_key_batch() to treat spurious data as an in-progress stream.
  */
 typedef union {
-    hkdf_stream_t hkdf;
     uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
     display_vault_intent_scratch_t display;
 } vault_scratch_t;
 
 extern vault_scratch_t G_scratch;
+
+/** In-flight state for a streaming HKDF derivation — kept outside the
+ *  scratch union to prevent offset-0 aliasing with script_scratch/display. */
+extern hkdf_stream_t G_hkdf_stream;
 
 /** In-flight state for APPROVE_VAULT_INTENT multi-step exchange. */
 extern approve_intent_state_t G_approve_intent_state;
