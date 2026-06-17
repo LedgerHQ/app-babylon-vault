@@ -494,7 +494,7 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
  *   branch_hash(leaf_hash(Leaf 0), leaf_hash(Leaf 1))
  * ----------------------------------------------------------------------- */
 
-void vault_build_htlc_merkle_root(const vault_intent_t *intent,
+bool vault_build_htlc_merkle_root(const vault_intent_t *intent,
                                   const uint8_t h[VAULT_HASH256_LEN],
                                   uint8_t out[VAULT_HASH256_LEN]) {
     uint8_t lh0[VAULT_HASH256_LEN], lh1[VAULT_HASH256_LEN];
@@ -502,18 +502,19 @@ void vault_build_htlc_merkle_root(const vault_intent_t *intent,
     int len0 = vault_build_htlc_leaf0(intent, h, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
     if (len0 < 0) {
         memset(out, 0, VAULT_HASH256_LEN);
-        return;
+        return false;
     }
     vault_taproot_leaf_hash(G_scratch.script_scratch, len0, lh0);
 
     int len1 = vault_build_htlc_leaf1(intent, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
     if (len1 < 0) {
         memset(out, 0, VAULT_HASH256_LEN);
-        return;
+        return false;
     }
     vault_taproot_leaf_hash(G_scratch.script_scratch, len1, lh1);
 
     crypto_tr_combine_taptree_hashes(lh0, lh1, out);
+    return true;
 }
 
 /* --------------------------------------------------------------------------
@@ -526,7 +527,10 @@ bool vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
                                    const uint8_t h[VAULT_HASH256_LEN],
                                    uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t merkle_root[VAULT_HASH256_LEN];
-    vault_build_htlc_merkle_root(intent, h, merkle_root);
+    if (!vault_build_htlc_merkle_root(intent, h, merkle_root)) {
+        memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
+        return false;
+    }
     return vault_taproot_tweak_scriptpubkey(merkle_root, NULL, out);
 }
 

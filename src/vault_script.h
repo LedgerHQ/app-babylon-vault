@@ -63,7 +63,7 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
  * Derived outputs
  * ----------------------------------------------------------------------- */
 
-void vault_build_htlc_merkle_root(const vault_intent_t *intent,
+bool vault_build_htlc_merkle_root(const vault_intent_t *intent,
                                   const uint8_t h[VAULT_HASH256_LEN],
                                   uint8_t out[VAULT_HASH256_LEN]);
 
