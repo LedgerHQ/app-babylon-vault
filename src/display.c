@@ -94,6 +94,82 @@ bool display_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
+// Screen 2 — Pre-PegIn transaction
+// ---------------------------------------------------------------------------
+
+bool display_prepegin_transaction(dispatcher_context_t *dc,
+                                  uint64_t vault_amount,
+                                  uint64_t fee,
+                                  const char *htlc_address) {
+    static char prepegin_amount_str[MAX_AMOUNT_LENGTH + 1];
+    static char prepegin_fee_str[MAX_AMOUNT_LENGTH + 1];
+
+    format_sats_amount(COIN_COINID_SHORT, vault_amount, prepegin_amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, prepegin_fee_str);
+
+    int n = 0;
+    pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = prepegin_amount_str};
+    pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = prepegin_fee_str};
+    pairs[n++] = (nbgl_layoutTagValue_t) {.item = "HTLC address", .value = htlc_address};
+
+    pairList.nbMaxLinesForValue = 0;
+    pairList.nbPairs = n;
+    pairList.pairs = pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pairList,
+                       &ICON_APP_ACTION,
+                       "Review Pre-PegIn\ntransaction",
+                       NULL,
+                       "Sign Pre-PegIn\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 3 — Refund transaction
+// ---------------------------------------------------------------------------
+
+bool display_refund_transaction(dispatcher_context_t *dc,
+                                uint64_t amount_reclaimed,
+                                uint64_t fee) {
+    static char refund_amount_str[MAX_AMOUNT_LENGTH + 1];
+    static char refund_fee_str[MAX_AMOUNT_LENGTH + 1];
+
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, refund_amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, refund_fee_str);
+
+    int n = 0;
+    pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount", .value = refund_amount_str};
+    pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = refund_fee_str};
+
+    pairList.nbMaxLinesForValue = 0;
+    pairList.nbPairs = n;
+    pairList.pairs = pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pairList,
+                       &ICON_APP_ACTION,
+                       "Review refund\ntransaction",
+                       NULL,
+                       "Sign refund\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Vault intent approval screen
 // ---------------------------------------------------------------------------
 

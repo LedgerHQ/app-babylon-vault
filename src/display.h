@@ -19,3 +19,34 @@ bool display_transaction(dispatcher_context_t *dc,
  * @return false  User rejected; SW_DENY has already been sent to the host.
  */
 bool display_vault_intent(dispatcher_context_t *dc);
+
+/**
+ * @brief Screen 2 — Pre-PegIn transaction review.
+ *
+ * Shows vault amount, fee, and HTLC output address.
+ * Approval gates signing; rejection returns SW_DENY.
+ *
+ * @param vault_amount    Vault amount in satoshis.
+ * @param fee             Transaction fee in satoshis.
+ * @param htlc_address    NUL-terminated bech32 address string; caller must keep
+ *                        the pointer valid until this function returns.
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_prepegin_transaction(dispatcher_context_t *dc,
+                                  uint64_t vault_amount,
+                                  uint64_t fee,
+                                  const char *htlc_address);
+
+/**
+ * @brief Screen 3 — Refund transaction review.
+ *
+ * Shows the amount reclaimed and transaction fee.
+ * Approval gates signing; rejection returns SW_DENY.
+ *
+ * @param amount_reclaimed  Amount returned to the depositor in satoshis.
+ * @param fee               Transaction fee in satoshis.
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_refund_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed, uint64_t fee);

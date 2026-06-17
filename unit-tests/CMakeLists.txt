@@ -108,3 +108,24 @@ target_compile_definitions(test_vault_script PRIVATE
 target_link_libraries(test_vault_script cmocka)
 
 add_test(NAME test_vault_script COMMAND test_vault_script)
+
+# -----------------------------------------------------------------------
+# test_sign_psbt_validate
+#
+# Tests the three pure helper functions extracted from sign_psbt_validate.c:
+#   check_bip86_path, parse_tap_bip32_deriv_value, parse_refund_leaf_script.
+# mocks/read.h provides inline read_u32_le; mocks/common/script.h provides
+# opcode constants.  No mock_cx needed (no SHA-256 or crypto calls).
+# -----------------------------------------------------------------------
+add_executable(test_sign_psbt_validate
+  test_sign_psbt_validate.c
+  ${SRC_DIR}/sign_psbt_validate_helpers.c
+)
+
+target_compile_definitions(test_sign_psbt_validate PRIVATE
+  TEST
+  BIP44_COIN_TYPE=1
+)
+target_link_libraries(test_sign_psbt_validate cmocka)
+
+add_test(NAME test_sign_psbt_validate COMMAND test_sign_psbt_validate)

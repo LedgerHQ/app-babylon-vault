@@ -1,5 +1,7 @@
 from ragger.navigator import NavInsID
 from ledgered.devices import Device
+from ragger.firmware import Firmware
+from ragger_bitcoin.ragger_instructions import Instructions
 from typing import List, Tuple
 
 # Steps to page through all content fields of a 1-keeper + 1-challenger intent
@@ -89,3 +91,83 @@ def vault_intent_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], s
              NavInsID.USE_CASE_CHOICE_CONFIRM,
              NavInsID.USE_CASE_STATUS_DISMISS],
             "^Hold to sign$")
+
+
+def sign_psbt_refund_instructions(firmware: Firmware) -> Instructions:
+    """Reject-path Instructions for Screen 3 (Refund transaction review).
+
+    The Flex NBGL layout has 3 pages: intro ("Review refund transaction"),
+    a single content page showing both "Reclaimed amount" and "Transaction fee",
+    and the finish page ("Sign refund transaction?").  Navigates through each
+    and rejects to capture all golden snapshots.  Expects SW_DENY on return.
+    """
+    instructions = Instructions(firmware)
+    if firmware.name.startswith("nano"):
+        instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    else:
+        instructions.new_request(
+            "Review refund",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_TAP,
+        )
+        # Both "Reclaimed amount" and "Transaction fee" appear on the same content page.
+        instructions.same_request(
+            "Reclaimed amount",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_TAP,
+        )
+        instructions.same_request(
+            "Sign refund",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_REJECT,
+        )
+        instructions.same_request(
+            "Reject",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_CHOICE_CONFIRM,
+        )
+    return instructions
+
+
+def sign_psbt_prepegin_instructions(firmware: Firmware) -> Instructions:
+    """Reject-path Instructions for Screen 2 (Pre-PegIn transaction review).
+
+    Navigates through all review pages ("Review Pre-PegIn", "Vault amount",
+    "Transaction fee", "HTLC address", "Sign Pre-PegIn") and rejects at the
+    sign page. Expects SW_DENY on return.
+    """
+    instructions = Instructions(firmware)
+    if firmware.name.startswith("nano"):
+        instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    else:
+        instructions.new_request(
+            "Review Pre-PegIn",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_TAP,
+        )
+        instructions.same_request(
+            "Vault amount",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_TAP,
+        )
+        instructions.same_request(
+            "Transaction fee",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_TAP,
+        )
+        instructions.same_request(
+            "HTLC address",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_TAP,
+        )
+        instructions.same_request(
+            "Sign Pre-PegIn",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_REVIEW_REJECT,
+        )
+        instructions.same_request(
+            "Reject",
+            NavInsID.USE_CASE_REVIEW_TAP,
+            NavInsID.USE_CASE_CHOICE_CONFIRM,
+        )
+    return instructions
