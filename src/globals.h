@@ -51,11 +51,22 @@ typedef struct {
 } approve_intent_state_t;
 
 /**
+ * Scratch buffers for display_vault_intent: the two key string/label arrays
+ * sized for the maximum keeper+challenger count.  Lives in G_scratch.display
+ * for the duration of the blocking io_ui_process() call.
+ */
+typedef struct {
+    char key_strs[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_HEX_KEY_STR_SIZE];
+    char key_labels[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_KEY_LABEL_SIZE];
+} display_vault_intent_scratch_t;
+
+/**
  * Mutually-exclusive scratch union.
  *
  * Each member is live in exactly one handler and is zeroed before use:
  *   - hkdf            DERIVE_CONTEXT_HASH only
  *   - script_scratch  vault_build_* signing hooks (never live during DERIVE_CONTEXT_HASH)
+ *   - display         display_vault_intent only (blocks on io_ui_process)
  *
  * approve_intent_state_t is intentionally NOT in this union: its first field
  * (scalars_loaded) aliases hkdf.active at offset 0, causing false-positive
@@ -64,6 +75,7 @@ typedef struct {
 typedef union {
     hkdf_stream_t hkdf;
     uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
+    display_vault_intent_scratch_t display;
 } vault_scratch_t;
 
 extern vault_scratch_t G_scratch;

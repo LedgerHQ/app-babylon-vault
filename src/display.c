@@ -175,10 +175,6 @@ bool display_refund_transaction(dispatcher_context_t *dc,
 
 #define VAULT_INTENT_MAX_PAIRS (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
 
-// 64 hex chars + NUL for a 32-byte x-only public key
-#define VAULT_HEX_KEY_STR_SIZE (2 * VAULT_XONLY_PUBKEY_LEN + 1)
-// "Challenger 32\0" is the longest possible key label
-#define VAULT_KEY_LABEL_SIZE 14
 // "4294967295 sat/vB\0" — TLV parser rejects base_fee_rate > UINT32_MAX, so cast is safe
 #define VAULT_FEE_RATE_STR_SIZE 20
 // "1008 blocks (~7 days)\0" + headroom
@@ -207,9 +203,11 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 #endif
 
 bool display_vault_intent(dispatcher_context_t *dc) {
-    // All display buffers live on the stack of this function.
-    // NBGL holds pointers into them, but this frame stays alive throughout
-    // the blocking io_ui_process() call, so the pointers remain valid.
+    // Scalar string buffers and vault_pairs live on the stack (small, frame
+    // stays alive through the blocking io_ui_process() call so NBGL pointers
+    // remain valid).  The large key string/label arrays live in G_scratch.display
+    // which is safe to reuse here: display_vault_intent blocks on io_ui_process
+    // and cannot overlap with the hkdf or script_scratch union members.
     nbgl_layoutTagValue_t vault_pairs[VAULT_INTENT_MAX_PAIRS];
     nbgl_layoutTagValueList_t vault_pair_list;
     char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];
@@ -221,8 +219,6 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_refund_tl_str[VAULT_TIMELOCK_STR_SIZE];
-    char vault_key_strs[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_HEX_KEY_STR_SIZE];
-    char vault_key_labels[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_KEY_LABEL_SIZE];
 
     int n = 0;
 
@@ -280,11 +276,14 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     for (uint8_t i = 0; i < G_vault_intent.keeper_count; i++) {
         format_hex(G_vault_intent.keeper_pks[i],
                    VAULT_XONLY_PUBKEY_LEN,
-                   vault_key_strs[i],
-                   sizeof(vault_key_strs[i]));
-        snprintf(vault_key_labels[i], sizeof(vault_key_labels[i]), "Keeper %u", i + 1u);
-        vault_pairs[n++] =
-            (nbgl_layoutTagValue_t) {.item = vault_key_labels[i], .value = vault_key_strs[i]};
+                   G_scratch.display.key_strs[i],
+                   sizeof(G_scratch.display.key_strs[i]));
+        snprintf(G_scratch.display.key_labels[i],
+                 sizeof(G_scratch.display.key_labels[i]),
+                 "Keeper %u",
+                 i + 1u);
+        vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = G_scratch.display.key_labels[i],
+                                                    .value = G_scratch.display.key_strs[i]};
     }
 
     // ---- Challenger public keys ----
@@ -293,11 +292,14 @@ bool display_vault_intent(dispatcher_context_t *dc) {
         uint8_t slot = G_vault_intent.keeper_count + i;
         format_hex(G_vault_intent.challenger_pks[i],
                    VAULT_XONLY_PUBKEY_LEN,
-                   vault_key_strs[slot],
-                   sizeof(vault_key_strs[slot]));
-        snprintf(vault_key_labels[slot], sizeof(vault_key_labels[slot]), "Challenger %u", i + 1u);
-        vault_pairs[n++] =
-            (nbgl_layoutTagValue_t) {.item = vault_key_labels[slot], .value = vault_key_strs[slot]};
+                   G_scratch.display.key_strs[slot],
+                   sizeof(G_scratch.display.key_strs[slot]));
+        snprintf(G_scratch.display.key_labels[slot],
+                 sizeof(G_scratch.display.key_labels[slot]),
+                 "Challenger %u",
+                 i + 1u);
+        vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = G_scratch.display.key_labels[slot],
+                                                    .value = G_scratch.display.key_strs[slot]};
     }
 
     assert(n <= VAULT_INTENT_MAX_PAIRS);

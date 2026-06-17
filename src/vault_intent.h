@@ -11,6 +11,10 @@
 
 // Size of an x-only Schnorr public key (BIP-340).
 #define VAULT_XONLY_PUBKEY_LEN 32
+// Buffer size for a hex-encoded x-only public key (64 chars + NUL).
+#define VAULT_HEX_KEY_STR_SIZE (2 * VAULT_XONLY_PUBKEY_LEN + 1)
+// Buffer size for "Challenger 32\0", the longest possible keeper/challenger label.
+#define VAULT_KEY_LABEL_SIZE 14
 
 // Size of a SHA-256 hash or Bitcoin txid.
 #define VAULT_HASH256_LEN 32

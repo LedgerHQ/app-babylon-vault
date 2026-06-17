@@ -69,3 +69,18 @@ ICON_APEX_P = icons/apex_p_app_babylon_vault.png
 APP_LOAD_PARAMS = --path "73681862'"
 
 include bitcoin_app_base/Makefile
+
+# arm-none-eabi-size always reports bss == total SRAM on Ledger targets: the
+# linker script extends .bss to END_STACK to reserve stack space, so the bss
+# column is the whole SRAM budget, not just BSS variables.  Use nm to extract
+# the linker-defined _bss/_ebss/_stack/_estack labels and compute the real split.
+.PHONY: app-size-report
+app-size-report: $(BIN_TARGETS) $(DBG_TARGETS)
+	@echo ""
+	@echo "Finished Babylon-vault Ledger app ($(TARGET_NAME)) → $(BIN_DIR)/app.elf"
+	@$(GCCPATH)arm-none-eabi-size $(BIN_DIR)/app.elf | \
+	  awk 'NR==2 { printf "  flash  %6d B\n", $$1 }'
+	@$(GCCPATH)arm-none-eabi-nm $(BIN_DIR)/app.elf 2>/dev/null | \
+	  python3 -c "import sys; s={p[2]:int(p[0],16) for l in sys.stdin for p in [l.split()] if len(p)==3}; bv=s['_ebss']-s['_bss']; sk=s['_estack']-s['_stack']; print(f'  SRAM   {bv+sk:6d} B total: {bv} B BSS variables, {sk} B stack headroom')"
+
+default: app-size-report
