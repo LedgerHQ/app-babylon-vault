@@ -12,7 +12,7 @@
  *   2. vault_check_depositor_uniqueness() — final cross-role check after all keys loaded
  *
  * The handler (approve_vault_intent.c) owns:
- *   - G_scratch.approve management
+ *   - G_approve_intent_state management
  *   - crypto_get_compressed_pubkey_at_path() call (SDK)
  *   - vault_context_invalidate / vault_context_transition
  *   - SEND_SW
