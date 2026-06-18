@@ -435,7 +435,6 @@ def test_sign_psbt_refund_screen(
     navigator: Navigator,
     device: Device,
     bitcoin_network: str,
-    test_name: str,
 ) -> None:
     """Show Screen 3 (Refund) and capture all review pages as golden snapshots.
 
@@ -456,7 +455,7 @@ def test_sign_psbt_refund_screen(
 
     psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    tname = test_name + "_" + bitcoin_network
+    tname = "refund/screen_" + bitcoin_network
 
     with pytest.raises(ExceptionRAPDU) as exc:
         if device.is_nano:
@@ -477,7 +476,6 @@ def test_sign_psbt_prepegin_screen(
     navigator: Navigator,
     device: Device,
     bitcoin_network: str,
-    test_name: str,
 ) -> None:
     """Golden snapshot for Screen 2 (Pre-PegIn review). Navigates and rejects."""
     coin_type = 0 if bitcoin_network == "main" else 1
@@ -490,7 +488,7 @@ def test_sign_psbt_prepegin_screen(
 
     psbt = _build_prepegin_psbt(htlc_spk)
     wallet = _standard_taproot_wallet(client, coin_type)
-    tname = test_name + "_" + bitcoin_network
+    tname = "prepegin/screen_" + bitcoin_network
 
     with pytest.raises(ExceptionRAPDU) as exc:
         if device.is_nano:

@@ -82,13 +82,30 @@ def bitcoin_network(pytestconfig) -> Union[Literal['main'], Literal['test']]:
     return network
 
 
+def _iter_leaf_snapshot_dirs(base: Path):
+    """Yield leaf snapshot dirs up to 2 levels deep under base.
+
+    Handles the nested structure  base/<feature>/<flow_net>/
+    as well as legacy flat  base/<test_case_name>/  entries.
+    """
+    if not base.exists():
+        return
+    for entry in base.iterdir():
+        if not entry.is_dir():
+            continue
+        children = [c for c in entry.iterdir() if c.is_dir()]
+        if children:
+            yield from children
+        else:
+            yield entry
+
+
 @pytest.fixture(autouse=True)
-def check_no_extra_snapshots(request, test_name, device):
+def check_no_extra_snapshots(request, device):
     """After each test, verify no stale golden snapshots remain.
 
-    snapshots-tmp/<device>/<case>/ is reset by ragger at the start of each
-    navigate_and_compare call, so its post-test PNG count is the authoritative
-    "screens actually produced" count.
+    Walks snapshots-tmp/<device>/ up to 2 levels deep so it handles both
+    the nested  feature/flow_net/  layout and legacy flat  test_case/  dirs.
 
     Normal run: fail if snapshots/ has more PNGs than snapshots-tmp/.
     --golden_run: delete the extra files so goldens stay in sync automatically.
@@ -99,14 +116,9 @@ def check_no_extra_snapshots(request, test_name, device):
     tmp_base = TESTS_ROOT_DIR / "snapshots-tmp" / device.name
     golden_base = TESTS_ROOT_DIR / "snapshots" / device.name
 
-    if not tmp_base.exists():
-        return
-
-    for tmp_dir in tmp_base.iterdir():
-        if tmp_dir.name != test_name and not tmp_dir.name.startswith(test_name + "_"):
-            continue
-
-        golden_dir = golden_base / tmp_dir.name
+    for tmp_dir in _iter_leaf_snapshot_dirs(tmp_base):
+        rel = tmp_dir.relative_to(tmp_base)
+        golden_dir = golden_base / rel
         if not golden_dir.exists():
             continue
 
@@ -122,9 +134,9 @@ def check_no_extra_snapshots(request, test_name, device):
             for png in extra:
                 png.unlink()
         else:
-            rel = golden_dir.relative_to(TESTS_ROOT_DIR)
+            rel_display = golden_dir.relative_to(TESTS_ROOT_DIR)
             pytest.fail(
-                f"Stale golden snapshots in '{rel}': {[p.name for p in extra]}. "
+                f"Stale golden snapshots in '{rel_display}': {[p.name for p in extra]}. "
                 f"Test produced {expected_count} screen(s) but {expected_count + len(extra)} golden(s) exist. "
                 f"Run with --golden_run to regenerate."
             )
