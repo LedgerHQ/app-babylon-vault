@@ -151,7 +151,8 @@ void vault_taproot_leaf_hash(const uint8_t *script,
     _hash_update_u8(&ctx.header, TAPSCRIPT_LEAF_VERSION);
     /* VAULT_SCRIPT_MAX_LEN ≤ 0xFFFF → varint fits in 3 bytes; vbuf[5] is sufficient. */
     _Static_assert(VAULT_SCRIPT_MAX_LEN <= 0xFFFFu,
-                   "varint buffer vbuf[5] assumes script length fits in 2 bytes; update if scripts can exceed 64 KB");
+                   "varint buffer vbuf[5] assumes script length fits in 2 bytes; update if scripts "
+                   "can exceed 64 KB");
     uint8_t vbuf[5];
     int vlen = _varint_write(vbuf, (uint64_t) script_len);
     _hash_update(&ctx.header, vbuf, (size_t) vlen);
