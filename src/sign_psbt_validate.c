@@ -22,23 +22,10 @@
 /* read_u32_le / read_u64_le come from the SDK's lib_standard_app */
 #include "read.h"
 
-/* Forward-declare crypto_tr_tweak_pubkey used in vault_script.c */
-int crypto_tr_tweak_pubkey(const uint8_t pubkey[VAULT_XONLY_PUBKEY_LEN],
-                           const uint8_t *h,
-                           size_t h_len,
-                           uint8_t *y_parity,
-                           uint8_t out[VAULT_XONLY_PUBKEY_LEN]);
-
-/* BIP-341 TapBranch — sorts the two hashes before combining */
-void crypto_tr_combine_taptree_hashes(const uint8_t left[VAULT_HASH256_LEN],
-                                      const uint8_t right[VAULT_HASH256_LEN],
-                                      uint8_t out[VAULT_HASH256_LEN]);
-
 /* NUMS internal key — same constant as in vault_script.c */
 static const uint8_t NUMS_XONLY[VAULT_XONLY_PUBKEY_LEN] = {
-    0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60,
-    0x35, 0xe9, 0x7a, 0x5e, 0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5,
-    0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
+    0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
+    0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
 };
 
 /* Tapscript leaf version */
@@ -72,7 +59,7 @@ static bool _read_output(dispatcher_context_t *dc,
 
     /* Amount */
     uint8_t raw8[8];
-    if (8 != call_get_merkleized_map_value(dc, &map, (uint8_t[]){PSBT_OUT_AMOUNT}, 1, raw8, 8)) {
+    if (8 != call_get_merkleized_map_value(dc, &map, (uint8_t[]) {PSBT_OUT_AMOUNT}, 1, raw8, 8)) {
         return false;
     }
     *amount_out = read_u64_le(raw8, 0);
@@ -80,7 +67,7 @@ static bool _read_output(dispatcher_context_t *dc,
     /* Script */
     int slen = call_get_merkleized_map_value(dc,
                                              &map,
-                                             (uint8_t[]){PSBT_OUT_SCRIPT},
+                                             (uint8_t[]) {PSBT_OUT_SCRIPT},
                                              1,
                                              script_out,
                                              VAULT_P2TR_SCRIPTPUBKEY_LEN);
@@ -139,7 +126,7 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
      * so it only aliases the tail of tls.leaf_script and tls.leaf_script_len/leaf_version —
      * fields that haven't been set yet.  Write leaf_version/leaf_script_len AFTER the
      * memcpy so we don't corrupt the source before copying it. */
-    uint8_t * const value_buf = G_scratch.leaf_check.actual_buf;
+    uint8_t *const value_buf = G_scratch.leaf_check.actual_buf;
     int value_len = call_get_merkleized_map_value(dc,
                                                   map_commitment,
                                                   full_key,
@@ -154,7 +141,9 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     uint8_t leaf_version = value_buf[value_len - 1];
     int leaf_script_len = value_len - 1;
     if (leaf_script_len > 0) {
-        memcpy(state->leaf_script, value_buf, leaf_script_len);
+        /* tls.leaf_script (union+68) and actual_buf (union+2560) overlap when
+         * leaf_script_len > 2492 — use memmove to stay defined in that case. */
+        memmove(state->leaf_script, value_buf, leaf_script_len);
     }
     state->leaf_script_len = leaf_script_len;
     state->leaf_version = leaf_version;
@@ -169,7 +158,6 @@ static bool _validate_display_prepegin(
     sign_psbt_state_t *st,
     const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)],
     const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
-
     /* State guard: must have intent and a derived hashlock */
     if (G_vault_context.state != VAULT_STATE_INTENT_LOADED) {
         SEND_SW(dc, SW_BAD_STATE);
@@ -204,7 +192,7 @@ static bool _validate_display_prepegin(
         return false;
     }
 
-    /* 2. Sighash check: each input must use DEFAULT (0) or ALL (1) */
+    /* 3. Sighash check: each input must use DEFAULT (0) or ALL (1) */
     for (unsigned int i = 0; i < st->n_inputs; i++) {
         merkleized_map_commitment_t input_map;
         if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, i, &input_map) < 0) {
@@ -214,7 +202,7 @@ static bool _validate_display_prepegin(
         uint32_t sighash_type = 0;
         int res = call_get_merkleized_map_value_u32_le(dc,
                                                        &input_map,
-                                                       (uint8_t[]){PSBT_IN_SIGHASH_TYPE},
+                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash_type);
         if (res >= 0 && res != 4) {
@@ -228,13 +216,13 @@ static bool _validate_display_prepegin(
         /* res < 0 means absent → SIGHASH_DEFAULT (0) → OK */
     }
 
-    /* 3. htlc_vout is within output range */
+    /* 4. htlc_vout is within output range */
     if (intent->htlc_vout >= st->n_outputs) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
-    /* 4. Read the HTLC output script and amount */
+    /* 5. Read the HTLC output script and amount */
     uint8_t actual_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t htlc_value;
     if (!_read_output(dc,
@@ -247,7 +235,7 @@ static bool _validate_display_prepegin(
         return false;
     }
 
-    /* 5-6-7. Reconstruct expected HTLC scriptPubKey and compare */
+    /* 6-7-8. Reconstruct expected HTLC scriptPubKey and compare */
     uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     if (!vault_build_htlc_scriptpubkey(intent, G_vault_context.htlc_hashlock, expected_spk)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -258,7 +246,7 @@ static bool _validate_display_prepegin(
         return false;
     }
 
-    /* 8-9. HTLC amount ∈ [V + Dcv, V + Dcv + pegin_max_fee] */
+    /* 9-10. HTLC amount ∈ [V + Dcv, V + Dcv + pegin_max_fee] */
     uint64_t min_htlc = intent->vault_amount + intent->depositor_claim_value;
     if (min_htlc < intent->vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -274,7 +262,7 @@ static bool _validate_display_prepegin(
         return false;
     }
 
-    /* 10. All outputs other than htlc_vout must be BIP-86 change (internal) */
+    /* 11. All outputs other than htlc_vout must be BIP-86 change (internal) */
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         if (i == intent->htlc_vout) continue;
         if (!bitvector_get(internal_outputs, i)) {
@@ -283,26 +271,31 @@ static bool _validate_display_prepegin(
         }
     }
 
-    /* 11. Fee */
+    /* 12. Fee */
     if (st->outputs.total_amount > st->inputs_total_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
     uint64_t fee = st->inputs_total_amount - st->outputs.total_amount;
 
-    /* 12. Convert HTLC scriptPubKey to address string */
+    /* 13. Convert HTLC scriptPubKey to address string.
+     * Static lifetime required: NBGL stores a pointer to this buffer that must
+     * remain valid through the blocking io_ui_process() call in display_prepegin_transaction. */
     static char htlc_addr[MAX_ADDRESS_LENGTH_STR + 1];
-    if (get_script_address(expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN, htlc_addr, sizeof(htlc_addr)) < 0) {
+    if (get_script_address(expected_spk,
+                           VAULT_P2TR_SCRIPTPUBKEY_LEN,
+                           htlc_addr,
+                           sizeof(htlc_addr)) < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
-    /* 13. Show Screen 2 to the user (SW_DENY already sent by display function on rejection) */
+    /* 14. Show Screen 2 to the user (SW_DENY already sent by display function on rejection) */
     if (!display_prepegin_transaction(dc, intent->vault_amount, fee, htlc_addr)) {
         return false;
     }
 
-    /* 14. Advance state: INTENT_LOADED → SESSION1_PREPEGIN_EXPECTED.
+    /* 15. Advance state: INTENT_LOADED → SESSION1_PREPEGIN_EXPECTED.
      * This prevents the same Pre-PegIn PSBT from being signed more than once. */
     if (!vault_context_transition(&G_vault_context,
                                   VAULT_STATE_INTENT_LOADED,
@@ -321,14 +314,15 @@ static bool _validate_display_prepegin(
  * live in sign_psbt_validate_helpers.c (included via sign_psbt_validate_helpers.h). */
 
 static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t *st) {
-
-    /* State guard: Refund is valid in IDLE or INTENT_LOADED.
+    /* State guard: Refund is valid in IDLE, INTENT_LOADED, and
+     * SESSION1_PREPEGIN_EXPECTED.  The last case supports abort-before-broadcast:
+     * the user signed a Pre-PegIn but hasn't yet published it, so the HTLC is
+     * not on-chain yet.  Allowing Refund here lets the wallet recover gracefully.
      * Block it in SESSION2_PAYOUT_EXPECTED and SESSION2_COMPLETE — once the
-     * PegIn is settled, only Payout signing makes sense and Refund would
-     * sign for funds the protocol has already committed forward. */
+     * PegIn is settled, only Payout signing makes sense and Refund would sign
+     * for funds the protocol has already committed forward. */
     vault_state_t state = G_vault_context.state;
-    if (state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED ||
-        state == VAULT_STATE_SESSION2_COMPLETE) {
+    if (state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED || state == VAULT_STATE_SESSION2_COMPLETE) {
         SEND_SW(dc, SW_BAD_STATE);
         return false;
     }
@@ -355,14 +349,15 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         uint32_t sighash_type = 0;
         int res = call_get_merkleized_map_value_u32_le(dc,
                                                        &input_map,
-                                                       (uint8_t[]){PSBT_IN_SIGHASH_TYPE},
+                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash_type);
         if (res >= 0 && res != 4) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (res == 4 && sighash_type != 0) {
+        /* accept DEFAULT (0) and explicit ALL (1) — identical tapscript commitment (BIP-341) */
+        if (res == 4 && sighash_type != 0 && sighash_type != 1) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -372,7 +367,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
     int wu_len = call_get_merkleized_map_value(dc,
                                                &input_map,
-                                               (uint8_t[]){PSBT_IN_WITNESS_UTXO},
+                                               (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
                                                1,
                                                witness_utxo,
                                                sizeof(witness_utxo));
@@ -391,14 +386,15 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
 
     /* 5. Find TAP_LEAF_SCRIPT using the callback — lives in G_scratch.tls (saves 2636 B BSS). */
     memset(&G_scratch.tls, 0, sizeof(G_scratch.tls));
-    if (call_get_merkleized_map_with_callback(dc,
-                                              &G_scratch.tls,
-                                              st->inputs_root,
-                                              1,
-                                              0,
-                                              (merkle_tree_elements_callback_t) _tap_leaf_script_callback,
-                                              &input_map) < 0
-        || !G_scratch.tls.found || G_scratch.tls.ambiguous) {
+    if (call_get_merkleized_map_with_callback(
+            dc,
+            &G_scratch.tls,
+            st->inputs_root,
+            1,
+            0,
+            (merkle_tree_elements_callback_t) _tap_leaf_script_callback,
+            &input_map) < 0 ||
+        !G_scratch.tls.found || G_scratch.tls.ambiguous) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -410,8 +406,10 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     /* 6. Parse leaf script shape — also extracts the CSV timelock value */
     uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];
     uint32_t csv_value;
-    if (!parse_refund_leaf_script(G_scratch.tls.leaf_script, G_scratch.tls.leaf_script_len,
-                                  leaf_key, &csv_value)) {
+    if (!parse_refund_leaf_script(G_scratch.tls.leaf_script,
+                                  G_scratch.tls.leaf_script_len,
+                                  leaf_key,
+                                  &csv_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -436,8 +434,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
 
         uint32_t fingerprint;
         uint32_t path[5];
-        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len,
-                                                    &fingerprint, path, 5);
+        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
         if (path_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -457,7 +454,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
 
         /* Derive the key and verify it matches leaf_key */
         serialized_extended_pubkey_t xpub;
-        if (get_extended_pubkey_at_path(path, (uint8_t) path_len, BIP32_PUBKEY_VERSION, &xpub) != 0) {
+        if (get_extended_pubkey_at_path(path, (uint8_t) path_len, BIP32_PUBKEY_VERSION, &xpub) !=
+            0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -487,7 +485,9 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
 
         /* Compute the leaf hash */
         uint8_t leaf_hash[VAULT_HASH256_LEN];
-        vault_taproot_leaf_hash(G_scratch.tls.leaf_script, G_scratch.tls.leaf_script_len, leaf_hash);
+        vault_taproot_leaf_hash(G_scratch.tls.leaf_script,
+                                G_scratch.tls.leaf_script_len,
+                                leaf_hash);
 
         /* Build the merkle root from the leaf hash and any sibling hashes in the control block */
         uint8_t merkle_root[VAULT_HASH256_LEN];
@@ -503,7 +503,11 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         /* Tweak the internal key and compare with htlc_spk output key */
         uint8_t parity;
         uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-        if (crypto_tr_tweak_pubkey(internal_key, merkle_root, VAULT_HASH256_LEN, &parity, tweaked) != 0) {
+        if (crypto_tr_tweak_pubkey(internal_key,
+                                   merkle_root,
+                                   VAULT_HASH256_LEN,
+                                   &parity,
+                                   tweaked) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -513,8 +517,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             return false;
         }
         /* htlc_spk: [0x51, 0x20, tweaked[32]] */
-        if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20
-            || memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20 ||
+            memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -526,7 +530,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         uint32_t nsequence = 0;
         int seq_res = call_get_merkleized_map_value_u32_le(dc,
                                                            &input_map,
-                                                           (uint8_t[]){PSBT_IN_SEQUENCE},
+                                                           (uint8_t[]) {PSBT_IN_SEQUENCE},
                                                            1,
                                                            &nsequence);
         if (seq_res != 4) {
@@ -553,7 +557,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     uint8_t out_script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     int slen = call_get_merkleized_map_value(dc,
                                              &out_map,
-                                             (uint8_t[]){PSBT_OUT_SCRIPT},
+                                             (uint8_t[]) {PSBT_OUT_SCRIPT},
                                              1,
                                              out_script,
                                              VAULT_P2TR_SCRIPTPUBKEY_LEN);
@@ -562,7 +566,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         return false;
     }
     uint8_t raw8[8];
-    if (8 != call_get_merkleized_map_value(dc, &out_map, (uint8_t[]){PSBT_OUT_AMOUNT}, 1, raw8, 8)) {
+    if (8 !=
+        call_get_merkleized_map_value(dc, &out_map, (uint8_t[]) {PSBT_OUT_AMOUNT}, 1, raw8, 8)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -598,7 +603,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             return false;
         }
         serialized_extended_pubkey_t xpub;
-        if (get_extended_pubkey_at_path(path, (uint8_t) path_len, BIP32_PUBKEY_VERSION, &xpub) != 0) {
+        if (get_extended_pubkey_at_path(path, (uint8_t) path_len, BIP32_PUBKEY_VERSION, &xpub) !=
+            0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -630,7 +636,10 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
 
     /* 14. Convert refund output scriptPubKey to address string */
     static char refund_addr[MAX_ADDRESS_LENGTH_STR + 1];
-    if (get_script_address(out_script, VAULT_P2TR_SCRIPTPUBKEY_LEN, refund_addr, sizeof(refund_addr)) < 0) {
+    if (get_script_address(out_script,
+                           VAULT_P2TR_SCRIPTPUBKEY_LEN,
+                           refund_addr,
+                           sizeof(refund_addr)) < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -647,7 +656,6 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
  * ---------------------------------------------------------------------- */
 
 static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
-
     /* Internal state guard — defence in depth against caller mis-dispatch */
     if (G_vault_context.state != VAULT_STATE_SESSION2_PEGIN_EXPECTED) {
         SEND_SW(dc, SW_BAD_STATE);
@@ -680,7 +688,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         uint8_t txid[VAULT_HASH256_LEN];
         if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
                                                                &input_map,
-                                                               (uint8_t[]){PSBT_IN_PREVIOUS_TXID},
+                                                               (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
                                                                1,
                                                                txid,
                                                                VAULT_HASH256_LEN)) {
@@ -697,11 +705,11 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     {
         uint32_t vout;
         if (call_get_merkleized_map_value_u32_le(dc,
-                                                  &input_map,
-                                                  (uint8_t[]){PSBT_IN_OUTPUT_INDEX},
-                                                  1,
-                                                  &vout) != 4
-            || vout != intent->htlc_vout) {
+                                                 &input_map,
+                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
+                                                 1,
+                                                 &vout) != 4 ||
+            vout != intent->htlc_vout) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -711,42 +719,44 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     {
         uint32_t seq;
         if (call_get_merkleized_map_value_u32_le(dc,
-                                                  &input_map,
-                                                  (uint8_t[]){PSBT_IN_SEQUENCE},
-                                                  1,
-                                                  &seq) != 4
-            || seq != 0xFFFFFFFEu) {
+                                                 &input_map,
+                                                 (uint8_t[]) {PSBT_IN_SEQUENCE},
+                                                 1,
+                                                 &seq) != 4 ||
+            seq != 0xFFFFFFFEu) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
     }
 
-    /* 7. SIGHASH_DEFAULT only (absent or 0) */
+    /* 7. Accept SIGHASH_DEFAULT (0) or explicit ALL (1) — identical tapscript commitment (BIP-341)
+     */
     {
         uint32_t sighash_type = 0;
         int res = call_get_merkleized_map_value_u32_le(dc,
                                                        &input_map,
-                                                       (uint8_t[]){PSBT_IN_SIGHASH_TYPE},
+                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash_type);
         if (res >= 0 && res != 4) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (res == 4 && sighash_type != 0) {
+        if (res == 4 && sighash_type != 0 && sighash_type != 1) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
     }
 
-    /* 8. WITNESS_UTXO → htlc_value + htlc_spk (spk verified against reconstructed key in step 11) */
+    /* 8. WITNESS_UTXO → htlc_value + htlc_spk (spk verified against reconstructed key in step 11)
+     */
     uint64_t htlc_value;
     uint8_t htlc_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
                                                    &input_map,
-                                                   (uint8_t[]){PSBT_IN_WITNESS_UTXO},
+                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
                                                    1,
                                                    witness_utxo,
                                                    sizeof(witness_utxo));
@@ -766,13 +776,14 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* 9. TAP_INTERNAL_KEY must be NUMS_XONLY */
     {
         uint8_t int_key[VAULT_XONLY_PUBKEY_LEN];
-        if (VAULT_XONLY_PUBKEY_LEN != call_get_merkleized_map_value(dc,
-                                                                    &input_map,
-                                                                    (uint8_t[]){PSBT_IN_TAP_INTERNAL_KEY},
-                                                                    1,
-                                                                    int_key,
-                                                                    VAULT_XONLY_PUBKEY_LEN)
-            || memcmp(int_key, NUMS_XONLY, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (VAULT_XONLY_PUBKEY_LEN !=
+                call_get_merkleized_map_value(dc,
+                                              &input_map,
+                                              (uint8_t[]) {PSBT_IN_TAP_INTERNAL_KEY},
+                                              1,
+                                              int_key,
+                                              VAULT_XONLY_PUBKEY_LEN) ||
+            memcmp(int_key, NUMS_XONLY, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -787,13 +798,14 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
 
         uint8_t psbt_root[VAULT_HASH256_LEN];
-        if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
-                                                               &input_map,
-                                                               (uint8_t[]){PSBT_IN_TAP_MERKLE_ROOT},
-                                                               1,
-                                                               psbt_root,
-                                                               VAULT_HASH256_LEN)
-            || memcmp(psbt_root, expected_root, VAULT_HASH256_LEN) != 0) {
+        if (VAULT_HASH256_LEN !=
+                call_get_merkleized_map_value(dc,
+                                              &input_map,
+                                              (uint8_t[]) {PSBT_IN_TAP_MERKLE_ROOT},
+                                              1,
+                                              psbt_root,
+                                              VAULT_HASH256_LEN) ||
+            memcmp(psbt_root, expected_root, VAULT_HASH256_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -801,28 +813,32 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
     /* 11. TAP_LEAF_SCRIPT must embed the expected Leaf 0 (contains htlc_hashlock) */
     {
-        /* Build Leaf 0 script in scratch */
-        memset(G_scratch.script_scratch, 0, VAULT_SCRIPT_MAX_LEN);
+        /* Build Leaf 0 into leaf_check.expected_script (= union offset 0 = script_scratch).
+         * It stays there for the final comparison — leaf1 is built into actual_buf instead
+         * so we never overwrite leaf0, eliminating a second vault_build_htlc_leaf0 call. */
+        memset(G_scratch.leaf_check.expected_script, 0, VAULT_SCRIPT_MAX_LEN);
         int l0_len = vault_build_htlc_leaf0(intent,
-                                             G_vault_context.htlc_hashlock,
-                                             G_scratch.script_scratch,
-                                             VAULT_SCRIPT_MAX_LEN);
+                                            G_vault_context.htlc_hashlock,
+                                            G_scratch.leaf_check.expected_script,
+                                            VAULT_SCRIPT_MAX_LEN);
         if (l0_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         uint8_t leaf0_hash[VAULT_HASH256_LEN];
-        vault_taproot_leaf_hash(G_scratch.script_scratch, l0_len, leaf0_hash);
+        vault_taproot_leaf_hash(G_scratch.leaf_check.expected_script, l0_len, leaf0_hash);
 
-        /* Build Leaf 1 script in scratch to get its hash */
-        memset(G_scratch.script_scratch, 0, VAULT_SCRIPT_MAX_LEN);
-        int l1_len = vault_build_htlc_leaf1(intent, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
+        /* Build Leaf 1 into actual_buf (union offset 2560) — disjoint from expected_script. */
+        uint8_t *const actual_buf = G_scratch.leaf_check.actual_buf;
+        memset(actual_buf, 0, sizeof(G_scratch.leaf_check.actual_buf));
+        int l1_len =
+            vault_build_htlc_leaf1(intent, actual_buf, sizeof(G_scratch.leaf_check.actual_buf));
         if (l1_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         uint8_t leaf1_hash[VAULT_HASH256_LEN];
-        vault_taproot_leaf_hash(G_scratch.script_scratch, l1_len, leaf1_hash);
+        vault_taproot_leaf_hash(actual_buf, l1_len, leaf1_hash);
 
         /* Recompute merkle root (needed for tweak parity) */
         uint8_t merkle_root[VAULT_HASH256_LEN];
@@ -831,14 +847,15 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         /* Tweak to get output key parity */
         uint8_t parity;
         uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-        if (crypto_tr_tweak_pubkey(NUMS_XONLY, merkle_root, VAULT_HASH256_LEN, &parity, tweaked) != 0) {
+        if (crypto_tr_tweak_pubkey(NUMS_XONLY, merkle_root, VAULT_HASH256_LEN, &parity, tweaked) !=
+            0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
         /* Verify WITNESS_UTXO scriptPubKey matches the reconstructed output key */
-        if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20
-            || memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20 ||
+            memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -852,38 +869,25 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         memcpy(psbt_key + 2 + VAULT_XONLY_PUBKEY_LEN, leaf1_hash, VAULT_HASH256_LEN);
         size_t psbt_key_len = sizeof(psbt_key);
 
-        /* Value = expected_leaf0_script || 0xC0.  We expect l0_len + 1 bytes. */
-        /* Rebuild Leaf 0 script for comparison — reuse scratch (leaf1 already hashed above) */
-        memset(G_scratch.script_scratch, 0, VAULT_SCRIPT_MAX_LEN);
-        int expected_l0_len = vault_build_htlc_leaf0(intent,
-                                                      G_vault_context.htlc_hashlock,
-                                                      G_scratch.script_scratch,
-                                                      VAULT_SCRIPT_MAX_LEN);
-        if (expected_l0_len < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        /* Reuse union tail: expected_script (offset 0) holds leaf0 built above;
-         * actual_buf (offset VAULT_SCRIPT_MAX_LEN) holds the PSBT value read here.
-         * display_vault_intent is not live during validation so this is safe. */
-        uint8_t * const value_buf = G_scratch.leaf_check.actual_buf;
+        /* Value = expected_leaf0_script || 0xC0.  Overwrite actual_buf with the PSBT value
+         * (leaf1 bytes are no longer needed — only leaf1_hash matters from here). */
         int value_len = call_get_merkleized_map_value(dc,
-                                                       &input_map,
-                                                       psbt_key,
-                                                       psbt_key_len,
-                                                       value_buf,
-                                                       sizeof(G_scratch.leaf_check.actual_buf));
-        if (value_len != expected_l0_len + 1) {
+                                                      &input_map,
+                                                      psbt_key,
+                                                      psbt_key_len,
+                                                      actual_buf,
+                                                      sizeof(G_scratch.leaf_check.actual_buf));
+        if (value_len != l0_len + 1) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         /* Last byte is leaf version */
-        if (value_buf[value_len - 1] != TAPSCRIPT_LEAF_VERSION) {
+        if (actual_buf[value_len - 1] != TAPSCRIPT_LEAF_VERSION) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (memcmp(value_buf, G_scratch.script_scratch, expected_l0_len) != 0) {
+        /* Compare PSBT script against expected_script (leaf0 still in place at offset 0) */
+        if (memcmp(actual_buf, G_scratch.leaf_check.expected_script, l0_len) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -898,8 +902,8 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!vault_build_vault_utxo_scriptpubkey(intent, expected_spk)
-            || memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+        if (!vault_build_vault_utxo_scriptpubkey(intent, expected_spk) ||
+            memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -918,8 +922,8 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!vault_build_depositor_claim_scriptpubkey(intent, expected_spk)
-            || memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+        if (!vault_build_depositor_claim_scriptpubkey(intent, expected_spk) ||
+            memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -969,7 +973,6 @@ bool validate_and_display_transaction(
     sign_psbt_state_t *st,
     const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)],
     const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
-
     /* PegIn: strictly state-gated */
     if (G_vault_context.state == VAULT_STATE_SESSION2_PEGIN_EXPECTED) {
         return _validate_pegin(dc, st);

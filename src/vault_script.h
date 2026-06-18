@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "vault_intent.h"
 
@@ -17,7 +18,26 @@
 #define VAULT_P2TR_SCRIPTPUBKEY_LEN (2 + VAULT_XONLY_PUBKEY_LEN) /* OP_1 OP_PUSHBYTES_32 <key> */
 
 /* --------------------------------------------------------------------------
- * Taproot primitive
+ * Low-level taproot crypto primitives (implemented in vault_script.c)
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Compute the BIP-341 output key: output_key = taproot_tweak(pubkey, h[0..h_len]).
+ * Returns 0 on success, non-zero on failure.
+ */
+int crypto_tr_tweak_pubkey(const uint8_t pubkey[VAULT_XONLY_PUBKEY_LEN],
+                           const uint8_t *h,
+                           size_t h_len,
+                           uint8_t *y_parity,
+                           uint8_t out[VAULT_XONLY_PUBKEY_LEN]);
+
+/** BIP-341 TapBranch: sort-and-hash the two child hashes into out. */
+void crypto_tr_combine_taptree_hashes(const uint8_t left[VAULT_HASH256_LEN],
+                                      const uint8_t right[VAULT_HASH256_LEN],
+                                      uint8_t out[VAULT_HASH256_LEN]);
+
+/* --------------------------------------------------------------------------
+ * Taproot leaf hash
  * ----------------------------------------------------------------------- */
 
 /**

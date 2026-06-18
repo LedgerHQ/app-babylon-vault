@@ -112,6 +112,8 @@ bool display_prepegin_transaction(dispatcher_context_t *dc,
     pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = prepegin_fee_str};
     pairs[n++] = (nbgl_layoutTagValue_t) {.item = "HTLC address", .value = htlc_address};
 
+    assert(n <= MAX_N_PAIRS);
+
     pairList.nbMaxLinesForValue = 0;
     pairList.nbPairs = n;
     pairList.pairs = pairs;
@@ -150,6 +152,8 @@ bool display_refund_transaction(dispatcher_context_t *dc,
     pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount", .value = refund_amount_str};
     pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = refund_fee_str};
     pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
+
+    assert(n <= MAX_N_PAIRS);
 
     pairList.nbMaxLinesForValue = 0;
     pairList.nbPairs = n;
@@ -213,7 +217,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // alive through the blocking io_ui_process() call so NBGL pointer remain valid).
     // G_scratch.display is safe here: display_vault_intent blocks on io_ui_process
     // and cannot overlap with the hkdf or script_scratch union members.
-    nbgl_layoutTagValue_t * const vault_pairs =
+    nbgl_layoutTagValue_t *const vault_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
     nbgl_layoutTagValueList_t vault_pair_list;
     char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];

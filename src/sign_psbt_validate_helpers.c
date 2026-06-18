@@ -47,6 +47,8 @@ int parse_tap_bip32_deriv_value(const uint8_t *val,
                                 int max_path_steps) {
     if (val_len < 1) return -1;
     int n_hashes = (int) val[0];
+    /* Valid TAP_BIP32_DERIVATION for a key-path or single-leaf spend has 0 or 1 leaf hash. */
+    if (n_hashes > 1) return -1;
     int offset = 1 + n_hashes * 32;
     if (offset + 4 > val_len) return -1;
 
@@ -116,7 +118,7 @@ bool parse_refund_leaf_script(const uint8_t *script,
         pos += data_len;
     } else if (push_op >= 0x51 && push_op <= 0x60) {
         /* OP_1..OP_16: value encoded in the opcode, no extra bytes */
-        csv = (uint32_t)(push_op - 0x50);
+        csv = (uint32_t) (push_op - 0x50);
     } else if (push_op == 0x4f) {
         return false; /* OP_1NEGATE — not valid for a positive timelock */
     } else {

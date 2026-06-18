@@ -53,7 +53,7 @@ typedef struct {
 /* Pair count for vault intent display: 9 scalar fields + one entry per key */
 #define VAULT_DISPLAY_PAIRS_COUNT (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
 /* sizeof(nbgl_layoutTagValue_t) — verified at compile time in display.c */
-#define VAULT_DISPLAY_PAIR_SIZE   16
+#define VAULT_DISPLAY_PAIR_SIZE 16
 
 /**
  * Scratch buffers for display_vault_intent.  Lives in G_scratch.display for the

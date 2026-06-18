@@ -19,7 +19,8 @@
 //   vault_intent_t              ≤ 3072 B
 //   vault_context_t             ≤  128 B
 //   G_scratch (union)             6224 B  (largest member: display_vault_intent_scratch_t:
-//                                          1168 B vault_pairs_raw + 4160 B key_strs + 896 B key_labels)
+//                                          1168 B vault_pairs_raw + 4160 B key_strs + 896 B
+//                                          key_labels)
 //                                         tap_leaf_script_state_t tls: 2636 B — in union, no growth
 //   G_hkdf_stream               ≤  512 B  (outside union — see globals.h for why)
 //   G_approve_intent_state      ≤    8 B  (outside union — same reason)
