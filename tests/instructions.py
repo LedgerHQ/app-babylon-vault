@@ -1,6 +1,5 @@
 from ragger.navigator import NavInsID
 from ledgered.devices import Device
-from ragger.firmware import Firmware
 from ragger_bitcoin.ragger_instructions import Instructions
 from typing import List, Tuple
 
@@ -93,81 +92,60 @@ def vault_intent_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], s
             "^Hold to sign$")
 
 
-def sign_psbt_refund_instructions(firmware: Firmware) -> Instructions:
-    """Reject-path Instructions for Screen 3 (Refund transaction review).
+def sign_psbt_refund_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 3 (Refund) — Nano devices only.
 
-    The Flex NBGL layout has 3 pages: intro ("Review refund transaction"),
-    a single content page showing both "Reclaimed amount" and "Transaction fee",
-    and the finish page ("Sign refund transaction?").  Navigates through each
-    and rejects to capture all golden snapshots.  Expects SW_DENY on return.
+    Touch devices should use sign_psbt_refund_nav() with sign_psbt_with_nav_and_compare()
+    instead, which stores all screenshots in a single folder as numbered PNGs.
     """
-    instructions = Instructions(firmware)
-    if firmware.name.startswith("nano"):
-        instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
-    else:
-        instructions.new_request(
-            "Review refund",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_TAP,
-        )
-        # Both "Reclaimed amount" and "Transaction fee" appear on the same content page.
-        instructions.same_request(
-            "Reclaimed amount",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_TAP,
-        )
-        instructions.same_request(
-            "Sign refund",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_REJECT,
-        )
-        instructions.same_request(
-            "Reject",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_CHOICE_CONFIRM,
-        )
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
 
 
-def sign_psbt_prepegin_instructions(firmware: Firmware) -> Instructions:
-    """Reject-path Instructions for Screen 2 (Pre-PegIn transaction review).
+def sign_psbt_refund_nav(device: Device) -> List[NavInsID]:
+    """Flat navigation for Screen 3 (Refund) on touch devices.
 
-    Navigates through all review pages ("Review Pre-PegIn", "Vault amount",
-    "Transaction fee", "HTLC address", "Sign Pre-PegIn") and rejects at the
-    sign page. Expects SW_DENY on return.
+    Use with sign_psbt_with_nav_and_compare().  Stores all review pages as:
+      00000.png — intro ("Review refund transaction")
+      00001.png — content ("Reclaimed amount" + "Transaction fee" + "Reclaim address")
+      00002.png — finish ("Sign refund transaction?")
+      00003.png — reject confirmation dialog
+      00004.png — rejection status
     """
-    instructions = Instructions(firmware)
-    if firmware.name.startswith("nano"):
-        instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
-    else:
-        instructions.new_request(
-            "Review Pre-PegIn",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_TAP,
-        )
-        instructions.same_request(
-            "Vault amount",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_TAP,
-        )
-        instructions.same_request(
-            "Transaction fee",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_TAP,
-        )
-        instructions.same_request(
-            "HTLC address",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_TAP,
-        )
-        instructions.same_request(
-            "Sign Pre-PegIn",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_REVIEW_REJECT,
-        )
-        instructions.same_request(
-            "Reject",
-            NavInsID.USE_CASE_REVIEW_TAP,
-            NavInsID.USE_CASE_CHOICE_CONFIRM,
-        )
+    assert not device.is_nano, "Nano uses sign_psbt_refund_instructions, not flat nav"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,     # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,     # content → finish
+        NavInsID.USE_CASE_REVIEW_REJECT,  # finish → reject dialog
+        NavInsID.USE_CASE_CHOICE_CONFIRM, # confirm rejection
+    ]
+
+
+def sign_psbt_prepegin_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 2 (Pre-PegIn) — Nano devices only.
+
+    Touch devices should use sign_psbt_prepegin_nav() with sign_psbt_with_nav_and_compare().
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
+
+
+def sign_psbt_prepegin_nav(device: Device) -> List[NavInsID]:
+    """Flat navigation for Screen 2 (Pre-PegIn) on touch devices.
+
+    Use with sign_psbt_with_nav_and_compare().  Stores all review pages as:
+      00000.png — intro ("Review Pre-PegIn transaction")
+      00001.png — content ("Vault amount" + "Transaction fee" + "HTLC address")
+      00002.png — finish ("Sign Pre-PegIn transaction?")
+      00003.png — reject confirmation dialog
+      00004.png — rejection status
+    """
+    assert not device.is_nano, "Nano uses sign_psbt_prepegin_instructions, not flat nav"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,     # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,     # content → finish
+        NavInsID.USE_CASE_REVIEW_REJECT,  # finish → reject dialog
+        NavInsID.USE_CASE_CHOICE_CONFIRM, # confirm rejection
+    ]

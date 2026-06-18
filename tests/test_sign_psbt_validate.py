@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 import pytest
 
+from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
-from ragger.firmware import Firmware
 from ragger.navigator import Navigator
 
 from ledger_bitcoin import WalletPolicy
@@ -35,13 +35,19 @@ from .vault_client import (
     SW_INCORRECT_DATA,
     derive_context_hash,
     approve_vault_intent_with_nav,
+    sign_psbt_with_nav_and_compare,
     build_intent_tlv,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
 )
-from .instructions import sign_psbt_refund_instructions, sign_psbt_prepegin_instructions
+from .instructions import (
+    sign_psbt_refund_instructions,
+    sign_psbt_refund_nav,
+    sign_psbt_prepegin_instructions,
+    sign_psbt_prepegin_nav,
+)
 
 ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
 
@@ -83,18 +89,18 @@ class _NoWalletPolicy(WalletPolicy):
 # Test intent parameters (shared by Pre-PegIn and PegIn tests)
 # ---------------------------------------------------------------------------
 
-_VAULT_AMOUNT         = 10_000_000
-_COMMISSION_FEE       = 50_000
-_DEPOSITOR_CLAIM_VALUE = 10_000
+_VAULT_AMOUNT         = 9_876_543   # 0.09876543 BTC — all 8 decimal places
+_COMMISSION_FEE       = 54_321      # 0.00054321 BTC
+_DEPOSITOR_CLAIM_VALUE = 12_345     # 0.00012345 BTC
 _BASE_FEE_RATE        = 1
-_PEGIN_MAX_FEE        = 500_000
+_PEGIN_MAX_FEE        = 567_891     # 0.00567891 BTC
 _PEGIN_CSV_TIMELOCK   = 144
 _PAYOUT_TIMELOCK      = 200
 _HTLC_REFUND_TIMELOCK = 144
 _HTLC_VOUT            = 0
 # htlc_value must be in [vault_amount + depositor_claim_value,
 #                         vault_amount + depositor_claim_value + pegin_max_fee]
-_HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + 90_000  # 10_100_000
+_HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + 234_567  # 10_123_455
 
 # Single keeper and challenger for all tests (sorted ascending — key[0] < key[1])
 _TEST_KEEPER_PKS     = [TEST_VALID_KEYS[0]]
@@ -222,7 +228,7 @@ def _build_prepegin_psbt(
     The single output is the HTLC P2TR at htlc_vout=0.  With no other outputs,
     the 'all other outputs are internal' check trivially passes.
     """
-    input_value = htlc_value + 5_000
+    input_value = htlc_value + 3_456  # pre-pegin tx fee = 3456 sats = 0.00003456 BTC
     input_spk = bytes([0x51, 0x20]) + bytes(32)  # dummy P2TR
 
     tx = CTransaction()
@@ -375,8 +381,8 @@ def _build_refund_psbt(
     leaf_key: bytes,
     out_key: bytes,
     coin_type: int,
-    htlc_value: int = 1_000_000,
-    reclaimed_value: int = 990_000,
+    htlc_value: int = 1_235_801,
+    reclaimed_value: int = 1_234_567,
     csv_timelock: int = 144,
 ) -> PSBT:
     """Build a minimal PSBTv0 for a Refund transaction.
@@ -427,7 +433,7 @@ def _build_refund_psbt(
 def test_sign_psbt_refund_screen(
     client: "RaggerClient",
     navigator: Navigator,
-    firmware: Firmware,
+    device: Device,
     bitcoin_network: str,
     test_name: str,
 ) -> None:
@@ -450,16 +456,15 @@ def test_sign_psbt_refund_screen(
 
     psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    tname = test_name + "_" + bitcoin_network
 
     with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(
-            psbt,
-            dummy_wallet,
-            None,
-            navigator,
-            testname=test_name + "_" + bitcoin_network,
-            instructions=sign_psbt_refund_instructions(firmware),
-        )
+        if device.is_nano:
+            client.sign_psbt(psbt, dummy_wallet, None, navigator,
+                             testname=tname, instructions=sign_psbt_refund_instructions(device))
+        else:
+            sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
+                                           testname=tname, nav_instructions=sign_psbt_refund_nav(device))
     assert exc.value.status == SW_DENY
 
 
@@ -470,10 +475,9 @@ def test_sign_psbt_refund_screen(
 def test_sign_psbt_prepegin_screen(
     client: "RaggerClient",
     navigator: Navigator,
-    firmware: Firmware,
+    device: Device,
     bitcoin_network: str,
     test_name: str,
-    device,
 ) -> None:
     """Golden snapshot for Screen 2 (Pre-PegIn review). Navigates and rejects."""
     coin_type = 0 if bitcoin_network == "main" else 1
@@ -486,16 +490,15 @@ def test_sign_psbt_prepegin_screen(
 
     psbt = _build_prepegin_psbt(htlc_spk)
     wallet = _standard_taproot_wallet(client, coin_type)
+    tname = test_name + "_" + bitcoin_network
 
     with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(
-            psbt,
-            wallet,
-            None,
-            navigator,
-            testname=test_name + "_" + bitcoin_network,
-            instructions=sign_psbt_prepegin_instructions(firmware),
-        )
+        if device.is_nano:
+            client.sign_psbt(psbt, wallet, None, navigator,
+                             testname=tname, instructions=sign_psbt_prepegin_instructions(device))
+        else:
+            sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
+                                           testname=tname, nav_instructions=sign_psbt_prepegin_nav(device))
     assert exc.value.status == SW_DENY
 
 
@@ -647,7 +650,13 @@ def test_sign_psbt_pegin(
     bitcoin_network: str,
     device,
 ) -> None:
-    """PegIn happy path: correct PSBT, correct state → SW_OK, state advances silently."""
+    """PegIn validation passes silently, state advances to SESSION2_PAYOUT_EXPECTED.
+
+    sign_custom_inputs is not yet implemented (NAPPS-1377 stub returns false), so the
+    btcext dispatcher emits SW_BAD_STATE after validation succeeds.  The test asserts
+    SW_BAD_STATE to confirm that validation itself passed (any validation error would
+    produce SW_INCORRECT_DATA or SW_BAD_STATE from a different code path earlier).
+    """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
@@ -656,8 +665,9 @@ def test_sign_psbt_pegin(
     psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
-    # No exception: PegIn validation is silent; device returns SW_OK and advances state.
-    client.sign_psbt(psbt, dummy_wallet, None)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_BAD_STATE
 
 
 def test_sign_psbt_pegin_wrong_txid(
@@ -719,6 +729,255 @@ def test_sign_psbt_pegin_wrong_leaf0(
     psbt = _build_pegin_psbt(dep_pk, wrong_h, _PREPEGIN_TXID)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ===========================================================================
+# Pre-PegIn — additional negative tests (NAPPS-1375)
+# ===========================================================================
+
+def test_sign_psbt_prepegin_external_output(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Pre-PegIn fails when a non-HTLC output is external (not owned by this device)."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s1_state(client, navigator, device, coin_type)
+    _, _, _, _, htlc_spk = _htlc_output(
+        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        _HTLC_REFUND_TIMELOCK, hashlock,
+    )
+
+    psbt = _build_prepegin_psbt(htlc_spk)
+    # Append a second output with no TAP_BIP32_DERIVATION — btcext marks it external.
+    psbt.tx.vout.append(CTxOut(1000, bytes([0x51, 0x20]) + bytes(32)))
+    psbt.outputs.append(PartiallySignedOutput(0))
+
+    wallet = _standard_taproot_wallet(client, coin_type)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ===========================================================================
+# Refund — additional negative tests (NAPPS-1375)
+# ===========================================================================
+
+def test_sign_psbt_refund_wrong_leaf_shape(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Refund fails when the leaf script opcode is OP_CHECKSIG instead of OP_CHECKSIGVERIFY."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    fingerprint = client.get_master_fingerprint()
+    leaf_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey[1:]
+    out_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/1", display=False)
+    ).pubkey[1:]
+
+    psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
+
+    # Replace the TAP_LEAF_SCRIPT entry: swap OP_CHECKSIGVERIFY (0xAD) → OP_CHECKSIG (0xAC).
+    # The correct leaf is: 0x20 || leaf_key(32B) || 0xAD || csv_push || 0xB2.
+    # Byte 33 is the opcode immediately after the 32-byte key push.
+    (orig_leaf, leaf_ver), control_blocks = next(iter(psbt.inputs[0].tap_scripts.items()))
+    wrong_leaf = orig_leaf[:33] + bytes([0xAC]) + orig_leaf[34:]
+    psbt.inputs[0].tap_scripts = {(wrong_leaf, leaf_ver): control_blocks}
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_refund_tampered_control_block(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Refund fails when the control block uses a wrong internal key (taproot commitment mismatch)."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    fingerprint = client.get_master_fingerprint()
+    leaf_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey[1:]
+    out_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/1", display=False)
+    ).pubkey[1:]
+
+    psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
+
+    # Replace the control block with one that has a different internal key.
+    # The witness_utxo HTLC SPK (from NUMS) is left unchanged, so the device's
+    # taproot commitment check will produce a different tweaked key and reject.
+    (leaf_bytes, leaf_ver), _ = next(iter(psbt.inputs[0].tap_scripts.items()))
+    wrong_internal_key = bytes([0x01] * 32)  # anything other than NUMS_XONLY
+    wrong_cb = bytes([0xC0]) + wrong_internal_key
+    psbt.inputs[0].tap_scripts = {(leaf_bytes, leaf_ver): {wrong_cb}}
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_refund_no_output_derivation(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Refund fails when the output has no TAP_BIP32_DERIVATION (cannot verify ownership)."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    fingerprint = client.get_master_fingerprint()
+    leaf_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey[1:]
+    out_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/1", display=False)
+    ).pubkey[1:]
+
+    psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt.outputs[0].tap_bip32_paths = {}
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ===========================================================================
+# PegIn — additional negative tests (NAPPS-1375)
+# ===========================================================================
+
+def test_sign_psbt_pegin_extra_input(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """PegIn fails when the PSBT has 2 inputs instead of exactly 1."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+    psbt.tx.vin.append(CTxIn())
+    psbt.inputs.append(PartiallySignedInput(0))
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_pegin_wrong_sequence(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """PegIn fails when input sequence is not 0xFFFFFFFE."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+    psbt.tx.vin[0].nSequence = 0xFFFFFFFF
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_pegin_wrong_vault_spk(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """PegIn fails when output 0 scriptPubKey does not match the reconstructed Vault UTXO."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+    psbt.tx.vout[0].scriptPubKey = bytes([0x51, 0x20]) + bytes(32)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_pegin_extra_output(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """PegIn fails when the PSBT has 3 outputs instead of exactly 2."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+    psbt.tx.vout.append(CTxOut(1000, bytes([0x51, 0x20]) + bytes(32)))
+    psbt.outputs.append(PartiallySignedOutput(0))
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_pegin_wrong_vault_amount(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """PegIn fails when output 0 amount does not equal vault_amount from the intent."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+    psbt.tx.vout[0].nValue = _VAULT_AMOUNT - 1
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_pegin_wrong_depositor_claim_amount(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """PegIn fails when output 1 amount does not equal depositor_claim_value from the intent."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+    psbt.tx.vout[1].nValue = _DEPOSITOR_CLAIM_VALUE - 1
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA

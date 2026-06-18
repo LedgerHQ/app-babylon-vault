@@ -563,8 +563,15 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     }
     uint64_t fee = htlc_value - out_value;
 
-    /* 14. Display Screen 3 */
-    if (!display_refund_transaction(dc, out_value, fee)) {
+    /* 14. Convert refund output scriptPubKey to address string */
+    static char refund_addr[MAX_ADDRESS_LENGTH_STR + 1];
+    if (get_script_address(out_script, VAULT_P2TR_SCRIPTPUBKEY_LEN, refund_addr, sizeof(refund_addr)) < 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* 15. Display Screen 3 */
+    if (!display_refund_transaction(dc, out_value, fee, refund_addr)) {
         SEND_SW(dc, SW_DENY);
         return false;
     }

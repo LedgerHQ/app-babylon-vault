@@ -41,12 +41,17 @@ bool display_prepegin_transaction(dispatcher_context_t *dc,
 /**
  * @brief Screen 3 — Refund transaction review.
  *
- * Shows the amount reclaimed and transaction fee.
+ * Shows the amount reclaimed, transaction fee, and the destination (reclaim) address.
  * Approval gates signing; rejection returns SW_DENY.
  *
  * @param amount_reclaimed  Amount returned to the depositor in satoshis.
  * @param fee               Transaction fee in satoshis.
+ * @param refund_address    NUL-terminated bech32m address string; caller must keep
+ *                          the pointer valid until this function returns.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
-bool display_refund_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed, uint64_t fee);
+bool display_refund_transaction(dispatcher_context_t *dc,
+                                uint64_t amount_reclaimed,
+                                uint64_t fee,
+                                const char *refund_address);

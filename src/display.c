@@ -138,7 +138,8 @@ bool display_prepegin_transaction(dispatcher_context_t *dc,
 
 bool display_refund_transaction(dispatcher_context_t *dc,
                                 uint64_t amount_reclaimed,
-                                uint64_t fee) {
+                                uint64_t fee,
+                                const char *refund_address) {
     static char refund_amount_str[MAX_AMOUNT_LENGTH + 1];
     static char refund_fee_str[MAX_AMOUNT_LENGTH + 1];
 
@@ -148,6 +149,7 @@ bool display_refund_transaction(dispatcher_context_t *dc,
     int n = 0;
     pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount", .value = refund_amount_str};
     pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = refund_fee_str};
+    pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
 
     pairList.nbMaxLinesForValue = 0;
     pairList.nbPairs = n;
