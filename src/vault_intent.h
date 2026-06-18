@@ -11,6 +11,10 @@
 
 // Size of an x-only Schnorr public key (BIP-340).
 #define VAULT_XONLY_PUBKEY_LEN 32
+// Buffer size for a hex-encoded x-only public key (64 chars + NUL).
+#define VAULT_HEX_KEY_STR_SIZE (2 * VAULT_XONLY_PUBKEY_LEN + 1)
+// Buffer size for "Challenger 32\0", the longest possible keeper/challenger label.
+#define VAULT_KEY_LABEL_SIZE 14
 
 // Size of a SHA-256 hash or Bitcoin txid.
 #define VAULT_HASH256_LEN 32
@@ -56,6 +60,9 @@ typedef struct {
 
     /** Depositor BIP-32 derivation path: m/86'/coin_type'/account'/change/index. */
     uint32_t depositor_path[VAULT_DEPOSITOR_PATH_LEN];
+
+    /** Depositor x-only public key. Derived from depositor_path at APPROVE_VAULT_INTENT time. */
+    uint8_t depositor_pk[VAULT_XONLY_PUBKEY_LEN];
 
     /** Total vault amount in satoshis. Must be > commission_fee + 2*DUST. */
     uint64_t vault_amount;

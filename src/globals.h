@@ -5,6 +5,7 @@
 
 #include "vault_intent.h"
 #include "vault_context.h"
+#include "vault_script.h"
 
 #include "cx.h"
 
@@ -35,9 +36,6 @@ typedef struct {
     cx_hmac_sha256_t hmac;
 } hkdf_stream_t;
 
-/** In-flight HKDF streaming state for the ongoing DERIVE_CONTEXT_HASH exchange. */
-extern hkdf_stream_t G_hkdf_stream;
-
 /**
  * @brief In-flight state for a two-phase APPROVE_VAULT_INTENT exchange.
  *
@@ -52,5 +50,40 @@ typedef struct {
     uint8_t keys_received;
 } approve_intent_state_t;
 
-/** In-flight APPROVE_VAULT_INTENT parse state. */
+/**
+ * Scratch buffers for display_vault_intent: the two key string/label arrays
+ * sized for the maximum keeper+challenger count.  Lives in G_scratch.display
+ * for the duration of the blocking io_ui_process() call.
+ */
+typedef struct {
+    char key_strs[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_HEX_KEY_STR_SIZE];
+    char key_labels[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_KEY_LABEL_SIZE];
+} display_vault_intent_scratch_t;
+
+/**
+ * Mutually-exclusive scratch union.
+ *
+ * Each member is live in exactly one handler and is zeroed before use:
+ *   - script_scratch  vault_build_* signing hooks
+ *   - display         display_vault_intent only (blocks on io_ui_process)
+ *
+ * hkdf_stream_t and approve_intent_state_t are intentionally NOT in this
+ * union.  Both have a boolean guard at their first byte (hkdf.active /
+ * scalars_loaded).  If either were a union member, stale non-zero bytes
+ * left by script_scratch or display (e.g. an opcode or ASCII hex char at
+ * offset 0) would alias that guard and cause handle_context_chunk() or
+ * handle_key_batch() to treat spurious data as an in-progress stream.
+ */
+typedef union {
+    uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
+    display_vault_intent_scratch_t display;
+} vault_scratch_t;
+
+extern vault_scratch_t G_scratch;
+
+/** In-flight state for a streaming HKDF derivation — kept outside the
+ *  scratch union to prevent offset-0 aliasing with script_scratch/display. */
+extern hkdf_stream_t G_hkdf_stream;
+
+/** In-flight state for APPROVE_VAULT_INTENT multi-step exchange. */
 extern approve_intent_state_t G_approve_intent_state;

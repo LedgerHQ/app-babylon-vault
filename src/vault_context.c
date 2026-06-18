@@ -23,6 +23,8 @@ void vault_context_invalidate(vault_context_t *ctx) {
     // Wipe all globals whose validity depends on state != IDLE.
     explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
+    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
+    explicit_bzero(&G_scratch, sizeof(G_scratch));
 }
 
 /**

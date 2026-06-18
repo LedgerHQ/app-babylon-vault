@@ -29,6 +29,7 @@ static void handle_initial_chunk(dispatcher_context_t *dc, const command_t *cmd)
     if (G_vault_context.state != VAULT_STATE_IDLE) {
         vault_context_invalidate(&G_vault_context);
     }
+    explicit_bzero(&G_scratch, sizeof(G_scratch));
     explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
 

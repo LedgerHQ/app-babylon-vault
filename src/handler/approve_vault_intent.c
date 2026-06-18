@@ -47,6 +47,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     }
 
     vault_context_invalidate(&G_vault_context);
+    explicit_bzero(&G_scratch, sizeof(G_scratch));
     explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
 
     if (preserve_htlc) {
@@ -150,6 +151,9 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
+
+    /* Store the x-only depositor key so vault_build_* script builders can embed it. */
+    memcpy(G_vault_intent.depositor_pk, depositor_compressed + 1, VAULT_XONLY_PUBKEY_LEN);
 
     /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));

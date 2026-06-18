@@ -26,7 +26,7 @@ A **Refund** transaction (HTLC timelock branch) can be signed from any session s
 ### Security properties
 
 - The device always **reconstructs scripts** from the loaded `vault_intent_t` and rejects any PSBT that does not match — it never trusts scripts provided by the host.
-- `htlc_preimage` is **zeroed immediately** (`explicit_bzero`) on any signing error, intent reload, or early `RELEASE_CONTEXT_SECRET` call.
+- `htlc_preimage` is **zeroed immediately** (`explicit_bzero`) on any signing error, intent reload, or early `RELEASE_CONTEXT_SECRET` call. In the source code and headers, `htlc_preimage` is `vault_context_t.s` and `htlc_hashlock` is `vault_context_t.h`.
 - Payout order is **enforced by the device**: VP first, then VK keys in lexicographic order.
 - All vault P2TR outputs use a **NUMS internal key** (`lift_x(0x50929b74...)`) — no key-path spend is possible.
 
