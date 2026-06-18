@@ -175,7 +175,10 @@ bool display_refund_transaction(dispatcher_context_t *dc,
 // Vault intent approval screen
 // ---------------------------------------------------------------------------
 
-#define VAULT_INTENT_MAX_PAIRS (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
+#define VAULT_INTENT_MAX_PAIRS VAULT_DISPLAY_PAIRS_COUNT
+
+_Static_assert(sizeof(nbgl_layoutTagValue_t) == VAULT_DISPLAY_PAIR_SIZE,
+               "nbgl_layoutTagValue_t size changed; update VAULT_DISPLAY_PAIR_SIZE in globals.h");
 
 // "4294967295 sat/vB\0" — TLV parser rejects base_fee_rate > UINT32_MAX, so cast is safe
 #define VAULT_FEE_RATE_STR_SIZE 20
@@ -205,12 +208,13 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 #endif
 
 bool display_vault_intent(dispatcher_context_t *dc) {
-    // Scalar string buffers and vault_pairs live on the stack (small, frame
-    // stays alive through the blocking io_ui_process() call so NBGL pointers
-    // remain valid).  The large key string/label arrays live in G_scratch.display
-    // which is safe to reuse here: display_vault_intent blocks on io_ui_process
+    // vault_pairs and key string/label arrays all live in G_scratch.display.
+    // Scalar string buffers stay on the stack (small, and the frame must stay
+    // alive through the blocking io_ui_process() call so NBGL pointer remain valid).
+    // G_scratch.display is safe here: display_vault_intent blocks on io_ui_process
     // and cannot overlap with the hkdf or script_scratch union members.
-    nbgl_layoutTagValue_t vault_pairs[VAULT_INTENT_MAX_PAIRS];
+    nbgl_layoutTagValue_t * const vault_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
     nbgl_layoutTagValueList_t vault_pair_list;
     char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];
     char vault_amount_str[MAX_AMOUNT_LENGTH + 1];

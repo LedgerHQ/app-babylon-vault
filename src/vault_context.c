@@ -46,7 +46,8 @@ static inline bool vault_transition_allowed(vault_state_t from, vault_state_t to
         case VAULT_STATE_SESSION1_PREPEGIN_EXPECTED:
             return (to == VAULT_STATE_INTENT_LOADED);
         case VAULT_STATE_SESSION2_PEGIN_EXPECTED:
-            return (to == VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
+            return (to == VAULT_STATE_SESSION2_PAYOUT_EXPECTED ||
+                    to == VAULT_STATE_INTENT_LOADED);
         case VAULT_STATE_SESSION2_PAYOUT_EXPECTED:
             return (to == VAULT_STATE_SESSION2_COMPLETE);
         case VAULT_STATE_SESSION2_COMPLETE:

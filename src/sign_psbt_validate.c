@@ -88,23 +88,9 @@ static bool _read_output(dispatcher_context_t *dc,
 }
 
 /* -------------------------------------------------------------------------
- * Callback state for iterating an input map looking for TAP_LEAF_SCRIPT
+ * Callback for iterating an input map looking for TAP_LEAF_SCRIPT
+ * State type is tap_leaf_script_state_t (defined in globals.h, lives in G_scratch.tls)
  * ---------------------------------------------------------------------- */
-
-typedef struct {
-    /* Set to true once a TAP_LEAF_SCRIPT entry is found.
-     * A second entry triggers the ambiguous flag. */
-    bool found;
-    bool ambiguous;
-    /* Control block extracted from the PSBT key (key[1..]) */
-    uint8_t control_block[1 + VAULT_XONLY_PUBKEY_LEN + VAULT_HASH256_LEN];
-    uint8_t control_block_len;
-    /* Leaf script extracted from the PSBT value (all bytes except the last leaf-version byte) */
-    uint8_t leaf_script[VAULT_SCRIPT_MAX_LEN];
-    int leaf_script_len;
-    /* Leaf version (last byte of the PSBT value) */
-    uint8_t leaf_version;
-} tap_leaf_script_state_t;
 
 static void _tap_leaf_script_callback(dispatcher_context_t *dc,
                                       tap_leaf_script_state_t *state,
@@ -148,23 +134,30 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     memcpy(full_key + 1, state->control_block, cb_len);
     size_t full_key_len = 1 + cb_len;
 
-    /* value = script || leaf_version */
-    uint8_t value_buf[VAULT_SCRIPT_MAX_LEN + 1];
+    /* Use leaf_check.actual_buf (union offset VAULT_SCRIPT_MAX_LEN) as the read buffer.
+     * G_scratch.tls (state) occupies union offsets 0..~2636; actual_buf starts at 2560
+     * so it only aliases the tail of tls.leaf_script and tls.leaf_script_len/leaf_version —
+     * fields that haven't been set yet.  Write leaf_version/leaf_script_len AFTER the
+     * memcpy so we don't corrupt the source before copying it. */
+    uint8_t * const value_buf = G_scratch.leaf_check.actual_buf;
     int value_len = call_get_merkleized_map_value(dc,
                                                   map_commitment,
                                                   full_key,
                                                   full_key_len,
                                                   value_buf,
-                                                  sizeof(value_buf));
+                                                  sizeof(G_scratch.leaf_check.actual_buf));
     if (value_len < 1) {
-        state->found = false; /* failed to read value */
+        state->ambiguous = true; /* failed to read value — treat as ambiguous/error */
         return;
     }
-    state->leaf_version = value_buf[value_len - 1];
-    state->leaf_script_len = value_len - 1;
-    if (state->leaf_script_len > 0) {
-        memcpy(state->leaf_script, value_buf, state->leaf_script_len);
+    /* Save leaf_version into a local before writing to tls fields that alias actual_buf. */
+    uint8_t leaf_version = value_buf[value_len - 1];
+    int leaf_script_len = value_len - 1;
+    if (leaf_script_len > 0) {
+        memcpy(state->leaf_script, value_buf, leaf_script_len);
     }
+    state->leaf_script_len = leaf_script_len;
+    state->leaf_version = leaf_version;
 }
 
 /* -------------------------------------------------------------------------
@@ -174,6 +167,7 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
 static bool _validate_display_prepegin(
     dispatcher_context_t *dc,
     sign_psbt_state_t *st,
+    const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)],
     const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
 
     /* State guard: must have intent and a derived hashlock */
@@ -196,7 +190,15 @@ static bool _validate_display_prepegin(
 
     const vault_intent_t *intent = &G_vault_intent;
 
-    /* 1. Version >= 2 */
+    /* 1. All inputs must be wallet-owned (BIP-86 wallet inputs from the loaded policy) */
+    for (unsigned int i = 0; i < st->n_inputs; i++) {
+        if (!bitvector_get(internal_inputs, i)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* 2. Version >= 2 */
     if (st->tx_version < 2) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -295,9 +297,17 @@ static bool _validate_display_prepegin(
         return false;
     }
 
-    /* 13. Show Screen 2 to the user */
+    /* 13. Show Screen 2 to the user (SW_DENY already sent by display function on rejection) */
     if (!display_prepegin_transaction(dc, intent->vault_amount, fee, htlc_addr)) {
-        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+
+    /* 14. Advance state: INTENT_LOADED → SESSION1_PREPEGIN_EXPECTED.
+     * This prevents the same Pre-PegIn PSBT from being signed more than once. */
+    if (!vault_context_transition(&G_vault_context,
+                                  VAULT_STATE_INTENT_LOADED,
+                                  VAULT_STATE_SESSION1_PREPEGIN_EXPECTED)) {
+        SEND_SW(dc, SW_BAD_STATE);
         return false;
     }
     return true;
@@ -311,6 +321,17 @@ static bool _validate_display_prepegin(
  * live in sign_psbt_validate_helpers.c (included via sign_psbt_validate_helpers.h). */
 
 static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t *st) {
+
+    /* State guard: Refund is valid in IDLE or INTENT_LOADED.
+     * Block it in SESSION2_PAYOUT_EXPECTED and SESSION2_COMPLETE — once the
+     * PegIn is settled, only Payout signing makes sense and Refund would
+     * sign for funds the protocol has already committed forward. */
+    vault_state_t state = G_vault_context.state;
+    if (state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED ||
+        state == VAULT_STATE_SESSION2_COMPLETE) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return false;
+    }
 
     /* 1. Structural requirements */
     if (st->n_inputs != 1 || st->n_outputs != 1) {
@@ -368,28 +389,29 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     }
     const uint8_t *htlc_spk = witness_utxo + 9;
 
-    /* 5. Find TAP_LEAF_SCRIPT using the callback */
-    tap_leaf_script_state_t tls_state;
-    memset(&tls_state, 0, sizeof(tls_state));
+    /* 5. Find TAP_LEAF_SCRIPT using the callback — lives in G_scratch.tls (saves 2636 B BSS). */
+    memset(&G_scratch.tls, 0, sizeof(G_scratch.tls));
     if (call_get_merkleized_map_with_callback(dc,
-                                              &tls_state,
+                                              &G_scratch.tls,
                                               st->inputs_root,
                                               1,
                                               0,
                                               (merkle_tree_elements_callback_t) _tap_leaf_script_callback,
                                               &input_map) < 0
-        || !tls_state.found || tls_state.ambiguous) {
+        || !G_scratch.tls.found || G_scratch.tls.ambiguous) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    if (tls_state.leaf_version != TAPSCRIPT_LEAF_VERSION) {
+    if (G_scratch.tls.leaf_version != TAPSCRIPT_LEAF_VERSION) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
-    /* 6. Parse leaf script shape */
+    /* 6. Parse leaf script shape — also extracts the CSV timelock value */
     uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];
-    if (!parse_refund_leaf_script(tls_state.leaf_script, tls_state.leaf_script_len, leaf_key)) {
+    uint32_t csv_value;
+    if (!parse_refund_leaf_script(G_scratch.tls.leaf_script, G_scratch.tls.leaf_script_len,
+                                  leaf_key, &csv_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -449,17 +471,23 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     /* 10. Control block taproot commitment verification */
     {
         /* control_block: (leaf_version | parity)(1B) || internal_key(32B) [|| sibling(32B)...] */
-        const uint8_t *cb = tls_state.control_block;
-        int cb_len = tls_state.control_block_len;
+        const uint8_t *cb = G_scratch.tls.control_block;
+        int cb_len = G_scratch.tls.control_block_len;
         if (cb_len < 1 + VAULT_XONLY_PUBKEY_LEN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         const uint8_t *internal_key = cb + 1;
 
+        /* The HTLC disables key-path spending via a NUMS point — verify this. */
+        if (memcmp(internal_key, NUMS_XONLY, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
         /* Compute the leaf hash */
         uint8_t leaf_hash[VAULT_HASH256_LEN];
-        vault_taproot_leaf_hash(tls_state.leaf_script, tls_state.leaf_script_len, leaf_hash);
+        vault_taproot_leaf_hash(G_scratch.tls.leaf_script, G_scratch.tls.leaf_script_len, leaf_hash);
 
         /* Build the merkle root from the leaf hash and any sibling hashes in the control block */
         uint8_t merkle_root[VAULT_HASH256_LEN];
@@ -487,6 +515,30 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         /* htlc_spk: [0x51, 0x20, tweaked[32]] */
         if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20
             || memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* 10.5 Validate PSBT_IN_SEQUENCE against the leaf-script CSV timelock.
+     * BIP-68: bit 31 enables/disables sequence, bit 22 selects block vs time. */
+    {
+        uint32_t nsequence = 0;
+        int seq_res = call_get_merkleized_map_value_u32_le(dc,
+                                                           &input_map,
+                                                           (uint8_t[]){PSBT_IN_SEQUENCE},
+                                                           1,
+                                                           &nsequence);
+        if (seq_res != 4) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* bit 31 set → relative locktime disabled; bit 22 set → time-based unit */
+        if ((nsequence & 0x80000000u) != 0 || (nsequence & 0x00400000u) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if ((nsequence & 0x0000FFFFu) < (csv_value & 0x0000FFFFu)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -550,7 +602,20 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (memcmp(xpub.compressed_pubkey + 1, out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        /* BIP-86: output key = taproot_tweak(internal_key, H("TapTweak"||internal_key)).
+         * get_extended_pubkey_at_path returns the untweaked internal key, so we must apply
+         * the key-path-only (empty script tree) tweak before comparing with out_key. */
+        uint8_t bip86_parity;
+        uint8_t bip86_tweaked[VAULT_XONLY_PUBKEY_LEN];
+        if (crypto_tr_tweak_pubkey(xpub.compressed_pubkey + 1,
+                                   NULL,
+                                   0,
+                                   &bip86_parity,
+                                   bip86_tweaked) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (memcmp(bip86_tweaked, out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -570,9 +635,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         return false;
     }
 
-    /* 15. Display Screen 3 */
+    /* 15. Display Screen 3 (SW_DENY already sent by display function on rejection) */
     if (!display_refund_transaction(dc, out_value, fee, refund_addr)) {
-        SEND_SW(dc, SW_DENY);
         return false;
     }
     return true;
@@ -800,13 +864,16 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
 
-        uint8_t value_buf[VAULT_SCRIPT_MAX_LEN + 1];
+        /* Reuse union tail: expected_script (offset 0) holds leaf0 built above;
+         * actual_buf (offset VAULT_SCRIPT_MAX_LEN) holds the PSBT value read here.
+         * display_vault_intent is not live during validation so this is safe. */
+        uint8_t * const value_buf = G_scratch.leaf_check.actual_buf;
         int value_len = call_get_merkleized_map_value(dc,
                                                        &input_map,
                                                        psbt_key,
                                                        psbt_key_len,
                                                        value_buf,
-                                                       sizeof(value_buf));
+                                                       sizeof(G_scratch.leaf_check.actual_buf));
         if (value_len != expected_l0_len + 1) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -903,8 +970,6 @@ bool validate_and_display_transaction(
     const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)],
     const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
 
-    UNUSED(internal_inputs);
-
     /* PegIn: strictly state-gated */
     if (G_vault_context.state == VAULT_STATE_SESSION2_PEGIN_EXPECTED) {
         return _validate_pegin(dc, st);
@@ -912,7 +977,7 @@ bool validate_and_display_transaction(
 
     /* Pre-PegIn: host provides a wallet policy (BIP-86 wallet inputs) */
     if (!st->has_no_wallet_policy) {
-        return _validate_display_prepegin(dc, st, internal_outputs);
+        return _validate_display_prepegin(dc, st, internal_inputs, internal_outputs);
     }
 
     /* No wallet policy → Refund */

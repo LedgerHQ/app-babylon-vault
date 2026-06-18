@@ -12,7 +12,7 @@ Run with --golden_run to generate reference snapshots:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
@@ -222,14 +222,26 @@ def _build_prepegin_psbt(
     htlc_vout: int = _HTLC_VOUT,
     tx_version: int = 2,
     locktime: int = 0,
+    input_internal_key: Optional[bytes] = None,
+    input_fingerprint: Optional[bytes] = None,
+    input_coin_type: int = 0,
 ) -> PSBT:
     """1-input / 1-output (HTLC) Pre-PegIn PSBTv0.
 
     The single output is the HTLC P2TR at htlc_vout=0.  With no other outputs,
     the 'all other outputs are internal' check trivially passes.
+
+    When input_internal_key and input_fingerprint are provided the input is a
+    proper BIP-86 key-path P2TR UTXO (required for the 'all inputs internal'
+    validation check in _validate_display_prepegin).
     """
     input_value = htlc_value + 3_456  # pre-pegin tx fee = 3456 sats = 0.00003456 BTC
-    input_spk = bytes([0x51, 0x20]) + bytes(32)  # dummy P2TR
+
+    if input_internal_key is not None and input_fingerprint is not None:
+        _, input_tweaked = taproot_tweak_pubkey(input_internal_key, b'')
+        input_spk = bytes([0x51, 0x20]) + input_tweaked
+    else:
+        input_spk = bytes([0x51, 0x20]) + bytes(32)  # dummy P2TR (only valid when state guard fires first)
 
     tx = CTransaction()
     tx.nVersion = tx_version
@@ -247,6 +259,15 @@ def _build_prepegin_psbt(
     psbt.outputs = [PartiallySignedOutput(0)]
 
     psbt.inputs[0].witness_utxo = CTxOut(input_value, input_spk)
+
+    if input_internal_key is not None and input_fingerprint is not None:
+        psbt.inputs[0].tap_bip32_paths[input_internal_key] = (
+            set(),
+            KeyOriginInfo(
+                input_fingerprint,
+                [HARDENED | 86, HARDENED | input_coin_type, HARDENED | 0, 0, 0],
+            ),
+        )
 
     return psbt
 
@@ -302,6 +323,25 @@ def _build_pegin_psbt(
     psbt.inputs[0].tap_scripts[(leaf0, 0xC0)] = {control_block}
 
     return psbt
+
+
+# ---------------------------------------------------------------------------
+# Pre-PegIn input key helpers
+# ---------------------------------------------------------------------------
+
+def _prepegin_input_key(client: "RaggerClient", coin_type: int):
+    """Return (fingerprint, internal_key) for a BIP-86 P2TR input at m/86'/{coin_type}'/0'/0/0.
+
+    The 'all inputs internal' check in _validate_display_prepegin requires the
+    input witness_utxo to have a BIP-86 tweaked key derived from this device's
+    wallet.  Pass the returned values as input_fingerprint/input_internal_key to
+    _build_prepegin_psbt.
+    """
+    fingerprint = client.get_master_fingerprint()
+    internal_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey[1:]
+    return fingerprint, internal_key
 
 
 # ---------------------------------------------------------------------------
@@ -398,14 +438,18 @@ def _build_refund_psbt(
     htlc_spk = bytes([0x51, 0x20]) + tweaked_key
     control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY
 
-    out_script = bytes([0x51, 0x20]) + out_key
+    # BIP-86: output key = taproot_tweak(internal_key, tagged_hash("TapTweak", internal_key))
+    # taproot_tweak_pubkey(key, b'') applies the key-path-only (empty script tree) tweak.
+    _, bip86_out_key = taproot_tweak_pubkey(out_key, b'')
+    out_script = bytes([0x51, 0x20]) + bip86_out_key
+
 
     tx = CTransaction()
     tx.nVersion = 2
     tx.nLockTime = 0
     tx.vin = [CTxIn()]
     tx.vin[0].prevout = COutPoint(int.from_bytes(b'\x42' * 32, 'little'), 0)
-    tx.vin[0].nSequence = 0
+    tx.vin[0].nSequence = csv_timelock
     tx.vout = [CTxOut(reclaimed_value, out_script)]
     tx.wit = CTxWitness()
 
@@ -422,7 +466,9 @@ def _build_refund_psbt(
         KeyOriginInfo(fingerprint, [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]),
     )
 
-    psbt.outputs[0].tap_bip32_paths[out_key] = (
+    # PSBT_OUT_TAP_BIP32_DERIVATION is keyed by the tweaked output key (bip86_out_key),
+    # but the derivation path records the internal (untweaked) key's path.
+    psbt.outputs[0].tap_bip32_paths[bip86_out_key] = (
         set(),
         KeyOriginInfo(fingerprint, [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 1]),
     )
@@ -486,7 +532,11 @@ def test_sign_psbt_prepegin_screen(
         dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock,
     )
 
-    psbt = _build_prepegin_psbt(htlc_spk)
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
+    psbt = _build_prepegin_psbt(htlc_spk,
+                                input_internal_key=input_key,
+                                input_fingerprint=fingerprint,
+                                input_coin_type=coin_type)
     wallet = _standard_taproot_wallet(client, coin_type)
     tname = "prepegin/screen_" + bitcoin_network
 
@@ -555,8 +605,12 @@ def test_sign_psbt_prepegin_wrong_htlc_spk(
         _HTLC_REFUND_TIMELOCK, bytes(32),
     )
 
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
     wallet = _standard_taproot_wallet(client, coin_type)
-    psbt = _build_prepegin_psbt(wrong_htlc_spk)
+    psbt = _build_prepegin_psbt(wrong_htlc_spk,
+                                input_internal_key=input_key,
+                                input_fingerprint=fingerprint,
+                                input_coin_type=coin_type)
 
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
@@ -579,8 +633,13 @@ def test_sign_psbt_prepegin_htlc_value_too_low(
     )
 
     too_low = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE - 1
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
     wallet = _standard_taproot_wallet(client, coin_type)
-    psbt = _build_prepegin_psbt(htlc_spk, htlc_value=too_low)
+    psbt = _build_prepegin_psbt(htlc_spk,
+                                htlc_value=too_low,
+                                input_internal_key=input_key,
+                                input_fingerprint=fingerprint,
+                                input_coin_type=coin_type)
 
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
@@ -752,7 +811,11 @@ def test_sign_psbt_prepegin_external_output(
         _HTLC_REFUND_TIMELOCK, hashlock,
     )
 
-    psbt = _build_prepegin_psbt(htlc_spk)
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
+    psbt = _build_prepegin_psbt(htlc_spk,
+                                input_internal_key=input_key,
+                                input_fingerprint=fingerprint,
+                                input_coin_type=coin_type)
     # Append a second output with no TAP_BIP32_DERIVATION — btcext marks it external.
     psbt.tx.vout.append(CTxOut(1000, bytes([0x51, 0x20]) + bytes(32)))
     psbt.outputs.append(PartiallySignedOutput(0))

@@ -66,7 +66,8 @@ int parse_tap_bip32_deriv_value(const uint8_t *val,
 
 bool parse_refund_leaf_script(const uint8_t *script,
                               int script_len,
-                              uint8_t leaf_key_out[VAULT_XONLY_PUBKEY_LEN]) {
+                              uint8_t leaf_key_out[VAULT_XONLY_PUBKEY_LEN],
+                              uint32_t *csv_value_out) {
     /* Minimum: 1 (OP_PUSHBYTES_32) + 32 (key) + 1 (OP_CHECKSIGVERIFY)
      *        + 1 (push opcode for CSV) + 1 (OP_CSV)
      * = 36 bytes. OP_1..OP_16 encodes the value in the opcode itself with no
@@ -88,27 +89,49 @@ bool parse_refund_leaf_script(const uint8_t *script,
     /* Minimal push of the CSV value — any positive minimal-push encoding is OK */
     if (pos >= script_len) return false;
     uint8_t push_op = script[pos++];
-    if (push_op == 0x00) return false; /* OP_0 not valid for a positive CSV */
-    if (push_op >= 0x01 && push_op <= 0x4b) {
-        /* OP_PUSHBYTES_1..OP_PUSHBYTES_75: next push_op bytes are the data */
-        pos += push_op;
+
+    uint32_t csv = 0;
+
+    if (push_op == 0x00) {
+        return false; /* OP_0 not valid for a positive CSV */
+    } else if (push_op >= 0x01 && push_op <= 0x4b) {
+        /* OP_PUSHBYTES_1..OP_PUSHBYTES_75: next push_op bytes are CScriptNum LE */
+        int data_len = (int) push_op;
+        if (data_len > 4 || pos + data_len > script_len) return false;
+        /* Decode CScriptNum: LE bytes, sign bit in MSB of last byte */
+        if (script[pos + data_len - 1] & 0x80) return false; /* negative → invalid */
+        for (int i = 0; i < data_len; i++) {
+            csv |= (uint32_t) script[pos + i] << (8 * i);
+        }
+        pos += data_len;
     } else if (push_op == 0x4c) {
-        /* OP_PUSHDATA1: next byte is length, then data */
+        /* OP_PUSHDATA1: next byte is length, then CScriptNum LE data */
         if (pos >= script_len) return false;
-        pos += (int) script[pos] + 1;
+        int data_len = (int) script[pos++];
+        if (data_len > 4 || pos + data_len > script_len) return false;
+        if (script[pos + data_len - 1] & 0x80) return false; /* negative */
+        for (int i = 0; i < data_len; i++) {
+            csv |= (uint32_t) script[pos + i] << (8 * i);
+        }
+        pos += data_len;
     } else if (push_op >= 0x51 && push_op <= 0x60) {
         /* OP_1..OP_16: value encoded in the opcode, no extra bytes */
+        csv = (uint32_t)(push_op - 0x50);
     } else if (push_op == 0x4f) {
-        /* OP_1NEGATE — not valid for a positive timelock */
-        return false;
+        return false; /* OP_1NEGATE — not valid for a positive timelock */
     } else {
         return false;
     }
+
+    if (csv == 0) return false; /* zero timelock makes no sense */
 
     /* OP_CHECKSEQUENCEVERIFY (0xB2) */
     if (pos >= script_len) return false;
     if (script[pos++] != OP_CHECKSEQUENCEVERIFY) return false;
 
     /* Must have consumed exactly the script */
-    return pos == script_len;
+    if (pos != script_len) return false;
+
+    *csv_value_out = csv;
+    return true;
 }
