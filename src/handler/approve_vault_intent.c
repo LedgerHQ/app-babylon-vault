@@ -169,16 +169,14 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
      * already holds a derived hashlock (set by DERIVE_CONTEXT_HASH before this call)
      * AND the intent carries a non-zero prepegin_txid.  Without this transition the
      * sign_psbt dispatch can never reach _validate_pegin. */
-    {
-        static const uint8_t _zeros[VAULT_HASH256_LEN] = {0};
-        if (memcmp(G_vault_context.htlc_hashlock, _zeros, VAULT_HASH256_LEN) != 0 &&
-            memcmp(G_vault_intent.prepegin_txid, _zeros, VAULT_HASH256_LEN) != 0) {
-            if (!vault_context_transition(&G_vault_context,
-                                          VAULT_STATE_INTENT_LOADED,
-                                          VAULT_STATE_SESSION2_PEGIN_EXPECTED)) {
-                SEND_SW(dc, SW_BAD_STATE);
-                return;
-            }
+    const uint8_t zeros[VAULT_HASH256_LEN] = {0};
+    if (memcmp(G_vault_context.htlc_hashlock, zeros, VAULT_HASH256_LEN) != 0 &&
+        memcmp(G_vault_intent.prepegin_txid, zeros, VAULT_HASH256_LEN) != 0) {
+        if (!vault_context_transition(&G_vault_context,
+                                      VAULT_STATE_INTENT_LOADED,
+                                      VAULT_STATE_SESSION2_PEGIN_EXPECTED)) {
+            SEND_SW(dc, SW_BAD_STATE);
+            return;
         }
     }
     SEND_SW(dc, SW_OK);

@@ -50,10 +50,17 @@ typedef struct {
     uint8_t keys_received;
 } approve_intent_state_t;
 
-/* Pair count for vault intent display: 9 scalar fields + one entry per key */
-#define VAULT_DISPLAY_PAIRS_COUNT (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
 /* sizeof(nbgl_layoutTagValue_t) — verified at compile time in display.c */
 #define VAULT_DISPLAY_PAIR_SIZE 16
+
+/* Pair count for vault intent display: 9 scalar fields + one entry per key */
+#define VAULT_DISPLAY_PAIRS_COUNT (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
+
+/* Scratch layout for display_transaction / display_prepegin_transaction /
+ * display_refund_transaction.  String sizes verified by static asserts in display.c. */
+#define TX_DISPLAY_MAX_PAIRS       4
+#define TX_DISPLAY_AMOUNT_STR_SIZE 28  /* MAX_AMOUNT_LENGTH + 1 */
+#define TX_DISPLAY_ADDR_STR_SIZE   80  /* MAX_ADDRESS_LENGTH_STR + 1 */
 
 /**
  * Scratch buffers for display_vault_intent.  Lives in G_scratch.display for the
@@ -68,6 +75,23 @@ typedef struct {
     char key_strs[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_HEX_KEY_STR_SIZE];
     char key_labels[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_KEY_LABEL_SIZE];
 } display_vault_intent_scratch_t;
+
+/**
+ * Scratch buffers for display_transaction / display_prepegin_transaction /
+ * display_refund_transaction.  All three functions are mutually exclusive and
+ * block on io_ui_process(), so they share one union member.
+ *
+ * pairs_raw holds the nbgl_layoutTagValue_t array as raw bytes (same pattern as
+ * display_vault_intent_scratch_t).  addr_str is written by the caller before
+ * invoking the display function; NBGL holds a pointer to it across io_ui_process.
+ */
+typedef struct {
+    uint8_t pairs_raw[TX_DISPLAY_MAX_PAIRS * VAULT_DISPLAY_PAIR_SIZE];
+    char amount_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+    char fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+    char extra_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+    char addr_str[TX_DISPLAY_ADDR_STR_SIZE];
+} display_tx_scratch_t;
 
 /**
  * Scratch buffer pair for _validate_display_refund leaf-script verification.
@@ -107,12 +131,15 @@ typedef struct {
  * Each member is live in exactly one handler and is zeroed before use:
  *   - script_scratch  vault_build_* signing hooks
  *   - display         display_vault_intent only (blocks on io_ui_process)
+ *   - display_tx      display_transaction / display_prepegin / display_refund
  *   - leaf_check      _validate_display_refund leaf-script comparison
  *   - tls             _tap_leaf_script_callback state during refund validation
  *
  * Timing is non-overlapping: tls is populated by the callback inside
  * call_get_merkleized_map_with_callback (step 5), then consumed through
  * step 10; leaf_check.actual_buf is first written at step 11 — safe.
+ * display_tx is written (addr_str) and then read (io_ui_process) only after
+ * tls and leaf_check are fully consumed.
  *
  * hkdf_stream_t and approve_intent_state_t are intentionally NOT in this
  * union.  Both have a boolean guard at their first byte (hkdf.active /
@@ -124,6 +151,7 @@ typedef struct {
 typedef union {
     uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
     display_vault_intent_scratch_t display;
+    display_tx_scratch_t display_tx;
     refund_leaf_check_t leaf_check;
     tap_leaf_script_state_t tls;
 } vault_scratch_t;

@@ -279,19 +279,18 @@ static bool _validate_display_prepegin(
     uint64_t fee = st->inputs_total_amount - st->outputs.total_amount;
 
     /* 13. Convert HTLC scriptPubKey to address string.
-     * Static lifetime required: NBGL stores a pointer to this buffer that must
-     * remain valid through the blocking io_ui_process() call in display_prepegin_transaction. */
-    static char htlc_addr[MAX_ADDRESS_LENGTH_STR + 1];
+     * Written into G_scratch.display_tx.addr_str — NBGL holds a pointer to it
+     * across the blocking io_ui_process() call in display_prepegin_transaction. */
     if (get_script_address(expected_spk,
                            VAULT_P2TR_SCRIPTPUBKEY_LEN,
-                           htlc_addr,
-                           sizeof(htlc_addr)) < 0) {
+                           G_scratch.display_tx.addr_str,
+                           sizeof(G_scratch.display_tx.addr_str)) < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
     /* 14. Show Screen 2 to the user (SW_DENY already sent by display function on rejection) */
-    if (!display_prepegin_transaction(dc, intent->vault_amount, fee, htlc_addr)) {
+    if (!display_prepegin_transaction(dc, intent->vault_amount, fee, G_scratch.display_tx.addr_str)) {
         return false;
     }
 
@@ -634,18 +633,19 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     }
     uint64_t fee = htlc_value - out_value;
 
-    /* 14. Convert refund output scriptPubKey to address string */
-    static char refund_addr[MAX_ADDRESS_LENGTH_STR + 1];
+    /* 14. Convert refund output scriptPubKey to address string.
+     * Written into G_scratch.display_tx.addr_str — NBGL holds a pointer to it
+     * across the blocking io_ui_process() call in display_refund_transaction. */
     if (get_script_address(out_script,
                            VAULT_P2TR_SCRIPTPUBKEY_LEN,
-                           refund_addr,
-                           sizeof(refund_addr)) < 0) {
+                           G_scratch.display_tx.addr_str,
+                           sizeof(G_scratch.display_tx.addr_str)) < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
     /* 15. Display Screen 3 (SW_DENY already sent by display function on rejection) */
-    if (!display_refund_transaction(dc, out_value, fee, refund_addr)) {
+    if (!display_refund_transaction(dc, out_value, fee, G_scratch.display_tx.addr_str)) {
         return false;
     }
     return true;
