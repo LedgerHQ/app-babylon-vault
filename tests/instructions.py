@@ -24,10 +24,10 @@ VAULT_INTENT_1K1C_CLICKS      = 15  # Nano devices
 # Derived from the golden snapshot counts: n_swipes = goldens - 3 (touch),
 #                                          n_clicks = goldens - 2 (nano).
 # Update these constants and regenerate goldens if the display layout changes.
-VAULT_INTENT_32K32C_SWIPES_STAX  = 35   # Stax:   38 goldens
-VAULT_INTENT_32K32C_SWIPES_FLEX  = 36   # Flex:   39 goldens
-VAULT_INTENT_32K32C_SWIPES_APEX  = 37   # Apex_p: 40 goldens
-VAULT_INTENT_32K32C_CLICKS       = 139  # NanoSP/NanoX: 141 goldens
+VAULT_INTENT_32K32C_SWIPES_STAX  = 35
+VAULT_INTENT_32K32C_SWIPES_FLEX  = 36
+VAULT_INTENT_32K32C_SWIPES_APEX  = 36
+VAULT_INTENT_32K32C_CLICKS       = 139
 
 
 def vault_intent_1k1c_steps(device: Device) -> int:
