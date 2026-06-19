@@ -24,15 +24,13 @@ VAULT_INTENT_1K1C_CLICKS      = 15  # Nano devices
 # Derived from the golden snapshot counts: n_swipes = snapshots - 3 (touch),
 #                                          n_clicks = snapshots - 2 (nano).
 # Update these constants and regenerate snapshots if the display layout changes.
-VAULT_INTENT_4K4C_SWIPES_STAX   = 7    # Stax:   10 snapshots
-VAULT_INTENT_4K4C_SWIPES_FLEX   = 8    # Flex:   11 snapshots
-VAULT_INTENT_4K4C_SWIPES_APEX   = 8    # Apex_p: 12 snapshots
-VAULT_INTENT_4K4C_CLICKS        = 27   # NanoSP/NanoX: 29 snapshots
+VAULT_INTENT_4K4C_SWIPES_STAX = 7    # Stax:        10 snapshots
+VAULT_INTENT_4K4C_SWIPES     = 8    # Flex, Apex:  11 snapshots
+VAULT_INTENT_4K4C_CLICKS     = 27   # NanoSP/NanoX: 29 snapshots
 
-VAULT_INTENT_32K32C_SWIPES_STAX  = 35   # Stax:   38 snapshots
-VAULT_INTENT_32K32C_SWIPES_FLEX  = 36   # Flex:   39 snapshots
-VAULT_INTENT_32K32C_SWIPES_APEX  = 36   # Apex_p: 39 snapshots (user-corrected)
-VAULT_INTENT_32K32C_CLICKS       = 139  # NanoSP/NanoX: 141 snapshots
+VAULT_INTENT_32K32C_SWIPES_STAX = 35   # Stax:        38 snapshots
+VAULT_INTENT_32K32C_SWIPES     = 36   # Flex, Apex:  39 snapshots
+VAULT_INTENT_32K32C_CLICKS     = 139  # NanoSP/NanoX: 141 snapshots
 
 
 def vault_intent_1k1c_steps(device: Device) -> int:
@@ -42,7 +40,6 @@ def vault_intent_1k1c_steps(device: Device) -> int:
     if device.name == "stax":
         return VAULT_INTENT_1K1C_SWIPES_STAX
     return VAULT_INTENT_1K1C_SWIPES
-
 
 
 def vault_intent_4k4c_steps(device: Device) -> int:
@@ -55,9 +52,7 @@ def vault_intent_4k4c_steps(device: Device) -> int:
         return VAULT_INTENT_4K4C_CLICKS
     if device.name == "stax":
         return VAULT_INTENT_4K4C_SWIPES_STAX
-    if device.name == "apex_p":
-        return VAULT_INTENT_4K4C_SWIPES_APEX
-    return VAULT_INTENT_4K4C_SWIPES_FLEX
+    return VAULT_INTENT_4K4C_SWIPES
 
 
 def vault_intent_32k32c_steps(device: Device) -> int:
@@ -72,9 +67,7 @@ def vault_intent_32k32c_steps(device: Device) -> int:
         return VAULT_INTENT_32K32C_CLICKS
     if device.name == "stax":
         return VAULT_INTENT_32K32C_SWIPES_STAX
-    if device.name == "apex_p":
-        return VAULT_INTENT_32K32C_SWIPES_APEX
-    return VAULT_INTENT_32K32C_SWIPES_FLEX
+    return VAULT_INTENT_32K32C_SWIPES
 
 
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
