@@ -245,7 +245,7 @@ static void test_deriv_reject_empty(void **state) {
 static void test_deriv_reject_too_short_for_fingerprint(void **state) {
     (void) state;
     /* n_hashes=0 but only 2 bytes (need at least 5: 1 + 4) */
-    uint8_t val[2] = {0x00, 0x00};
+    uint8_t val[2] = {OP_0, OP_0};
     uint32_t fp;
     uint32_t path[5];
     assert_int_equal(parse_tap_bip32_deriv_value(val, 2, &fp, path, 5), -1);
@@ -286,18 +286,18 @@ static void test_deriv_reject_too_many_steps(void **state) {
  * parse_refund_leaf_script — acceptance tests
  * ------------------------------------------------------------------------- */
 
-/* Build script: 0x20 <key[32]> OP_CHECKSIGVERIFY <csv_push...> OP_CSV */
+/* Build script: OP_PUSHBYTES_32 <key[32]> OP_CHECKSIGVERIFY <csv_push...> OP_CSV */
 static int build_refund_script(uint8_t *buf, size_t buf_len,
                                 const uint8_t key[32],
                                 const uint8_t *csv_push, int csv_push_len) {
     int total = 1 + 32 + 1 + csv_push_len + 1;
     if ((size_t) total > buf_len) return -1;
     int pos = 0;
-    buf[pos++] = 0x20;                    /* OP_PUSHBYTES_32 */
+    buf[pos++] = OP_PUSHBYTES_32;
     memcpy(buf + pos, key, 32); pos += 32;
-    buf[pos++] = 0xad;                    /* OP_CHECKSIGVERIFY */
+    buf[pos++] = OP_CHECKSIGVERIFY;
     memcpy(buf + pos, csv_push, (size_t) csv_push_len); pos += csv_push_len;
-    buf[pos++] = 0xb2;                    /* OP_CHECKSEQUENCEVERIFY */
+    buf[pos++] = OP_CHECKSEQUENCEVERIFY;
     return total;
 }
 
@@ -305,7 +305,7 @@ static void test_refund_valid_op1(void **state) {
     (void) state;
     uint8_t key[32];
     memset(key, 0xAA, 32);
-    uint8_t csv_push[] = {0x51}; /* OP_1 */
+    uint8_t csv_push[] = {OP_1};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     assert_int_equal(len, 36); /* 1 + 32 + 1 + 1(OP_1) + 1 */
@@ -321,7 +321,7 @@ static void test_refund_valid_op16(void **state) {
     (void) state;
     uint8_t key[32];
     memset(key, 0xBB, 32);
-    uint8_t csv_push[] = {0x60}; /* OP_16 */
+    uint8_t csv_push[] = {OP_16};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
@@ -333,10 +333,10 @@ static void test_refund_valid_op16(void **state) {
 
 static void test_refund_valid_direct_push_1byte(void **state) {
     (void) state;
-    /* CSV = 100 (0x64) — direct 1-byte push: opcode=0x01, value=0x64 */
+    /* CSV = 100 (0x64) — direct 1-byte push: OP_PUSHBYTES_1 + value byte */
     uint8_t key[32];
     memset(key, 0x01, 32);
-    uint8_t csv_push[] = {0x01, 0x64};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 0x64};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 2);
     assert_int_equal(len, 37); /* 1 + 32 + 1 + 2(push) + 1 */
@@ -349,10 +349,10 @@ static void test_refund_valid_direct_push_1byte(void **state) {
 
 static void test_refund_valid_direct_push_2byte(void **state) {
     (void) state;
-    /* CSV = 144 (0x90): high bit set, needs sign byte → push: 0x02 0x90 0x00 */
+    /* CSV = 144 (0x90): high bit set, needs sign byte → OP_PUSHBYTES_2 0x90 0x00 */
     uint8_t key[32];
     memset(key, 0x02, 32);
-    uint8_t csv_push[] = {0x02, 0x90, 0x00};
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0x90, 0x00};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 3);
     assert_int_equal(len, 38); /* 1 + 32 + 1 + 3(push) + 1 */
@@ -365,10 +365,10 @@ static void test_refund_valid_direct_push_2byte(void **state) {
 
 static void test_refund_valid_pushdata1(void **state) {
     (void) state;
-    /* OP_PUSHDATA1 0x01 0x01 — unusual but valid */
+    /* OP_PUSHDATA1 <len=1> <0x01> — unusual but valid */
     uint8_t key[32];
     memset(key, 0x03, 32);
-    uint8_t csv_push[] = {0x4c, 0x01, 0x01};
+    uint8_t csv_push[] = {OP_PUSHDATA1, OP_PUSHBYTES_1, 0x01};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 3);
     uint8_t out_key[32];
@@ -386,9 +386,9 @@ static void test_refund_reject_too_short(void **state) {
     (void) state;
     /* 35 bytes is one short of the minimum 36 */
     uint8_t script[35] = {0};
-    script[0] = 0x20;
-    script[33] = 0xad;
-    script[34] = 0x51;
+    script[0]  = OP_PUSHBYTES_32;
+    script[33] = OP_CHECKSIGVERIFY;
+    script[34] = OP_1;
     uint8_t out_key[32];
     uint32_t csv_value = 0;
     assert_false(parse_refund_leaf_script(script, 35, out_key, &csv_value));
@@ -397,10 +397,10 @@ static void test_refund_reject_too_short(void **state) {
 static void test_refund_reject_wrong_first_byte(void **state) {
     (void) state;
     uint8_t key[32] = {0};
-    uint8_t csv_push[] = {0x51};
+    uint8_t csv_push[] = {OP_1};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
-    script[0] = 0x21; /* wrong push size */
+    script[0] = OP_PUSHBYTES_33; /* wrong push size: 33 instead of 32 */
     uint8_t out_key[32];
     uint32_t csv_value = 0;
     assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
@@ -408,12 +408,12 @@ static void test_refund_reject_wrong_first_byte(void **state) {
 
 static void test_refund_reject_wrong_checksigverify(void **state) {
     (void) state;
-    /* The bug we fixed: 0x88 (OP_EQUALVERIFY) is rejected; only 0xAD is valid */
+    /* OP_EQUALVERIFY is rejected; only OP_CHECKSIGVERIFY is valid */
     uint8_t key[32] = {0};
-    uint8_t csv_push[] = {0x51};
+    uint8_t csv_push[] = {OP_1};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
-    script[33] = 0x88; /* OP_EQUALVERIFY — should be 0xAD */
+    script[33] = OP_EQUALVERIFY;
     uint8_t out_key[32];
     uint32_t csv_value = 0;
     assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
@@ -422,7 +422,7 @@ static void test_refund_reject_wrong_checksigverify(void **state) {
 static void test_refund_reject_csv_op0(void **state) {
     (void) state;
     uint8_t key[32] = {0};
-    uint8_t csv_push[] = {0x00}; /* OP_0 */
+    uint8_t csv_push[] = {OP_0};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
@@ -433,7 +433,7 @@ static void test_refund_reject_csv_op0(void **state) {
 static void test_refund_reject_csv_op1negate(void **state) {
     (void) state;
     uint8_t key[32] = {0};
-    uint8_t csv_push[] = {0x4f}; /* OP_1NEGATE */
+    uint8_t csv_push[] = {OP_1NEGATE};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
@@ -443,9 +443,9 @@ static void test_refund_reject_csv_op1negate(void **state) {
 
 static void test_refund_reject_csv_unknown_opcode(void **state) {
     (void) state;
-    /* 0x61 is beyond OP_16 (0x60) and not a valid push opcode */
+    /* OP_NOP (0x61) is beyond OP_16 and not a valid push opcode */
     uint8_t key[32] = {0};
-    uint8_t csv_push[] = {0x61};
+    uint8_t csv_push[] = {OP_NOP};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
@@ -456,10 +456,10 @@ static void test_refund_reject_csv_unknown_opcode(void **state) {
 static void test_refund_reject_extra_bytes_after_csv(void **state) {
     (void) state;
     uint8_t key[32] = {0};
-    uint8_t csv_push[] = {0x51};
+    uint8_t csv_push[] = {OP_1};
     uint8_t script[65];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
-    script[len] = 0x00; /* extra byte */
+    script[len] = OP_0; /* extra byte after OP_CSV */
     uint8_t out_key[32];
     uint32_t csv_value = 0;
     assert_false(parse_refund_leaf_script(script, len + 1, out_key, &csv_value));
@@ -468,7 +468,7 @@ static void test_refund_reject_extra_bytes_after_csv(void **state) {
 static void test_refund_reject_missing_csv_opcode(void **state) {
     (void) state;
     uint8_t key[32] = {0};
-    uint8_t csv_push[] = {0x51};
+    uint8_t csv_push[] = {OP_1};
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     /* Truncate before OP_CSV */

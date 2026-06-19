@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "vault_intent.h"
+#include "vault_script.h"
 
 /**
  * Check whether a BIP-32 path is BIP-86 shaped:

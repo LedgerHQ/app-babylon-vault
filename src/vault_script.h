@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "vault_intent.h"
+#include "../bitcoin_app_base/src/common/script.h"
 
 /**
  * Maximum byte length of any single vault leaf script.
@@ -14,6 +15,16 @@
  * Callers that pass a local stack buffer must be aware of device RAM limits;
  * prefer a static or global buffer for the largest leaves.
  */
+/* Direct-push pseudo-opcodes (0x01..0x4b): implicit in Bitcoin script encoding,
+ * absent from the upstream opcodetype enum.  Bitcoin consensus constants —
+ * these values are immutable (changing them would be a hard fork). */
+#define OP_PUSHBYTES_1  0x01u
+#define OP_PUSHBYTES_2  0x02u
+#define OP_PUSHBYTES_32 0x20u
+#define OP_PUSHBYTES_33 0x21u
+#define OP_PUSHBYTES_75 0x4bu
+
+#define TAPSCRIPT_LEAF_VERSION      0xC0u /* BIP-341 tapscript leaf version */
 #define VAULT_SCRIPT_MAX_LEN        2560
 #define VAULT_P2TR_SCRIPTPUBKEY_LEN (2 + VAULT_XONLY_PUBKEY_LEN) /* OP_1 OP_PUSHBYTES_32 <key> */
 
@@ -30,6 +41,12 @@ int crypto_tr_tweak_pubkey(const uint8_t pubkey[VAULT_XONLY_PUBKEY_LEN],
                            size_t h_len,
                            uint8_t *y_parity,
                            uint8_t out[VAULT_XONLY_PUBKEY_LEN]);
+
+/**
+ * NUMS x-only public key used as the internal key for all vault P2TR outputs,
+ * disabling key-path spending.  Value: SHA256("nothing_up_my_sleeve").
+ */
+extern const uint8_t VAULT_NUMS_XONLY[VAULT_XONLY_PUBKEY_LEN];
 
 /** BIP-341 TapBranch: sort-and-hash the two child hashes into out. */
 void crypto_tr_combine_taptree_hashes(const uint8_t left[VAULT_HASH256_LEN],
