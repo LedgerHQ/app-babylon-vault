@@ -51,7 +51,7 @@ from .vault_client import (
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
 )
-from .instructions import vault_intent_1k1c_steps, vault_intent_32k32c_steps
+from .instructions import vault_intent_1k1c_steps, vault_intent_4k4c_steps, vault_intent_32k32c_steps
 
 SCREENSHOT_PATH = Path(__file__).parent.resolve()
 
@@ -142,7 +142,8 @@ def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=keepers, challenger_pks=challengers,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/4k4c_" + bitcoin_network)
+                                  test_case_name="vault_intent/4k4c_" + bitcoin_network,
+                                  n_swipes=vault_intent_4k4c_steps(device))
 
 
 # 64 distinct valid secp256k1 x-only keys for the max-capacity test.
