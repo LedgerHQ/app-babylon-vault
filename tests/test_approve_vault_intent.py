@@ -51,7 +51,7 @@ from .vault_client import (
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
 )
-from .instructions import vault_intent_1k1c_steps
+from .instructions import vault_intent_1k1c_steps, vault_intent_32k32c_steps
 
 SCREENSHOT_PATH = Path(__file__).parent.resolve()
 
@@ -224,15 +224,18 @@ def test_max_32_keepers_32_challengers(client: RaggerClient, navigator: Navigato
     """32 keepers + 32 challengers — firmware maximum (VAULT_MAX_KEEPERS/CHALLENGERS = 32).
 
     Sends 64 keys in 10 P1=0x01 batches (9 × 7 keys + 1 × 1 key).
-    Uses text-based navigation (n_swipes=None) since the number of key pages
-    varies by device display size.
+    Uses a deterministic step count (not text-based navigation) to avoid a race in
+    navigate_until_text_and_compare where the swipe animation can fire one extra tick
+    between wait_for_screen_change() and compare_screen_with_text(), causing the last
+    content screenshot (last challenger) to be skipped on flex/apex_p.
     """
     scalars = _make_scalars(bitcoin_network, keeper_count=32, challenger_count=32)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=_MAX_KEEPERS,
                                   challenger_pks=_MAX_CHALLENGERS,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/max_32k32c_" + bitcoin_network)
+                                  test_case_name="vault_intent/max_32k32c_" + bitcoin_network,
+                                  n_swipes=vault_intent_32k32c_steps(device))
 
 
 def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Navigator,

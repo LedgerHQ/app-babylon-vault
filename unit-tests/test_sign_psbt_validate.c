@@ -311,8 +311,10 @@ static void test_refund_valid_op1(void **state) {
     assert_int_equal(len, 36); /* 1 + 32 + 1 + 1(OP_1) + 1 */
 
     uint8_t out_key[32];
-    assert_true(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
     assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 1);
 }
 
 static void test_refund_valid_op16(void **state) {
@@ -323,8 +325,10 @@ static void test_refund_valid_op16(void **state) {
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
-    assert_true(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
     assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 16);
 }
 
 static void test_refund_valid_direct_push_1byte(void **state) {
@@ -337,8 +341,10 @@ static void test_refund_valid_direct_push_1byte(void **state) {
     int len = build_refund_script(script, sizeof(script), key, csv_push, 2);
     assert_int_equal(len, 37); /* 1 + 32 + 1 + 2(push) + 1 */
     uint8_t out_key[32];
-    assert_true(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
     assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 100);
 }
 
 static void test_refund_valid_direct_push_2byte(void **state) {
@@ -351,8 +357,10 @@ static void test_refund_valid_direct_push_2byte(void **state) {
     int len = build_refund_script(script, sizeof(script), key, csv_push, 3);
     assert_int_equal(len, 38); /* 1 + 32 + 1 + 3(push) + 1 */
     uint8_t out_key[32];
-    assert_true(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
     assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 144);
 }
 
 static void test_refund_valid_pushdata1(void **state) {
@@ -364,8 +372,10 @@ static void test_refund_valid_pushdata1(void **state) {
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 3);
     uint8_t out_key[32];
-    assert_true(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
     assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 1);
 }
 
 /* ---------------------------------------------------------------------------
@@ -380,7 +390,8 @@ static void test_refund_reject_too_short(void **state) {
     script[33] = 0xad;
     script[34] = 0x51;
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, 35, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, 35, out_key, &csv_value));
 }
 
 static void test_refund_reject_wrong_first_byte(void **state) {
@@ -391,7 +402,8 @@ static void test_refund_reject_wrong_first_byte(void **state) {
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     script[0] = 0x21; /* wrong push size */
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
 }
 
 static void test_refund_reject_wrong_checksigverify(void **state) {
@@ -403,7 +415,8 @@ static void test_refund_reject_wrong_checksigverify(void **state) {
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     script[33] = 0x88; /* OP_EQUALVERIFY — should be 0xAD */
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
 }
 
 static void test_refund_reject_csv_op0(void **state) {
@@ -413,7 +426,8 @@ static void test_refund_reject_csv_op0(void **state) {
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
 }
 
 static void test_refund_reject_csv_op1negate(void **state) {
@@ -423,7 +437,8 @@ static void test_refund_reject_csv_op1negate(void **state) {
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
 }
 
 static void test_refund_reject_csv_unknown_opcode(void **state) {
@@ -434,7 +449,8 @@ static void test_refund_reject_csv_unknown_opcode(void **state) {
     uint8_t script[64];
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, len, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
 }
 
 static void test_refund_reject_extra_bytes_after_csv(void **state) {
@@ -445,7 +461,8 @@ static void test_refund_reject_extra_bytes_after_csv(void **state) {
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     script[len] = 0x00; /* extra byte */
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, len + 1, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len + 1, out_key, &csv_value));
 }
 
 static void test_refund_reject_missing_csv_opcode(void **state) {
@@ -456,7 +473,8 @@ static void test_refund_reject_missing_csv_opcode(void **state) {
     int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
     /* Truncate before OP_CSV */
     uint8_t out_key[32];
-    assert_false(parse_refund_leaf_script(script, len - 1, out_key));
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len - 1, out_key, &csv_value));
 }
 
 /* ---------------------------------------------------------------------------

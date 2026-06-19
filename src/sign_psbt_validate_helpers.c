@@ -47,8 +47,6 @@ int parse_tap_bip32_deriv_value(const uint8_t *val,
                                 int max_path_steps) {
     if (val_len < 1) return -1;
     int n_hashes = (int) val[0];
-    /* Valid TAP_BIP32_DERIVATION for a key-path or single-leaf spend has 0 or 1 leaf hash. */
-    if (n_hashes > 1) return -1;
     int offset = 1 + n_hashes * 32;
     if (offset + 4 > val_len) return -1;
 
