@@ -15,18 +15,18 @@
 #endif
 
 /* BIP-86 path shape */
-#define BIP86_PATH_LEN            5
-#define BIP86_PURPOSE             86u
-#define BIP86_MAX_ACCOUNT         100u
-#define BIP86_MAX_ADDRESS_INDEX   10000u
+#define BIP86_PATH_LEN          5
+#define BIP86_PURPOSE           86u
+#define BIP86_MAX_ACCOUNT       100u
+#define BIP86_MAX_ADDRESS_INDEX 10000u
 
 /* BIP-32 derivation record layout */
-#define BIP32_PATH_STEP_SIZE      4   /* bytes per path component (uint32_t LE) */
-#define BIP32_FINGERPRINT_SIZE    4   /* bytes for the key fingerprint (uint32_t BE) */
+#define BIP32_PATH_STEP_SIZE   4 /* bytes per path component (uint32_t LE) */
+#define BIP32_FINGERPRINT_SIZE 4 /* bytes for the key fingerprint (uint32_t BE) */
 
 /* CScriptNum encoding */
-#define SCRIPT_NUM_MAX_LEN        4   /* max bytes in a minimal-push CScriptNum */
-#define SCRIPT_NUM_SIGN_BIT       0x80u
+#define SCRIPT_NUM_MAX_LEN  4 /* max bytes in a minimal-push CScriptNum */
+#define SCRIPT_NUM_SIGN_BIT 0x80u
 
 /* Refund leaf script minimum length:
  * OP_PUSHBYTES_32 (1) + xonly key (32) + OP_CHECKSIGVERIFY (1) + push (1) + OP_CSV (1) */

@@ -24,7 +24,8 @@ static void vault_review_choice(bool approved) {
 
 #define MAX_N_PAIRS 4
 
-_Static_assert(MAX_N_PAIRS == TX_DISPLAY_MAX_PAIRS, "TX_DISPLAY_MAX_PAIRS out of sync with MAX_N_PAIRS");
+_Static_assert(MAX_N_PAIRS == TX_DISPLAY_MAX_PAIRS,
+               "TX_DISPLAY_MAX_PAIRS out of sync with MAX_N_PAIRS");
 _Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= MAX_AMOUNT_LENGTH + 1,
                "TX_DISPLAY_AMOUNT_STR_SIZE too small; update globals.h");
 _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
@@ -34,7 +35,8 @@ bool display_transaction(dispatcher_context_t *dc,
                          int64_t value_spent,
                          uint64_t magic_input_value,
                          uint64_t fee) {
-    nbgl_layoutTagValue_t *const tx_pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list;
 
     uint64_t value_spent_abs = value_spent < 0 ? -value_spent : value_spent;
@@ -101,15 +103,18 @@ bool display_prepegin_transaction(dispatcher_context_t *dc,
                                   uint64_t vault_amount,
                                   uint64_t fee,
                                   const char *htlc_address) {
-    nbgl_layoutTagValue_t *const tx_pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list;
 
     format_sats_amount(COIN_COINID_SHORT, vault_amount, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = G_scratch.display_tx.amount_str};
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "HTLC address", .value = htlc_address};
 
     assert(n <= MAX_N_PAIRS);
@@ -142,15 +147,18 @@ bool display_refund_transaction(dispatcher_context_t *dc,
                                 uint64_t amount_reclaimed,
                                 uint64_t fee,
                                 const char *refund_address) {
-    nbgl_layoutTagValue_t *const tx_pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list;
 
     format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount", .value = G_scratch.display_tx.amount_str};
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
 
     assert(n <= MAX_N_PAIRS);

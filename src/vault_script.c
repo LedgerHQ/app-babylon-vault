@@ -14,7 +14,7 @@
 #include "cx.h"
 #include "../bitcoin_app_base/src/common/script.h"
 
-#define OP_PUSHBYTES_32        0x20u /* push exactly 32 bytes (x-only pubkey or hash) */
+#define OP_PUSHBYTES_32 0x20u /* push exactly 32 bytes (x-only pubkey or hash) */
 
 /* Bitcoin compact-size (varint) prefix bytes */
 #define VARINT_PREFIX_2BYTE 0xFDu

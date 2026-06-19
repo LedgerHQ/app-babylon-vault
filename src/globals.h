@@ -59,8 +59,8 @@ typedef struct {
 /* Scratch layout for display_transaction / display_prepegin_transaction /
  * display_refund_transaction.  String sizes verified by static asserts in display.c. */
 #define TX_DISPLAY_MAX_PAIRS       4
-#define TX_DISPLAY_AMOUNT_STR_SIZE 28  /* MAX_AMOUNT_LENGTH + 1 */
-#define TX_DISPLAY_ADDR_STR_SIZE   80  /* MAX_ADDRESS_LENGTH_STR + 1 */
+#define TX_DISPLAY_AMOUNT_STR_SIZE 28 /* MAX_AMOUNT_LENGTH + 1 */
+#define TX_DISPLAY_ADDR_STR_SIZE   80 /* MAX_ADDRESS_LENGTH_STR + 1 */
 
 /**
  * Scratch buffers for display_vault_intent.  Lives in G_scratch.display for the

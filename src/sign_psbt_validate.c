@@ -22,8 +22,6 @@
 /* read_u32_le / read_u64_le come from the SDK's lib_standard_app */
 #include "read.h"
 
-
-
 /* Maximum length of a TAP_BIP32_DERIVATION value that we'll read:
  * 1B n_hashes + 32B leaf_hash + 4B fingerprint + 5*4B path = 57 bytes max */
 #define MAX_TAP_BIP32_DERIV_VALUE_LEN (1 + 32 + 4 + 5 * 4)
@@ -277,7 +275,10 @@ static bool _validate_display_prepegin(
     }
 
     /* 14. Show Screen 2 to the user (SW_DENY already sent by display function on rejection) */
-    if (!display_prepegin_transaction(dc, intent->vault_amount, fee, G_scratch.display_tx.addr_str)) {
+    if (!display_prepegin_transaction(dc,
+                                      intent->vault_amount,
+                                      fee,
+                                      G_scratch.display_tx.addr_str)) {
         return false;
     }
 
@@ -298,9 +299,8 @@ static bool _validate_display_prepegin(
 
 /* Verifies the BIP-341 taproot commitment from the control block in G_scratch.tls:
  * internal key is NUMS, merkle root built from leaf + siblings, tweaked key matches htlc_spk. */
-static bool _refund_verify_taproot_commitment(
-    dispatcher_context_t *dc,
-    const uint8_t htlc_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+static bool _refund_verify_taproot_commitment(dispatcher_context_t *dc,
+                                              const uint8_t htlc_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     /* control_block: (leaf_version | parity)(1B) || internal_key(32B) [|| sibling(32B)...] */
     const uint8_t *cb = G_scratch.tls.control_block;
     int cb_len = G_scratch.tls.control_block_len;
@@ -331,7 +331,8 @@ static bool _refund_verify_taproot_commitment(
 
     uint8_t parity;
     uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-    if (crypto_tr_tweak_pubkey(internal_key, merkle_root, VAULT_HASH256_LEN, &parity, tweaked) != 0) {
+    if (crypto_tr_tweak_pubkey(internal_key, merkle_root, VAULT_HASH256_LEN, &parity, tweaked) !=
+        0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -661,7 +662,8 @@ static bool _pegin_check_leaf0_script(dispatcher_context_t *dc,
 
     uint8_t *const actual_buf = G_scratch.leaf_check.actual_buf;
     memset(actual_buf, 0, sizeof(G_scratch.leaf_check.actual_buf));
-    int l1_len = vault_build_htlc_leaf1(intent, actual_buf, sizeof(G_scratch.leaf_check.actual_buf));
+    int l1_len =
+        vault_build_htlc_leaf1(intent, actual_buf, sizeof(G_scratch.leaf_check.actual_buf));
     if (l1_len < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -674,7 +676,11 @@ static bool _pegin_check_leaf0_script(dispatcher_context_t *dc,
 
     uint8_t parity;
     uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-    if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, merkle_root, VAULT_HASH256_LEN, &parity, tweaked) != 0) {
+    if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY,
+                               merkle_root,
+                               VAULT_HASH256_LEN,
+                               &parity,
+                               tweaked) != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -755,7 +761,8 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
         return false;
     }
 
-    /* 4. Accept SIGHASH_DEFAULT (0) or explicit ALL (1) — identical tapscript commitment (BIP-341) */
+    /* 4. Accept SIGHASH_DEFAULT (0) or explicit ALL (1) — identical tapscript commitment (BIP-341)
+     */
     uint32_t sighash_type = 0;
     int res = call_get_merkleized_map_value_u32_le(dc,
                                                    input_map,
@@ -812,13 +819,12 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
         return false;
     }
     uint8_t psbt_root[VAULT_HASH256_LEN];
-    if (VAULT_HASH256_LEN !=
-            call_get_merkleized_map_value(dc,
-                                          input_map,
-                                          (uint8_t[]) {PSBT_IN_TAP_MERKLE_ROOT},
-                                          1,
-                                          psbt_root,
-                                          VAULT_HASH256_LEN) ||
+    if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                           input_map,
+                                                           (uint8_t[]) {PSBT_IN_TAP_MERKLE_ROOT},
+                                                           1,
+                                                           psbt_root,
+                                                           VAULT_HASH256_LEN) ||
         memcmp(psbt_root, expected_root, VAULT_HASH256_LEN) != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
