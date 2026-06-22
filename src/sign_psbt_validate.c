@@ -136,6 +136,10 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     /* Save leaf_version into a local before writing to tls fields that alias actual_buf. */
     uint8_t leaf_version = value_buf[value_len - 1];
     int leaf_script_len = value_len - 1;
+    if (leaf_script_len > (int) VAULT_SCRIPT_MAX_LEN) {
+        state->ambiguous = true;
+        return;
+    }
     if (leaf_script_len > 0) {
         /* tls.leaf_script (union+68) and actual_buf (union+2560) overlap when
          * leaf_script_len > 2492 — use memmove to stay defined in that case. */
@@ -282,6 +286,7 @@ static bool _validate_display_prepegin(
     /* 14. Show Screen 2 to the user (SW_DENY already sent by display function on rejection) */
     if (!display_prepegin_transaction(dc,
                                       intent->vault_amount,
+                                      intent->depositor_claim_value,
                                       fee,
                                       G_scratch.display_tx.addr_str)) {
         return false;
@@ -454,6 +459,17 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
                                   &csv_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
+    }
+
+    /* 6a. When intent is loaded, the CSV timelock in the leaf must match the
+     * approved htlc_refund_timelock — prevents signing a premature refund with
+     * an attacker-supplied shorter timelock. */
+    if (state == VAULT_STATE_INTENT_LOADED ||
+        state == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED) {
+        if (csv_value != (uint32_t) G_vault_intent.htlc_refund_timelock) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
     }
 
     /* 7. Read TAP_BIP32_DERIVATION for leaf_key */
@@ -1243,7 +1259,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
     }
-    uint64_t total_out = out_value;
+    uint64_t total_out = out_value;  /* out0: bounded by out_value; no overflow risk yet */
 
     /* 6b. Read Out1 and verify:
      *   VP: amount == commission_fee, script == BIP-86 P2TR(vault_provider_pk)
@@ -1276,6 +1292,10 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
     }
+    if (total_out + out_value < total_out) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     total_out += out_value;
 
     /* 6c. VP only: read Out2, verify amount == VAULT_DUST_LIMIT and script ==
@@ -1298,6 +1318,10 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        if (total_out + out_value < total_out) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         total_out += out_value;
     }
 
@@ -1317,8 +1341,15 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
-    /* 7. Advance payout_index to enforce ordering and prevent replay */
+    /* 7. Advance payout_index to enforce ordering and prevent replay.
+     * Once all claimers (VP + keeper_count VKs) are processed, transition to
+     * SESSION2_COMPLETE so RELEASE_CONTEXT_SECRET becomes reachable. */
     G_vault_context.payout_index++;
+    if (G_vault_context.payout_index > intent->keeper_count) {
+        vault_context_transition(&G_vault_context,
+                                 VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
+                                 VAULT_STATE_SESSION2_COMPLETE);
+    }
     return true;
 }
 

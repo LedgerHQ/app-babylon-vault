@@ -101,6 +101,7 @@ bool display_transaction(dispatcher_context_t *dc,
 
 bool display_prepegin_transaction(dispatcher_context_t *dc,
                                   uint64_t vault_amount,
+                                  uint64_t depositor_claim_value,
                                   uint64_t fee,
                                   const char *htlc_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
@@ -108,11 +109,14 @@ bool display_prepegin_transaction(dispatcher_context_t *dc,
     nbgl_layoutTagValueList_t pair_list;
 
     format_sats_amount(COIN_COINID_SHORT, vault_amount, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, depositor_claim_value, G_scratch.display_tx.extra_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Depositor claim",
+                                             .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "HTLC address", .value = htlc_address};
