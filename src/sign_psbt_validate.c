@@ -32,7 +32,7 @@
 
 /* Payout fee bound constants (NAPPS-1376) */
 #define MAX_PAYOUT_VSIZE_BASE            500u
-#define MAX_PAYOUT_VSIZE_PER_PARTICIPANT  55u
+#define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
 
 /* -------------------------------------------------------------------------
  * Helpers
@@ -464,8 +464,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     /* 6a. When intent is loaded, the CSV timelock in the leaf must match the
      * approved htlc_refund_timelock — prevents signing a premature refund with
      * an attacker-supplied shorter timelock. */
-    if (state == VAULT_STATE_INTENT_LOADED ||
-        state == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED) {
+    if (state == VAULT_STATE_INTENT_LOADED || state == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED) {
         if (csv_value != (uint32_t) G_vault_intent.htlc_refund_timelock) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1030,7 +1029,7 @@ static bool _payout_check_single_leaf_script(dispatcher_context_t *dc,
  *   spk = OP_1 OP_PUSHBYTES_32 output_key
  */
 static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
-                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+                            uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t parity;
     uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
     if (crypto_tr_tweak_pubkey(xonly_key, NULL, 0, &parity, tweaked) != 0) return false;
@@ -1247,8 +1246,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
     {
-        const uint8_t *claimer_pk = (claimer_idx == 0) ? intent->vault_provider_pk
-                                                        : intent->keeper_pks[claimer_idx - 1];
+        const uint8_t *claimer_pk =
+            (claimer_idx == 0) ? intent->vault_provider_pk : intent->keeper_pks[claimer_idx - 1];
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (!_bip86_p2tr_spk(claimer_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1259,7 +1258,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
     }
-    uint64_t total_out = out_value;  /* out0: bounded by out_value; no overflow risk yet */
+    uint64_t total_out = out_value; /* out0: bounded by out_value; no overflow risk yet */
 
     /* 6b. Read Out1 and verify:
      *   VP: amount == commission_fee, script == BIP-86 P2TR(vault_provider_pk)
