@@ -13,6 +13,19 @@
  * @brief Signs custom (non-wallet-policy) inputs.
  *
  * Stub — full implementation in NAPPS-1377.
+ *
+ * When implemented, this function must perform the following state transitions
+ * (intentionally deferred from validate_and_display_transaction so state only
+ * advances when signing actually succeeds):
+ *
+ *   PegIn   (state == SESSION2_PEGIN_EXPECTED):
+ *     After signing the HTLC Leaf 0 input:
+ *       SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED
+ *
+ *   Payout  (state == SESSION2_PAYOUT_EXPECTED):
+ *     After signing both Vault UTXO + Assert:0 Payout inputs:
+ *       advance payout_index; when payout_index > keeper_count:
+ *       SESSION2_PAYOUT_EXPECTED → SESSION2_COMPLETE
  */
 bool sign_custom_inputs(
     dispatcher_context_t *dc,
