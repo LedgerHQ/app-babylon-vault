@@ -51,7 +51,9 @@ from .vault_client import (
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
 )
-from .instructions import vault_intent_1k1c_steps
+from .instructions import vault_intent_1k1c_steps, vault_intent_4k4c_steps, vault_intent_32k32c_steps
+
+SCREENSHOT_PATH = Path(__file__).parent.resolve()
 
 # ---------------------------------------------------------------------------
 # Test fixtures and helpers
@@ -121,14 +123,13 @@ def _raw_exchange(client, p1: int, data: bytes):
 # ---------------------------------------------------------------------------
 
 def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigator,
-                                       device: Device, bitcoin_network: str,
-                                       test_name: str, default_screenshot_path: Path):
+                                       device: Device, bitcoin_network: str):
     """Load a minimal intent (1 keeper, 1 challenger) end-to-end → SW_OK."""
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
-                                  path=default_screenshot_path,
-                                  test_case_name=test_name + "_" + bitcoin_network,
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/1k1c_" + bitcoin_network,
                                   n_swipes=vault_intent_1k1c_steps(device))
 
 
@@ -139,7 +140,10 @@ def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
     challengers = TEST_VALID_KEYS[4:8]
     scalars = _make_scalars(bitcoin_network, keeper_count=4, challenger_count=4)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
-                                  keeper_pks=keepers, challenger_pks=challengers)
+                                  keeper_pks=keepers, challenger_pks=challengers,
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/4k4c_" + bitcoin_network,
+                                  n_swipes=vault_intent_4k4c_steps(device))
 
 
 # 64 distinct valid secp256k1 x-only keys for the max-capacity test.
@@ -221,30 +225,35 @@ def test_max_32_keepers_32_challengers(client: RaggerClient, navigator: Navigato
     """32 keepers + 32 challengers — firmware maximum (VAULT_MAX_KEEPERS/CHALLENGERS = 32).
 
     Sends 64 keys in 10 P1=0x01 batches (9 × 7 keys + 1 × 1 key).
-    No snapshot comparison — the many pages of keys are covered by test_approve_intent_screen.
+    Uses a deterministic step count (not text-based navigation) to avoid a race in
+    navigate_until_text_and_compare where the swipe animation can fire one extra tick
+    between wait_for_screen_change() and compare_screen_with_text(), causing the last
+    content screenshot (last challenger) to be skipped on flex/apex_p.
     """
     scalars = _make_scalars(bitcoin_network, keeper_count=32, challenger_count=32)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=_MAX_KEEPERS,
-                                  challenger_pks=_MAX_CHALLENGERS)
+                                  challenger_pks=_MAX_CHALLENGERS,
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/max_32k32c_" + bitcoin_network,
+                                  n_swipes=vault_intent_32k32c_steps(device))
 
 
 def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Navigator,
-                                            device: Device, bitcoin_network: str,
-                                            test_name: str, default_screenshot_path: Path):
+                                            device: Device, bitcoin_network: str):
     """Loading a second intent while one is active must succeed (session reset)."""
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    # First load — approve the screen; snapshots named …_load1/
+    # First load — approve the screen
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
-                                  path=default_screenshot_path,
-                                  test_case_name=test_name + "_load1_" + bitcoin_network,
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/reload_1_" + bitcoin_network,
                                   n_swipes=vault_intent_1k1c_steps(device))
     # Second load — handler invalidates the first session and shows the screen again
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
-                                  path=default_screenshot_path,
-                                  test_case_name=test_name + "_load2_" + bitcoin_network,
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/reload_2_" + bitcoin_network,
                                   n_swipes=vault_intent_1k1c_steps(device))
 
 
@@ -267,7 +276,10 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, n
     # Step 2 — APPROVE_VAULT_INTENT must accept the HASH_DERIVED state and succeed.
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
-                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B])
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/session2_survive_" + bitcoin_network,
+                                  n_swipes=vault_intent_1k1c_steps(device))
 
     # Step 3 — state is INTENT_LOADED; P1=0x01 without a preceding P1=0x00 must fail
     # with SW_BAD_STATE (scalars_loaded == false).
@@ -277,8 +289,7 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, n
 
 
 def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: Navigator,
-                                                device: Device, bitcoin_network: str,
-                                                test_name: str, default_screenshot_path: Path):
+                                                device: Device, bitcoin_network: str):
     """After a successful approve, DERIVE_CONTEXT_HASH must reset state back to IDLE.
 
     Replaces the skipped test in test_derive_context_hash.py.
@@ -286,8 +297,8 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
-                                  path=default_screenshot_path,
-                                  test_case_name=test_name + "_" + bitcoin_network,
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/reset_session_" + bitcoin_network,
                                   n_swipes=vault_intent_1k1c_steps(device))
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.

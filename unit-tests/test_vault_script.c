@@ -16,7 +16,7 @@
 
 #include <cmocka.h>
 
-#include "common/script.h"
+#include "../../bitcoin_app_base/src/common/script.h"
 #include "vault_script.h"
 #include "vault_intent.h"
 #include "cx.h"  /* mock SHA-256 / tagged-hash helpers for cross-validation tests */

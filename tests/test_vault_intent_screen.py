@@ -57,11 +57,11 @@ def _scalars(bitcoin_network: str) -> bytes:
     return build_intent_tlv(
         coin_type=ct,
         vault_provider_pk=TEST_VP_KEY,
-        vault_amount=100_000,
-        commission_fee=1_000,
-        depositor_claim_value=10_000,
-        base_fee_rate=10,
-        pegin_max_fee=50_000,
+        vault_amount=8_765_432,      # 0.08765432 BTC — all 8 decimal places
+        commission_fee=43_219,       # 0.00043219 BTC
+        depositor_claim_value=21_987, # 0.00021987 BTC
+        base_fee_rate=7,
+        pegin_max_fee=456_789,       # 0.00456789 BTC
         pegin_csv_timelock=144,
         payout_timelock=200,
         htlc_refund_timelock=144,
@@ -88,8 +88,7 @@ def _send_scalars(client: "RaggerClient", bitcoin_network: str) -> None:
 # ---------------------------------------------------------------------------
 
 def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
-                                device: Device, bitcoin_network: str,
-                                test_name: str):
+                                device: Device, bitcoin_network: str):
     """Navigate all vault intent review pages and approve.
 
     Captures every page as a snapshot — run with --golden_run to create goldens.
@@ -100,7 +99,7 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
         keeper_pks=[_KEY_A],
         challenger_pks=[_KEY_B],
         path=ROOT_SCREENSHOT_PATH,
-        test_case_name=test_name + "_" + bitcoin_network,
+        test_case_name="vault_intent/approve_" + bitcoin_network,
         n_swipes=vault_intent_1k1c_steps(device),
     )
 
@@ -110,8 +109,7 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
 # ---------------------------------------------------------------------------
 
 def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
-                               device: Device, bitcoin_network: str,
-                               test_name: str):
+                               device: Device, bitcoin_network: str):
     """Navigate to the reject button and reject the vault intent → SW_DENY.
 
     Captures every page up to and including the rejection status screen.
@@ -128,7 +126,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
         ):
             navigator.navigate_and_compare(
                 path=ROOT_SCREENSHOT_PATH,
-                test_case_name=test_name + "_" + bitcoin_network,
+                test_case_name="vault_intent/reject_" + bitcoin_network,
                 instructions=vault_intent_reject_instructions(device, vault_intent_1k1c_steps(device)),
                 screen_change_before_first_instruction=True,
             )

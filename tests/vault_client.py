@@ -13,11 +13,13 @@ Usage:
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Union
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
     from ragger.navigator import Navigator
+    from ragger.navigator import NavInsID
     from ledgered.devices import Device
 
 CLA_VAULT                    = 0xE1
@@ -328,3 +330,55 @@ def approve_vault_intent(
     for i in range(0, len(all_keys), _KEYS_PER_BATCH):
         batch = all_keys[i : i + _KEYS_PER_BATCH]
         _approve_exchange(client, P1_KEY_BATCH, b"".join(batch))
+
+
+# ---------------------------------------------------------------------------
+# sign_psbt screen-test helper
+# ---------------------------------------------------------------------------
+
+def sign_psbt_with_nav_and_compare(
+    client: "RaggerClient",
+    psbt,
+    wallet,
+    wallet_hmac,
+    navigator: "Navigator",
+    testname: str,
+    nav_instructions: "List[NavInsID]",
+) -> None:
+    """Call sign_psbt while capturing all review screens into a single snapshot folder.
+
+    The standard client.sign_psbt + Instructions approach stores one screenshot per
+    sub-folder (testname_0_0/, testname_0_1/, …).  This helper instead uses
+    navigate_and_compare so all screens land as numbered PNGs inside one folder:
+        snapshots/<device>/<testname>/00000.png, 00001.png, …
+
+    Works by temporarily replacing the ragger_navigate bound method on the client
+    instance — ragger_bitcoin is a git submodule so we cannot modify it directly.
+
+    Use for touch devices (Flex, Stax, Apex).  For Nano, pass an Instructions object
+    to client.sign_psbt directly.
+    """
+    from ragger.utils import pack_APDU
+
+    screenshot_dir = client.screenshot_dir
+
+    def _flat_navigate(self, _nav, apdu, _instructions, _testname, index):
+        cla, ins, p1, p2, data = apdu.values()
+        self.transport_client.apdu_timeout = 1.0
+        with self.transport_client.exchange_async_raw(pack_APDU(cla, ins, p1, p2, data)) as done:
+            if not done:
+                _nav.navigate_and_compare(
+                    path=screenshot_dir,
+                    test_case_name=_testname,
+                    instructions=nav_instructions,
+                    screen_change_before_first_instruction=True,
+                )
+                index += 1
+        sw, response = self.last_async_response()
+        return sw, response, index
+
+    client.ragger_navigate = types.MethodType(_flat_navigate, client)
+    try:
+        client.sign_psbt(psbt, wallet, wallet_hmac, navigator, testname=testname)
+    finally:
+        del client.ragger_navigate

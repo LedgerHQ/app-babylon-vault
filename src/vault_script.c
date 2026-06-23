@@ -12,10 +12,9 @@
  *   Unit tests   : unit-tests/mocks/cx.h + unit-tests/mock_cx.c
  */
 #include "cx.h"
-#include "common/script.h"
+#include "../bitcoin_app_base/src/common/script.h"
 
-#define OP_PUSHBYTES_32        0x20u /* push exactly 32 bytes (x-only pubkey or hash) */
-#define TAPSCRIPT_LEAF_VERSION 0xC0u /* BIP-341 tapscript leaf version */
+#define OP_PUSHBYTES_32 0x20u /* push exactly 32 bytes (x-only pubkey or hash) */
 
 /* Bitcoin compact-size (varint) prefix bytes */
 #define VARINT_PREFIX_2BYTE 0xFDu
@@ -90,7 +89,7 @@ static int _varint_write(uint8_t *buf, uint64_t v) {
  * All vault P2TR outputs use this x-only key so no key-path spend is possible.
  * ----------------------------------------------------------------------- */
 
-static const uint8_t VAULT_NUMS_XONLY[VAULT_XONLY_PUBKEY_LEN] = {
+const uint8_t VAULT_NUMS_XONLY[VAULT_XONLY_PUBKEY_LEN] = {
     0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a, 0x5e,
     0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a, 0xc0,
 };

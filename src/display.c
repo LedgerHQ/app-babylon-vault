@@ -24,66 +24,68 @@ static void vault_review_choice(bool approved) {
 
 #define MAX_N_PAIRS 4
 
-// These are kept static rather than on the stack because the NBGL library
-// stores pointers to them that must remain valid long term.
-static nbgl_layoutTagValue_t pairs[MAX_N_PAIRS];
-static nbgl_layoutTagValueList_t pairList;
-static char value_str[MAX_AMOUNT_LENGTH + 1], magic_value_str[MAX_AMOUNT_LENGTH + 1],
-    fee_str[MAX_AMOUNT_LENGTH + 1];
+_Static_assert(MAX_N_PAIRS == TX_DISPLAY_MAX_PAIRS,
+               "TX_DISPLAY_MAX_PAIRS out of sync with MAX_N_PAIRS");
+_Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= MAX_AMOUNT_LENGTH + 1,
+               "TX_DISPLAY_AMOUNT_STR_SIZE too small; update globals.h");
+_Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
+               "TX_DISPLAY_ADDR_STR_SIZE too small; update globals.h");
 
 bool display_transaction(dispatcher_context_t *dc,
                          int64_t value_spent,
                          uint64_t magic_input_value,
                          uint64_t fee) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list;
+
     uint64_t value_spent_abs = value_spent < 0 ? -value_spent : value_spent;
-    format_sats_amount(COIN_COINID_SHORT, value_spent_abs, value_str);
-    format_sats_amount(COIN_COINID_SHORT, magic_input_value, magic_value_str);
-    format_sats_amount(COIN_COINID_SHORT, fee, fee_str);
+    format_sats_amount(COIN_COINID_SHORT, value_spent_abs, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, magic_input_value, G_scratch.display_tx.extra_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n_pairs = 0;
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
+    tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
         .item = "Transaction type",
         .value = "FOO",
     };
 
     if (value_spent >= 0) {
-        pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
+        tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
             .item = "Value spent",
-            .value = value_str,
+            .value = G_scratch.display_tx.amount_str,
         };
     } else {
-        pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
+        tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
             .item = "Value received",
-            .value = value_str,
+            .value = G_scratch.display_tx.amount_str,
         };
     }
 
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
+    tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
         .item = "Magic value",
-        .value = magic_value_str,
+        .value = G_scratch.display_tx.extra_str,
     };
 
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
+    tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
         .item = "Fee",
-        .value = fee_str,
+        .value = G_scratch.display_tx.fee_str,
     };
 
     assert(n_pairs <= MAX_N_PAIRS);
 
-    // Setup list
-    pairList.nbMaxLinesForValue = 0;
-    pairList.nbPairs = n_pairs;
-    pairList.pairs = pairs;
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n_pairs;
+    pair_list.pairs = tx_pairs;
 
     nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pairList,
+                       &pair_list,
                        &ICON_APP_ACTION,
                        "Review transaction\nto a FOO output",
                        NULL,
                        "Sign transaction\nto create a FOO output?",
                        review_choice);
 
-    // blocking call until the user approves or rejects the transaction
     bool result = io_ui_process(dc);
     if (!result) {
         SEND_SW(dc, SW_DENY);
@@ -94,10 +96,101 @@ bool display_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
+// Screen 2 — Pre-PegIn transaction
+// ---------------------------------------------------------------------------
+
+bool display_prepegin_transaction(dispatcher_context_t *dc,
+                                  uint64_t vault_amount,
+                                  uint64_t fee,
+                                  const char *htlc_address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list;
+
+    format_sats_amount(COIN_COINID_SHORT, vault_amount, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "HTLC address", .value = htlc_address};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Review Pre-PegIn\ntransaction",
+                       NULL,
+                       "Sign Pre-PegIn\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 3 — Refund transaction
+// ---------------------------------------------------------------------------
+
+bool display_refund_transaction(dispatcher_context_t *dc,
+                                uint64_t amount_reclaimed,
+                                uint64_t fee,
+                                const char *refund_address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Review refund\ntransaction",
+                       NULL,
+                       "Sign refund\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Vault intent approval screen
 // ---------------------------------------------------------------------------
 
-#define VAULT_INTENT_MAX_PAIRS (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
+#define VAULT_INTENT_MAX_PAIRS VAULT_DISPLAY_PAIRS_COUNT
+
+_Static_assert(sizeof(nbgl_layoutTagValue_t) == VAULT_DISPLAY_PAIR_SIZE,
+               "nbgl_layoutTagValue_t size changed; update VAULT_DISPLAY_PAIR_SIZE in globals.h");
 
 // "4294967295 sat/vB\0" — TLV parser rejects base_fee_rate > UINT32_MAX, so cast is safe
 #define VAULT_FEE_RATE_STR_SIZE 20
@@ -127,12 +220,13 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 #endif
 
 bool display_vault_intent(dispatcher_context_t *dc) {
-    // Scalar string buffers and vault_pairs live on the stack (small, frame
-    // stays alive through the blocking io_ui_process() call so NBGL pointers
-    // remain valid).  The large key string/label arrays live in G_scratch.display
-    // which is safe to reuse here: display_vault_intent blocks on io_ui_process
+    // vault_pairs and key string/label arrays all live in G_scratch.display.
+    // Scalar string buffers stay on the stack (small, and the frame must stay
+    // alive through the blocking io_ui_process() call so NBGL pointer remain valid).
+    // G_scratch.display is safe here: display_vault_intent blocks on io_ui_process
     // and cannot overlap with the hkdf or script_scratch union members.
-    nbgl_layoutTagValue_t vault_pairs[VAULT_INTENT_MAX_PAIRS];
+    nbgl_layoutTagValue_t *const vault_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
     nbgl_layoutTagValueList_t vault_pair_list;
     char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];
     char vault_amount_str[MAX_AMOUNT_LENGTH + 1];

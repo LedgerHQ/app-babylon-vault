@@ -6,31 +6,26 @@
 #include "../bitcoin_app_base/src/handler/sign_psbt.h"
 #include "../bitcoin_app_base/src/handler/sign_psbt/txhashes.h"
 
-#include "display.h"
 #include "apdu_handler.h"
-
-/**
- * @brief Validates and displays the transaction for user approval.
- *
- * Stub — full implementation in NAPPS-1375 (Pre-PegIn / Refund / PegIn)
- * and NAPPS-1376 (Payout).
- */
-bool validate_and_display_transaction(dispatcher_context_t *dc,
-                                      sign_psbt_state_t *st,
-                                      const uint8_t internal_inputs[64],
-                                      const uint8_t internal_outputs[64]) {
-    UNUSED(st);
-    UNUSED(internal_inputs);
-    UNUSED(internal_outputs);
-
-    SEND_SW(dc, SW_INS_NOT_SUPPORTED);
-    return false;
-}
+#include "sign_psbt_validate.h"
 
 /**
  * @brief Signs custom (non-wallet-policy) inputs.
  *
  * Stub — full implementation in NAPPS-1377.
+ *
+ * When implemented, this function must perform the following state transitions
+ * (intentionally deferred from validate_and_display_transaction so state only
+ * advances when signing actually succeeds):
+ *
+ *   PegIn   (state == SESSION2_PEGIN_EXPECTED):
+ *     After signing the HTLC Leaf 0 input:
+ *       SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED
+ *
+ *   Payout  (state == SESSION2_PAYOUT_EXPECTED):
+ *     After signing both Vault UTXO + Assert:0 Payout inputs:
+ *       advance payout_index; when payout_index > keeper_count:
+ *       SESSION2_PAYOUT_EXPECTED → SESSION2_COMPLETE
  */
 bool sign_custom_inputs(
     dispatcher_context_t *dc,
