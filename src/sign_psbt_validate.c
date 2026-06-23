@@ -131,6 +131,10 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     /* Save leaf_version into a local before writing to tls fields that alias actual_buf. */
     uint8_t leaf_version = value_buf[value_len - 1];
     int leaf_script_len = value_len - 1;
+    if (leaf_script_len > (int) VAULT_SCRIPT_MAX_LEN) {
+        state->ambiguous = true;
+        return;
+    }
     if (leaf_script_len > 0) {
         /* tls.leaf_script (union+68) and actual_buf (union+2560) overlap when
          * leaf_script_len > 2492 — use memmove to stay defined in that case. */
@@ -283,7 +287,11 @@ static bool _validate_display_prepegin(
     }
 
     /* 15. Advance state: INTENT_LOADED → SESSION1_PREPEGIN_EXPECTED.
-     * This prevents the same Pre-PegIn PSBT from being signed more than once. */
+     * This is intentionally done after user approval and before signing completes.
+     * Pre-PegIn uses only BIP-86 wallet-policy inputs: sign_custom_inputs is never
+     * called for them — the base framework signs them atomically within the same APDU.
+     * Advancing state here provides replay prevention (same Pre-PegIn cannot be
+     * presented to the user twice) without a time-of-check/time-of-use window. */
     if (!vault_context_transition(&G_vault_context,
                                   VAULT_STATE_INTENT_LOADED,
                                   VAULT_STATE_SESSION1_PREPEGIN_EXPECTED)) {
@@ -914,14 +922,11 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     if (!_pegin_validate_outputs(dc, st, intent, htlc_value)) return false;
 
     /* 4. PegIn is silent — no display needed.
-     * Advance state: SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED so the same
-     * PSBT cannot be validated a second time before NAPPS-1377 implements signing. */
-    if (!vault_context_transition(&G_vault_context,
-                                  VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-                                  VAULT_STATE_SESSION2_PAYOUT_EXPECTED)) {
-        SEND_SW(dc, SW_BAD_STATE);
-        return false;
-    }
+     * State transition SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED is deferred
+     * to sign_custom_inputs (NAPPS-1377).  Advancing state here would be premature:
+     * the HTLC Leaf 0 input is a tap-script custom input, so sign_custom_inputs is
+     * called after this function returns.  If signing fails the state must remain
+     * SESSION2_PEGIN_EXPECTED so the host can retry. */
     return true;
 }
 
