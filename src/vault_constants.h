@@ -30,15 +30,15 @@
 #define VAULT_PROTOCOL_VERSION ((uint8_t) 0x01)
 
 /**
- * P2TR dust threshold in satoshis.
+ * P2TR CPFP anchor value in satoshis (= standard P2TR relay dust limit).
  *
- * Outputs below this value are uneconomic to spend and rejected by node relay
- * policy. All Babylon Vault outputs are P2TR, so 330 sat applies throughout.
+ * Used as the value of the last payout output (CPFP anchor to the Claimer)
+ * and as the Assert:0 UTXO input value in fee calculations.
  *
  * Used to enforce: vault_amount > commission_fee + 2 * VAULT_DUST_LIMIT,
- * guaranteeing the Vault UTXO and Depositor Claim UTXO are both above dust.
+ * guaranteeing all payout outputs are above the relay dust limit.
  */
-#define VAULT_DUST_LIMIT ((uint64_t) 330u)
+#define VAULT_DUST_LIMIT ((uint64_t) 546u)
 
 /* Timelock range bounds (block counts). */
 

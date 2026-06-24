@@ -1048,7 +1048,7 @@ def test_sign_psbt_pegin_wrong_depositor_claim_amount(
 # Payout transaction validation (NAPPS-1376)
 # ===========================================================================
 
-VAULT_DUST_LIMIT = 330  # must match vault_constants.h
+VAULT_DUST_LIMIT = 546  # must match vault_constants.h (CPFP anchor = P2TR relay dust limit)
 
 # Default fee for payout PSBT builders (safely within MAX_PAYOUT_VSIZE_BASE * BASE_FEE_RATE)
 _PAYOUT_FEE = 400  # sat — well within 500 * 1 = 500 sat max for 1K+1C
@@ -1118,13 +1118,12 @@ def _build_payout_psbt(
     fee: int = _PAYOUT_FEE,
     htlc_vout: int = _HTLC_VOUT,
 ) -> PSBT:
-    """Build a valid Payout PSBTv0 for the given claimer_idx.
+    """Build a valid Payout PSBTv0 for the given claimer_idx (v18 output layout).
 
     Input 0 spends Vault UTXO from computed_pegin_txid:0 with sequence=pegin_csv_timelock.
-    Input 1 spends Assert:0 UTXO (arbitrary txid) with sequence=payout_timelock.
-    Output 0: BIP-86 P2TR to claimer key.
-    Output 1 (VP): commission_fee to VP; (VK): DUST to depositor.
-    Output 2 (VP only): DUST to depositor.
+    Input 1 spends Assert:0 UTXO (arbitrary txid, value=VAULT_DUST_LIMIT) with sequence=payout_timelock.
+    VP claimer (idx==0): Out0=depositor (V-fee-Fc), Out1=VP (Fc), Out2=VP CPFP anchor (DUST).
+    VK claimer (idx>0):  Out0=VaultKeeper_i (V-fee), Out1=VaultKeeper_i CPFP anchor (DUST).
     """
     # Reconstruct leaves to compute scriptPubKeys and txid
     vault_utxo_leaf = _vault_utxo_leaf(
@@ -1148,19 +1147,19 @@ def _build_payout_psbt(
     )
     assert0_spk = _p2tr_from_single_leaf(assert0_leaf)
 
-    # Output values and scripts
+    # Output values and scripts (v18 layout)
     if claimer_idx == 0:  # VP claimer
         out0_value = vault_amount + VAULT_DUST_LIMIT - fee - commission_fee - VAULT_DUST_LIMIT
         out1_value = commission_fee
         out2_value = VAULT_DUST_LIMIT
-        out0_spk = _bip86_p2tr_spk(TEST_VP_KEY)
-        out1_spk = _bip86_p2tr_spk(TEST_VP_KEY)
-        out2_spk = _bip86_p2tr_spk(depositor_pk)
+        out0_spk = _bip86_p2tr_spk(depositor_pk)    # depositor receives V - fee - Fc
+        out1_spk = _bip86_p2tr_spk(TEST_VP_KEY)     # VP receives commission
+        out2_spk = _bip86_p2tr_spk(TEST_VP_KEY)     # VP CPFP anchor (claimer = VP)
     else:  # VK claimer
         out0_value = vault_amount + VAULT_DUST_LIMIT - fee - VAULT_DUST_LIMIT
         out1_value = VAULT_DUST_LIMIT
-        out0_spk = _bip86_p2tr_spk(claimer_key)
-        out1_spk = _bip86_p2tr_spk(depositor_pk)
+        out0_spk = _bip86_p2tr_spk(claimer_key)     # VaultKeeper receives V - fee
+        out1_spk = _bip86_p2tr_spk(claimer_key)     # VaultKeeper CPFP anchor (claimer = VK)
 
     # Control blocks for single-leaf taptrees
     vault_leaf_hash = _tapleaf_hash(vault_utxo_leaf)
@@ -1439,7 +1438,7 @@ def test_sign_psbt_payout_wrong_dust_output(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VP Payout fails when Out2 (DUST) amount is not exactly VAULT_DUST_LIMIT."""
+    """VP Payout fails when Out2 (CPFP anchor) amount is not exactly VAULT_DUST_LIMIT."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
@@ -1516,3 +1515,210 @@ def test_sign_psbt_payout_wrong_input1_sequence(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ===========================================================================
+# Signet vault regression — real on-chain keys and amounts
+# Payout tx: 13d3f46888747c65d45b0ae8972e4ce6da86c8ad2584aefcbf03434071a99fab
+# ===========================================================================
+
+_SIGNET_VP_KEY = bytes.fromhex(
+    "de38e2e78eaf0d62b5291d5110548088fda9ba3e1972b4b55f86a2634a765d08"
+)
+_SIGNET_KEEPER_PKS = [
+    bytes.fromhex("9b03efc0a494b29e2ad5631ac15ec32c84c3a5295a64760c3b2ec9c0141c77c7"),
+    bytes.fromhex("cf6828d099112c3ff87d4393e5c222540f6f5cec30be8ea073fc7829dd161ed8"),
+    bytes.fromhex("daae4c4465ea84921a410c3a185bd003cdef9102c7f4760746413922cb478241"),
+]
+_SIGNET_CHALLENGER_PKS = [
+    bytes.fromhex("1d40367bb1a1f64e0c7b3abb3a3b8a88fa8f34c24fe255d043b3abaed04adaca"),
+    bytes.fromhex("ed94e11d6a9f04482009e16e30d1b9326f052212f5f0dae6b2c191e15be6e5c4"),
+    bytes.fromhex("f4b542ac5aac10b6ead6bc00a5ffa0d162abbeda4c485ee50d6a77d7e83c9300"),
+]
+
+# Both timelocks are 432 blocks (pegin_csv == payout == htlc_refund).
+_SIGNET_TIMELOCK = 432
+
+# Amounts reproduce the exact on-chain output values:
+#   Out0 = vault_amount - fee - commission_fee = 1_343_957 - 442 - 13_443 = 1_330_072
+#   Out1 = commission_fee                                                  =    13_443
+#   Out2 = VAULT_DUST_LIMIT (CPFP anchor)                                 =       546
+_SIGNET_VAULT_AMOUNT   = 1_343_957
+_SIGNET_COMMISSION_FEE = 13_443
+_SIGNET_FEE            = 442   # within 500 + 55*(3+3) = 830 sat max at base_fee_rate=1
+
+
+def _setup_signet_payout_state(
+    client: "RaggerClient",
+    navigator: "Navigator",
+    device,
+    coin_type: int,
+) -> None:
+    """Load signet vault intent and advance device to SESSION2_PAYOUT_EXPECTED."""
+    dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
+
+    hashlock = derive_context_hash(client, b"BabylonVault", b"")
+
+    scalars_tlv = build_intent_tlv(
+        coin_type=coin_type,
+        vault_provider_pk=_SIGNET_VP_KEY,
+        vault_amount=_SIGNET_VAULT_AMOUNT,
+        commission_fee=_SIGNET_COMMISSION_FEE,
+        depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
+        base_fee_rate=1,
+        pegin_max_fee=_PEGIN_MAX_FEE,
+        pegin_csv_timelock=_SIGNET_TIMELOCK,
+        payout_timelock=_SIGNET_TIMELOCK,
+        prepegin_txid=_PREPEGIN_TXID,
+        htlc_vout=_HTLC_VOUT,
+        htlc_refund_timelock=_SIGNET_TIMELOCK,
+        depositor_path=[HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0],
+        keeper_count=len(_SIGNET_KEEPER_PKS),
+        challenger_count=len(_SIGNET_CHALLENGER_PKS),
+    )
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _SIGNET_KEEPER_PKS, _SIGNET_CHALLENGER_PKS,
+    )
+
+    # Build PegIn PSBT with signet keys and sign it to advance state.
+    parity, merkle_root, leaf0, leaf1, htlc_spk = _htlc_output(
+        dep_pk, _SIGNET_VP_KEY, _SIGNET_KEEPER_PKS, _SIGNET_CHALLENGER_PKS,
+        _SIGNET_TIMELOCK, hashlock,
+    )
+    vault_spk = _p2tr_from_single_leaf(_vault_utxo_leaf(
+        dep_pk, _SIGNET_VP_KEY, _SIGNET_KEEPER_PKS, _SIGNET_CHALLENGER_PKS, _SIGNET_TIMELOCK,
+    ))
+    claim_spk = _p2tr_from_single_leaf(_depositor_claim_leaf(dep_pk))
+    lh1 = _tapleaf_hash(leaf1)
+    control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY + lh1
+    htlc_value = _SIGNET_VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + 1_000  # fee within max
+
+    tx = CTransaction()
+    tx.nVersion = 2
+    tx.nLockTime = 0
+    tx.vin = [CTxIn()]
+    tx.vin[0].prevout = COutPoint(int.from_bytes(_PREPEGIN_TXID, 'little'), _HTLC_VOUT)
+    tx.vin[0].nSequence = 0xFFFFFFFE
+    tx.vout = [CTxOut(_SIGNET_VAULT_AMOUNT, vault_spk), CTxOut(_DEPOSITOR_CLAIM_VALUE, claim_spk)]
+    tx.wit = CTxWitness()
+
+    psbt = PSBT()
+    psbt.version = 0
+    psbt.tx = tx
+    psbt.inputs = [PartiallySignedInput(0)]
+    psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0)]
+    psbt.inputs[0].witness_utxo = CTxOut(htlc_value, htlc_spk)
+    psbt.inputs[0].tap_internal_key = VAULT_NUMS_XONLY
+    psbt.inputs[0].tap_merkle_root = merkle_root
+    psbt.inputs[0].tap_scripts[(leaf0, 0xC0)] = {control_block}
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    client.sign_psbt(psbt, dummy_wallet, None)
+
+
+def _build_signet_payout_psbt(depositor_pk: bytes, claimer_idx: int) -> PSBT:
+    """Build a Payout PSBT for the signet vault (3 keepers, 3 challengers, timelock=432).
+
+    VP claimer (idx=0): Out0=depositor(1_330_072), Out1=VP commission(13_443), Out2=VP CPFP(546).
+    VK claimer (idx>0): Out0=VaultKeeper(V-fee), Out1=VaultKeeper CPFP anchor(546).
+    """
+    vault_utxo_leaf = _vault_utxo_leaf(
+        depositor_pk, _SIGNET_VP_KEY, _SIGNET_KEEPER_PKS, _SIGNET_CHALLENGER_PKS,
+        _SIGNET_TIMELOCK,
+    )
+    claim_leaf = _depositor_claim_leaf(depositor_pk)
+    vault_utxo_spk = _p2tr_from_single_leaf(vault_utxo_leaf)
+    claim_spk = _p2tr_from_single_leaf(claim_leaf)
+
+    computed_pegin_txid = _compute_pegin_txid(
+        _PREPEGIN_TXID, _HTLC_VOUT,
+        _SIGNET_VAULT_AMOUNT, vault_utxo_spk,
+        _DEPOSITOR_CLAIM_VALUE, claim_spk,
+    )
+
+    claimer_key = _SIGNET_VP_KEY if claimer_idx == 0 else _SIGNET_KEEPER_PKS[claimer_idx - 1]
+    app_challengers = _build_app_challengers(_SIGNET_VP_KEY, _SIGNET_KEEPER_PKS, claimer_idx)
+    assert0_leaf = _assert0_payout_leaf(
+        claimer_key, app_challengers, _SIGNET_CHALLENGER_PKS, _SIGNET_TIMELOCK,
+    )
+    assert0_spk = _p2tr_from_single_leaf(assert0_leaf)
+
+    if claimer_idx == 0:
+        out0_value = _SIGNET_VAULT_AMOUNT - _SIGNET_FEE - _SIGNET_COMMISSION_FEE
+        out1_value = _SIGNET_COMMISSION_FEE
+        out2_value = VAULT_DUST_LIMIT
+        out0_spk = _bip86_p2tr_spk(depositor_pk)
+        out1_spk = _bip86_p2tr_spk(_SIGNET_VP_KEY)
+        out2_spk = _bip86_p2tr_spk(_SIGNET_VP_KEY)
+    else:
+        out0_value = _SIGNET_VAULT_AMOUNT - _SIGNET_FEE
+        out1_value = VAULT_DUST_LIMIT
+        out0_spk = _bip86_p2tr_spk(claimer_key)
+        out1_spk = _bip86_p2tr_spk(claimer_key)
+
+    vault_leaf_hash = _tapleaf_hash(vault_utxo_leaf)
+    vault_parity, _ = taproot_tweak_pubkey(VAULT_NUMS_XONLY, vault_leaf_hash)
+    vault_cb = bytes([0xC0 | vault_parity]) + VAULT_NUMS_XONLY
+
+    assert0_leaf_hash = _tapleaf_hash(assert0_leaf)
+    assert0_parity, _ = taproot_tweak_pubkey(VAULT_NUMS_XONLY, assert0_leaf_hash)
+    assert0_cb = bytes([0xC0 | assert0_parity]) + VAULT_NUMS_XONLY
+
+    tx = CTransaction()
+    tx.nVersion = 2
+    tx.nLockTime = 0
+    tx.vin = [CTxIn(), CTxIn()]
+    tx.vin[0].prevout = COutPoint(int.from_bytes(computed_pegin_txid, 'little'), 0)
+    tx.vin[0].nSequence = _SIGNET_TIMELOCK
+    tx.vin[1].prevout = COutPoint(int.from_bytes(b'\xbb' * 32, 'little'), 0)
+    tx.vin[1].nSequence = _SIGNET_TIMELOCK
+    if claimer_idx == 0:
+        tx.vout = [
+            CTxOut(out0_value, out0_spk),
+            CTxOut(out1_value, out1_spk),
+            CTxOut(out2_value, out2_spk),
+        ]
+    else:
+        tx.vout = [CTxOut(out0_value, out0_spk), CTxOut(out1_value, out1_spk)]
+    tx.wit = CTxWitness()
+
+    psbt = PSBT()
+    psbt.version = 0
+    psbt.tx = tx
+    psbt.inputs = [PartiallySignedInput(0), PartiallySignedInput(0)]
+    psbt.outputs = [PartiallySignedOutput(0)] * len(tx.vout)
+    psbt.inputs[0].witness_utxo = CTxOut(_SIGNET_VAULT_AMOUNT, vault_utxo_spk)
+    psbt.inputs[0].tap_scripts[(vault_utxo_leaf, 0xC0)] = {vault_cb}
+    psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, assert0_spk)
+    psbt.inputs[1].tap_scripts[(assert0_leaf, 0xC0)] = {assert0_cb}
+    return psbt
+
+
+def test_sign_psbt_payout_signet_params(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Payout passes with real signet vault keys (3 keepers, 3 challengers) and on-chain amounts.
+
+    Keys sourced from payout tx 13d3f46888747c65d45b0ae8972e4ce6da86c8ad2584aefcbf03434071a99fab.
+    Depositor key is substituted with the test device's derivation (device must sign).
+    Verifies VP payout (Out0=depositor 1_330_072, Out1=VP 13_443, Out2=VP CPFP 546)
+    and VK_1 payout (Out0=VK 1_343_515, Out1=VK CPFP 546) both pass validation.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_signet_payout_state(client, navigator, device, coin_type)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    # VP payout — advances payout_index 0 → 1
+    vp_psbt = _build_signet_payout_psbt(dep_pk, claimer_idx=0)
+    client.sign_psbt(vp_psbt, dummy_wallet, None)
+
+    # VK_1 payout — advances payout_index 1 → 2
+    vk_psbt = _build_signet_payout_psbt(dep_pk, claimer_idx=1)
+    client.sign_psbt(vk_psbt, dummy_wallet, None)

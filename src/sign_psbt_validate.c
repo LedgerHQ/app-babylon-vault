@@ -1241,16 +1241,18 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t out_value;
 
-    /* 6a. Read Out0 and verify claimer's BIP-86 P2TR scriptPubKey */
+    /* 6a. Read Out0:
+     *   VP claimer: BIP-86 P2TR(depositor)        — depositor receives V - fee - Fc
+     *   VK claimer: BIP-86 P2TR(keeper[i])        — VaultKeeper receives V - fee */
     if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out_spk, &out_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
     {
-        const uint8_t *claimer_pk =
-            (claimer_idx == 0) ? intent->vault_provider_pk : intent->keeper_pks[claimer_idx - 1];
+        const uint8_t *out0_pk =
+            (claimer_idx == 0) ? intent->depositor_pk : intent->keeper_pks[claimer_idx - 1];
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!_bip86_p2tr_spk(claimer_pk, expected_spk)) {
+        if (!_bip86_p2tr_spk(out0_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1261,9 +1263,9 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     }
     uint64_t total_out = out_value; /* out0: bounded by out_value; no overflow risk yet */
 
-    /* 6b. Read Out1 and verify:
+    /* 6b. Read Out1:
      *   VP: amount == commission_fee, script == BIP-86 P2TR(vault_provider_pk)
-     *   VK: amount == VAULT_DUST_LIMIT, script == BIP-86 P2TR(depositor_pk) */
+     *   VK: amount == VAULT_DUST_LIMIT (CPFP anchor), script == BIP-86 P2TR(keeper[i]) */
     if (!_read_output(dc, st->outputs_root, st->n_outputs, 1, out_spk, &out_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -1275,7 +1277,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             out1_pk = intent->vault_provider_pk;
             expected_out1_value = intent->commission_fee;
         } else {
-            out1_pk = intent->depositor_pk;
+            out1_pk = intent->keeper_pks[claimer_idx - 1]; /* CPFP anchor to claimer */
             expected_out1_value = VAULT_DUST_LIMIT;
         }
         if (out_value != expected_out1_value) {
@@ -1298,8 +1300,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     }
     total_out += out_value;
 
-    /* 6c. VP only: read Out2, verify amount == VAULT_DUST_LIMIT and script ==
-     * BIP-86 P2TR(depositor_pk) */
+    /* 6c. VP only: Out2 = CPFP anchor (VAULT_DUST_LIMIT) to Claimer (vault_provider_pk) */
     if (claimer_idx == 0) {
         if (!_read_output(dc, st->outputs_root, st->n_outputs, 2, out_spk, &out_value)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1310,7 +1311,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!_bip86_p2tr_spk(intent->depositor_pk, expected_spk)) {
+        if (!_bip86_p2tr_spk(intent->vault_provider_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
