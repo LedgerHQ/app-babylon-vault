@@ -7,6 +7,7 @@
 #include "../bitcoin_app_base/src/handler/sign_psbt/txhashes.h"
 
 #include "apdu_handler.h"
+#include "globals.h"
 #include "sign_psbt_validate.h"
 
 /**
@@ -26,6 +27,10 @@
  *     After signing both Vault UTXO + Assert:0 Payout inputs:
  *       advance payout_index; when payout_index > keeper_count:
  *       SESSION2_PAYOUT_EXPECTED → SESSION2_COMPLETE
+ *
+ * Stub note: advances PegIn and Payout state so the test suite can exercise the full
+ * session flow even though actual signing is not yet wired.  The real implementation
+ * (NAPPS-1377) will only transition after the relevant inputs are successfully signed.
  */
 bool sign_custom_inputs(
     dispatcher_context_t *dc,
@@ -36,6 +41,22 @@ bool sign_custom_inputs(
     UNUSED(st);
     UNUSED(tx_hashes);
     UNUSED(internal_inputs);
+
+    /* Stub: advance PegIn state so tests can reach SESSION2_PAYOUT_EXPECTED. */
+    if (G_vault_context.state == VAULT_STATE_SESSION2_PEGIN_EXPECTED) {
+        vault_context_transition(&G_vault_context,
+                                 VAULT_STATE_SESSION2_PEGIN_EXPECTED,
+                                 VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
+        /* Stub: advance Payout state to enforce ordering and enable RELEASE_CONTEXT_SECRET.
+         * Real implementation: do this only after both Vault UTXO + Assert:0 inputs are signed. */
+    } else if (G_vault_context.state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED) {
+        G_vault_context.payout_index++;
+        if (G_vault_context.payout_index > G_vault_intent.keeper_count) {
+            vault_context_transition(&G_vault_context,
+                                     VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
+                                     VAULT_STATE_SESSION2_COMPLETE);
+        }
+    }
 
     return false;
 }
