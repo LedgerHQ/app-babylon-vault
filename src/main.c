@@ -47,11 +47,9 @@ bool sign_custom_inputs(
         vault_context_transition(&G_vault_context,
                                  VAULT_STATE_SESSION2_PEGIN_EXPECTED,
                                  VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
-    }
-
     /* Stub: advance Payout state to enforce ordering and enable RELEASE_CONTEXT_SECRET.
      * Real implementation: do this only after both Vault UTXO + Assert:0 inputs are signed. */
-    if (G_vault_context.state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED) {
+    } else if (G_vault_context.state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED) {
         G_vault_context.payout_index++;
         if (G_vault_context.payout_index > G_vault_intent.keeper_count) {
             vault_context_transition(&G_vault_context,
