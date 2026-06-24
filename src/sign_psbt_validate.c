@@ -1341,15 +1341,6 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
-    /* 7. Advance payout_index to enforce ordering and prevent replay.
-     * Once all claimers (VP + keeper_count VKs) are processed, transition to
-     * SESSION2_COMPLETE so RELEASE_CONTEXT_SECRET becomes reachable. */
-    G_vault_context.payout_index++;
-    if (G_vault_context.payout_index > intent->keeper_count) {
-        vault_context_transition(&G_vault_context,
-                                 VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
-                                 VAULT_STATE_SESSION2_COMPLETE);
-    }
     return true;
 }
 
