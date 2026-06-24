@@ -24,8 +24,8 @@
 #include "read.h"
 
 /* Maximum length of a TAP_BIP32_DERIVATION value that we'll read:
- * 1B n_hashes + 32B leaf_hash + 4B fingerprint + 5*4B path = 57 bytes max */
-#define MAX_TAP_BIP32_DERIV_VALUE_LEN (1 + 32 + 4 + 5 * 4)
+ * 1B n_hashes + up to 2×32B leaf_hashes + 4B fingerprint + 5*4B path = 89 bytes max */
+#define MAX_TAP_BIP32_DERIV_VALUE_LEN (1 + 2 * 32 + 4 + 5 * 4)
 
 /* Maximum WITNESS_UTXO size: 8B value + 1B script_len varint + 34B P2TR script */
 #define MAX_WITNESS_UTXO_LEN (8 + 1 + 34)
@@ -1349,6 +1349,33 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         vault_context_transition(&G_vault_context,
                                  VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
                                  VAULT_STATE_SESSION2_COMPLETE);
+    }
+    return true;
+}
+
+/* -------------------------------------------------------------------------
+ * Public helpers for sign_custom_inputs
+ * ---------------------------------------------------------------------- */
+
+bool vault_read_refund_leaf_script(dispatcher_context_t *dc,
+                                   sign_psbt_state_t *st,
+                                   merkleized_map_commitment_t *input_map_out) {
+    memset(&G_scratch.tls, 0, sizeof(G_scratch.tls));
+    if (call_get_merkleized_map_with_callback(
+            dc,
+            &G_scratch.tls,
+            st->inputs_root,
+            st->n_inputs,
+            0,
+            (merkle_tree_elements_callback_t) _tap_leaf_script_callback,
+            input_map_out) < 0 ||
+        !G_scratch.tls.found || G_scratch.tls.ambiguous) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    if (G_scratch.tls.leaf_version != TAPSCRIPT_LEAF_VERSION) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
     }
     return true;
 }

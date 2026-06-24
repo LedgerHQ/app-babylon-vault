@@ -710,12 +710,11 @@ def test_sign_psbt_pegin(
     bitcoin_network: str,
     device,
 ) -> None:
-    """PegIn validation passes silently, state advances to SESSION2_PAYOUT_EXPECTED.
+    """PegIn validation passes silently and sign_custom_inputs signs the HTLC Leaf 0 input.
 
-    sign_custom_inputs is not yet implemented (NAPPS-1377 stub returns false), so the
-    btcext dispatcher emits SW_BAD_STATE after validation succeeds.  The test asserts
-    SW_BAD_STATE to confirm that validation itself passed (any validation error would
-    produce SW_INCORRECT_DATA or SW_BAD_STATE from a different code path earlier).
+    NAPPS-1377: sign_custom_inputs is fully implemented, so the SIGN_PSBT command returns
+    SW_OK with the depositor's Schnorr signature over the HTLC Leaf 0 sighash.
+    State advances to SESSION2_PAYOUT_EXPECTED after signing.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -725,9 +724,7 @@ def test_sign_psbt_pegin(
     psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    client.sign_psbt(psbt, dummy_wallet, None)
 
 
 def test_sign_psbt_pegin_wrong_txid(
@@ -1222,9 +1219,8 @@ def _setup_payout_state(
     hashlock = _setup_s2_state(client, navigator, device, coin_type, prepegin_txid)
     pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, prepegin_txid)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(pegin_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE  # validation passes; signing not yet wired
+    # NAPPS-1377: PegIn signing is fully wired; SW_OK advances state to PAYOUT_EXPECTED.
+    client.sign_psbt(pegin_psbt, dummy_wallet, None)
     return hashlock
 
 
@@ -1234,7 +1230,7 @@ def test_sign_psbt_payout_vp(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VP Payout validation passes silently; sign_custom_inputs stub returns SW_BAD_STATE."""
+    """VP Payout validation passes silently and sign_custom_inputs signs the Vault UTXO input."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
@@ -1243,9 +1239,7 @@ def test_sign_psbt_payout_vp(
     psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    client.sign_psbt(psbt, dummy_wallet, None)
 
 
 def test_sign_psbt_payout_vk(
@@ -1254,24 +1248,20 @@ def test_sign_psbt_payout_vk(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VK Payout (after VP) validation passes silently; stub returns SW_BAD_STATE."""
+    """VP then VK_1 Payout both succeed; each signs the Vault UTXO input."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
     _setup_payout_state(client, navigator, device, coin_type)
 
-    # Sign VP payout first (advances payout_index to 1)
+    # VP payout — advances payout_index to 1
     vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(vp_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    client.sign_psbt(vp_psbt, dummy_wallet, None)
 
-    # VK_1 payout
+    # VK_1 payout — last payout, state transitions to SESSION2_COMPLETE
     vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(vk_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    client.sign_psbt(vk_psbt, dummy_wallet, None)
 
 
 def test_sign_psbt_payout_extra_input(
