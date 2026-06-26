@@ -54,15 +54,14 @@ def pytest_addoption(parser):
 def _detect_network_from_binary() -> str:
     """Infer mainnet/testnet from the most recently built app binary.
 
-    The mainnet binary embeds APPNAME='Babylon Vault'; the test binary embeds
-    APPNAME='Babylon Vault Signet' (Babylon's test network is Bitcoin signet,
-    which uses testnet chain params).  Searching for b'Signet' in the raw ELF
-    is sufficient — it lives in the ledger.app_name section.  Falls back to
-    'test' if no binary is found or the file is unreadable.
+    The mainnet binary embeds APPNAME='Babylon Vault'; the testnet binary
+    embeds APPNAME='Babylon Vault Testnet'.  Searching for b'Testnet' in
+    the raw ELF is sufficient — it lives in the ledger.app_name section.
+    Falls back to 'test' if no binary is found or the file is unreadable.
     """
     for elf in REPO_ROOT_DIR.glob("build/*/bin/app.elf"):
         try:
-            if b"Signet" not in elf.read_bytes():
+            if b"Testnet" not in elf.read_bytes():
                 return "main"
         except OSError:
             pass

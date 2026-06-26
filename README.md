@@ -63,21 +63,22 @@ The app builds two variants, selected with `COIN=<variant>`:
 | `COIN` | App name | Network params | Ticker |
 |--------|----------|----------------|--------|
 | `babylon_vault` | Babylon Vault | mainnet | `BTC` |
-| `babylon_vault_testnet` (default) | Babylon Vault **Signet** | testnet | `sBTC` |
+| `babylon_vault_testnet` (default) | Babylon Vault Testnet | testnet | `sBTC` |
 
-**Babylon's test network runs on Bitcoin signet, and the test build *is* the signet app.**
-From the device's point of view signet and testnet3 are indistinguishable — same `tb`
-address prefix, BIP-32 version bytes and coin type (1), and the app has no network stack to
-notice the consensus/magic-byte differences. So a separate signet variant would compile the
-identical code path; instead the single test build serves as the signet app. The variant
-keeps its internal `babylon_vault_testnet` name and `BITCOIN_NETWORK = testnet` for the
-shared coin params, but it presents to the user as **"Babylon Vault Signet"**, and its
-golden snapshots reflect that label.
+**Babylon's test network runs on Bitcoin signet, and the test build targets it.** From the
+device's point of view signet and testnet3 are indistinguishable — same `tb` address prefix,
+BIP-32 version bytes and coin type (1), and the app has no network stack to notice the
+consensus/magic-byte differences. So no separate signet variant is needed: the
+`babylon_vault_testnet` build, with `BITCOIN_NETWORK = testnet` for the shared coin params,
+signs signet transactions byte-for-byte correctly.
 
-The amount ticker reads **`sBTC`**. The base submodule hardcodes `COIN_COINID_SHORT="TEST"`
-for the testnet network, so the app Makefile overrides it *after* the `include`: `DEFINES`
-is expanded into `-D` flags at compile time, so the post-include value wins (the base entry
-is filtered out first to avoid a redefinition). No submodule change is required.
+The official app name stays **"Babylon Vault Testnet"** (the Ledger guideline enforcer pins
+the `appName` in the per-target manifests, and it is the single source for the on-device
+name). The one signet-specific touch is the amount ticker, which reads **`sBTC`** instead of
+`TEST`: the base submodule hardcodes `COIN_COINID_SHORT="TEST"` for the testnet network, so
+the app Makefile overrides it *after* the `include` — `DEFINES` is expanded into `-D` flags
+at compile time, so the post-include value wins (the base entry is filtered out first to
+avoid a redefinition). No submodule change is required.
 
 ## Compiling the app
 

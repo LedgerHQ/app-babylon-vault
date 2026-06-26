@@ -46,10 +46,10 @@ BITCOIN_NETWORK = mainnet
 
 else ifeq ($(COIN),babylon_vault_testnet)
 # Babylon's test network is Bitcoin signet, which is indistinguishable from testnet on the
-# device (same tb prefix, BIP-32 version bytes, coin type 1; no network stack). So the
-# testnet build IS the signet app: BITCOIN_NETWORK stays testnet for the shared coin params,
-# but the app presents to the user as "Signet".
-APPNAME = "Babylon Vault Signet"
+# device (same tb prefix, BIP-32 version bytes, coin type 1; no network stack), so this
+# build targets signet. The official app name stays "Babylon Vault Testnet" (the guideline
+# enforcer pins it), but the amount ticker is overridden to "sBTC" below the include.
+APPNAME = "Babylon Vault Testnet"
 BITCOIN_NETWORK = testnet
 
 else ifeq ($(filter clean,$(MAKECMDGOALS)),)
