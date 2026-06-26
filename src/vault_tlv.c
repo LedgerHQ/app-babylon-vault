@@ -177,7 +177,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
     if (out->depositor_path[1] != (out->coin_type | HARDENED)) return VAULT_TLV_ERR_VALIDATION;
 
     /* Cross-field: vault_amount > commission_fee + 2*VAULT_DUST_LIMIT (overflow-safe). */
-    const uint64_t two_dust = 2u * VAULT_DUST_LIMIT; /* 660 — cannot overflow */
+    const uint64_t two_dust = 2u * VAULT_DUST_LIMIT; /* 1092 — cannot overflow */
     if (out->commission_fee > UINT64_MAX - two_dust ||
         out->vault_amount <= out->commission_fee + two_dust) {
         return VAULT_TLV_ERR_VALIDATION;

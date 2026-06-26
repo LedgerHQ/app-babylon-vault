@@ -37,9 +37,11 @@ SESSION2_COMPLETE
 in `IDLE`, `HASH_DERIVED`, `INTENT_LOADED`, and `SESSION1_PREPEGIN_EXPECTED`. It does not
 change state.
 
-**Invalidation** — any validation or signing failure wipes `htlc_preimage` via
-`explicit_bzero` and resets to `IDLE`. The host must restart the full sequence from
-`DERIVE_CONTEXT_HASH`.
+**Invalidation** — a **Payout signing** failure wipes `htlc_preimage` via `explicit_bzero`
+and resets to `IDLE`; the host must then restart the full sequence from `DERIVE_CONTEXT_HASH`.
+PSBT **validation** failures (and PegIn/Pre-PegIn/Refund signing failures) do **not**
+invalidate — the session state is left unchanged so the host can fix the PSBT and retry.
+See [Error recovery](#error-recovery) for the per-flow retry rules.
 
 ---
 
@@ -187,7 +189,7 @@ position in `payout_index` — sending them out of order returns `SW_BAD_STATE`.
 | PSBT field | Requirement |
 |------------|-------------|
 | `PSBT_IN_SEQUENCE` | Must equal `intent.payout_timelock` |
-| `PSBT_IN_WITNESS_UTXO` value | Must equal `VAULT_DUST_LIMIT` (330 sat) |
+| `PSBT_IN_WITNESS_UTXO` value | Must equal `VAULT_DUST_LIMIT` (546 sat) |
 | `PSBT_IN_WITNESS_UTXO` scriptPubKey | Must match Assert:0 Payout spk for `claimer_idx` |
 | `PSBT_IN_TAP_LEAF_SCRIPT` | Must contain the Assert:0 Payout leaf for `claimer_idx` |
 
@@ -195,16 +197,16 @@ position in `payout_index` — sending them out of order returns `SW_BAD_STATE`.
 
 | Index | scriptPubKey | Value |
 |-------|-------------|-------|
-| 0 | BIP-86 P2TR of VP (`vault_provider_pk` tweaked) | `intent.vault_amount - intent.commission_fee - fee` |
+| 0 | BIP-86 P2TR of depositor (`depositor_pk` tweaked) | `intent.vault_amount - intent.commission_fee - fee` |
 | 1 | BIP-86 P2TR of VP (`vault_provider_pk` tweaked) | `intent.commission_fee` |
-| 2 | BIP-86 P2TR of depositor (`depositor_pk` tweaked) | `VAULT_DUST_LIMIT` |
+| 2 | BIP-86 P2TR of VP (`vault_provider_pk` tweaked, CPFP anchor) | `VAULT_DUST_LIMIT` |
 
 **Outputs (VK payout, `claimer_idx > 0`):**
 
 | Index | scriptPubKey | Value |
 |-------|-------------|-------|
 | 0 | BIP-86 P2TR of `keeper_pks[claimer_idx - 1]` | `intent.vault_amount - fee` |
-| 1 | BIP-86 P2TR of depositor (`depositor_pk` tweaked) | `VAULT_DUST_LIMIT` |
+| 1 | BIP-86 P2TR of `keeper_pks[claimer_idx - 1]` (CPFP anchor) | `VAULT_DUST_LIMIT` |
 
 **Fee bound:** `fee ≤ intent.base_fee_rate × (500 + 55 × (keeper_count + challenger_count))` vbytes.
 
@@ -274,8 +276,7 @@ The device **displays** amount reclaimed, fee, and destination address. User mus
 | `0x9000` | Success | Continue to next step |
 | `0x6985` | User rejected on device | Offer retry — device state is unchanged on rejection (no invalidation) |
 | `0x6A80` | PSBT validation failure | Fix the PSBT; resend. State unchanged if before signing; **invalidated** if during Payout signing |
-| `0xB007` | Wrong session state | Check current state; restart from `DERIVE_CONTEXT_HASH` if invalidated |
-| `0x6F00` | BIP-32 derivation failure | Hardware issue; session invalidated |
+| `0xB007` | Wrong session state, or BIP-32 derivation failure during `DERIVE_CONTEXT_HASH` (session invalidated) | Check current state; restart from `DERIVE_CONTEXT_HASH` if invalidated |
 
 **Retry rules:**
 - **Pre-PegIn, PegIn, Refund:** PSBT can be resent after any non-signing failure; state is unchanged.
@@ -308,11 +309,11 @@ to sign is `1 + keeper_count`:
 
 | Sequence | `payout_index` | Claimer | Outputs |
 |----------|---------------|---------|---------|
-| 1st | 0 | Vault Provider | 3 (VP claim, VP commission, depositor dust) |
-| 2nd | 1 | Keeper 0 | 2 (VK claim, depositor dust) |
-| 3rd | 2 | Keeper 1 | 2 (VK claim, depositor dust) |
+| 1st | 0 | Vault Provider | 3 (depositor claim, VP commission, VP dust) |
+| 2nd | 1 | Keeper 0 | 2 (VK claim, VK dust) |
+| 3rd | 2 | Keeper 1 | 2 (VK claim, VK dust) |
 | … | … | … | … |
-| Last | `keeper_count` | Keeper N-1 | 2 (VK claim, depositor dust) |
+| Last | `keeper_count` | Keeper N-1 | 2 (VK claim, VK dust) |
 
 After the last payout is **validated** the device transitions to `SESSION2_COMPLETE`.
 The final signing runs in that state — this is expected and handled correctly.

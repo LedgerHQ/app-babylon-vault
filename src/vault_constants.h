@@ -30,7 +30,8 @@
 #define VAULT_PROTOCOL_VERSION ((uint8_t) 0x01)
 
 /**
- * P2TR CPFP anchor value in satoshis (= standard P2TR relay dust limit).
+ * P2TR CPFP anchor value in satoshis (546 sat; chosen >= the 330-sat P2TR relay
+ * dust limit so every anchor output stays above dust).
  *
  * Used as the value of the last payout output (CPFP anchor to the Claimer)
  * and as the Assert:0 UTXO input value in fee calculations.

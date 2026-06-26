@@ -7,6 +7,7 @@
 #include "../bitcoin_app_base/src/boilerplate/sw.h"
 #include "../bitcoin_app_base/src/common/bitvector.h"
 #include "../bitcoin_app_base/src/common/psbt.h"
+#include "../bitcoin_app_base/src/crypto.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map_value.h"
 #include "../bitcoin_app_base/src/handler/sign_psbt.h"
@@ -22,6 +23,30 @@
 #define _MAX_WITNESS_UTXO_LEN (8 + 1 + 34)
 /* 1B n_hashes + up to 2×32B leaf_hashes + 4B fingerprint + 5*4B path */
 #define _MAX_TAP_BIP32_DERIV_LEN (1 + 2 * 32 + 4 + 5 * 4)
+
+/*
+ * Read PSBT_IN_WITNESS_UTXO for input 0 of `input_map` and require it to be a
+ * standard 34-byte P2TR output.  On success copies the scriptPubKey into
+ * `spk_out` and returns true.  On failure returns false WITHOUT sending a status
+ * word, so each caller decides how to report the error and whether to invalidate
+ * the session.
+ */
+static bool read_p2tr_witness_utxo(dispatcher_context_t *dc,
+                                   merkleized_map_commitment_t *input_map,
+                                   uint8_t spk_out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
+    uint8_t wu[_MAX_WITNESS_UTXO_LEN];
+    int wu_len = call_get_merkleized_map_value(dc,
+                                               input_map,
+                                               (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
+                                               1,
+                                               wu,
+                                               sizeof(wu));
+    if (wu_len < 9 || wu_len != 9 + wu[8] || wu[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+        return false;
+    }
+    memcpy(spk_out, wu + 9, VAULT_P2TR_SCRIPTPUBKEY_LEN);
+    return true;
+}
 
 bool sign_custom_inputs(
     dispatcher_context_t *dc,
@@ -59,14 +84,8 @@ bool sign_custom_inputs(
         uint8_t leaf_hash[VAULT_HASH256_LEN];
         vault_taproot_leaf_hash(G_scratch.script_scratch, leaf_len, leaf_hash);
 
-        uint8_t wu[_MAX_WITNESS_UTXO_LEN];
-        int wu_len = call_get_merkleized_map_value(dc,
-                                                   &input_map,
-                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                                   1,
-                                                   wu,
-                                                   sizeof(wu));
-        if (wu_len < 9 || wu_len != 9 + wu[8] || wu[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+        uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        if (!read_p2tr_witness_utxo(dc, &input_map, input_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -77,7 +96,7 @@ bool sign_custom_inputs(
                                       tx_hashes,
                                       &input_map,
                                       0,
-                                      wu + 9,
+                                      input_spk,
                                       VAULT_P2TR_SCRIPTPUBKEY_LEN,
                                       leaf_hash,
                                       0x00,
@@ -131,14 +150,8 @@ bool sign_custom_inputs(
         uint8_t leaf_hash[VAULT_HASH256_LEN];
         vault_taproot_leaf_hash(G_scratch.script_scratch, leaf_len, leaf_hash);
 
-        uint8_t wu[_MAX_WITNESS_UTXO_LEN];
-        int wu_len = call_get_merkleized_map_value(dc,
-                                                   &input_map,
-                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                                   1,
-                                                   wu,
-                                                   sizeof(wu));
-        if (wu_len < 9 || wu_len != 9 + wu[8] || wu[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+        uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        if (!read_p2tr_witness_utxo(dc, &input_map, input_spk)) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -150,7 +163,7 @@ bool sign_custom_inputs(
                                       tx_hashes,
                                       &input_map,
                                       0,
-                                      wu + 9,
+                                      input_spk,
                                       VAULT_P2TR_SCRIPTPUBKEY_LEN,
                                       leaf_hash,
                                       0x00,
@@ -204,14 +217,8 @@ bool sign_custom_inputs(
                                 G_scratch.tls.leaf_script_len,
                                 leaf_hash);
 
-        uint8_t wu[_MAX_WITNESS_UTXO_LEN];
-        int wu_len = call_get_merkleized_map_value(dc,
-                                                   &input_map,
-                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                                   1,
-                                                   wu,
-                                                   sizeof(wu));
-        if (wu_len < 9 || wu_len != 9 + wu[8] || wu[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+        uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        if (!read_p2tr_witness_utxo(dc, &input_map, input_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -256,13 +263,38 @@ bool sign_custom_inputs(
             return false;
         }
 
+        /* Bind the signing key to the script being spent.
+         * validate_and_display_transaction already enforces these on the same
+         * Merkle-committed PSBT, but signing must not silently rely on that:
+         * re-check the BIP-86 path shape and that the derived x-only key equals
+         * the leaf_key embedded in the refund script, so a refactor that ever
+         * decouples validation from signing cannot turn this into a key-confusion
+         * signing oracle. */
+        if (!check_bip86_path(sign_path, path_len)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        serialized_extended_pubkey_t xpub;
+        if (get_extended_pubkey_at_path(sign_path,
+                                        (uint8_t) path_len,
+                                        BIP32_PUBKEY_VERSION,
+                                        &xpub) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* compressed_pubkey[0] is 0x02/0x03; x-only key is bytes [1..32] */
+        if (memcmp(xpub.compressed_pubkey + 1, leaf_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
         uint8_t sighash[VAULT_HASH256_LEN];
         if (!compute_sighash_segwitv1(dc,
                                       st,
                                       tx_hashes,
                                       &input_map,
                                       0,
-                                      wu + 9,
+                                      input_spk,
                                       VAULT_P2TR_SCRIPTPUBKEY_LEN,
                                       leaf_hash,
                                       0x00,
