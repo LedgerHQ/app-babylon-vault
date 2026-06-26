@@ -1342,6 +1342,24 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
+    /* Advance the payout cursor now that this claimer validated.  Ordering is
+     * enforced via claimer_idx == payout_index above; the matching signature is
+     * produced afterwards in sign_custom_inputs.  A signing failure there calls
+     * vault_context_invalidate(), so advancing here cannot leave a half-signed
+     * session releasable.  After the last claimer (index == keeper_count) the
+     * session moves to SESSION2_COMPLETE; the final payout's signing runs in
+     * that state, which is expected and gates RELEASE_CONTEXT_SECRET. */
+    G_vault_context.payout_index++;
+    if (G_vault_context.payout_index > intent->keeper_count) {
+        if (!vault_context_transition(&G_vault_context,
+                                      VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
+                                      VAULT_STATE_SESSION2_COMPLETE)) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_BAD_STATE);
+            return false;
+        }
+    }
+
     return true;
 }
 

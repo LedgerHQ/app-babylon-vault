@@ -26,13 +26,17 @@
 
 /*
  * Read PSBT_IN_WITNESS_UTXO for input 0 of `input_map` and require it to be a
- * standard 34-byte P2TR output.  On success copies the scriptPubKey into
- * `spk_out` and returns true.  On failure returns false WITHOUT sending a status
- * word, so each caller decides how to report the error and whether to invalidate
- * the session.
+ * standard 34-byte P2TR output.  When `expected_spk` is non-NULL the read
+ * scriptPubKey must equal it byte-for-byte — this binds the value that goes
+ * into the sighash to a script the device reconstructed from the approved
+ * intent, instead of trusting the host's witness UTXO.  On success copies the
+ * scriptPubKey into `spk_out` and returns true.  On failure returns false
+ * WITHOUT sending a status word, so each caller decides how to report the error
+ * and whether to invalidate the session.
  */
 static bool read_p2tr_witness_utxo(dispatcher_context_t *dc,
                                    merkleized_map_commitment_t *input_map,
+                                   const uint8_t *expected_spk,
                                    uint8_t spk_out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t wu[_MAX_WITNESS_UTXO_LEN];
     int wu_len = call_get_merkleized_map_value(dc,
@@ -42,6 +46,9 @@ static bool read_p2tr_witness_utxo(dispatcher_context_t *dc,
                                                wu,
                                                sizeof(wu));
     if (wu_len < 9 || wu_len != 9 + wu[8] || wu[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+        return false;
+    }
+    if (expected_spk != NULL && memcmp(wu + 9, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
         return false;
     }
     memcpy(spk_out, wu + 9, VAULT_P2TR_SCRIPTPUBKEY_LEN);
@@ -84,8 +91,16 @@ bool sign_custom_inputs(
         uint8_t leaf_hash[VAULT_HASH256_LEN];
         vault_taproot_leaf_hash(G_scratch.script_scratch, leaf_len, leaf_hash);
 
+        /* Bind the witness-UTXO scriptPubKey to the HTLC P2TR reconstructed from
+         * the approved intent, so the sighash commits to a device-known script. */
+        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        if (!vault_build_htlc_scriptpubkey(intent, G_vault_context.htlc_hashlock, expected_spk)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
         uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!read_p2tr_witness_utxo(dc, &input_map, input_spk)) {
+        if (!read_p2tr_witness_utxo(dc, &input_map, expected_spk, input_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -150,8 +165,18 @@ bool sign_custom_inputs(
         uint8_t leaf_hash[VAULT_HASH256_LEN];
         vault_taproot_leaf_hash(G_scratch.script_scratch, leaf_len, leaf_hash);
 
+        /* Bind the witness-UTXO scriptPubKey to the Vault UTXO P2TR reconstructed
+         * from the approved intent (rebuilds G_scratch.script_scratch, which we
+         * are done reading from above). */
+        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        if (!vault_build_vault_utxo_scriptpubkey(intent, expected_spk)) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
         uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!read_p2tr_witness_utxo(dc, &input_map, input_spk)) {
+        if (!read_p2tr_witness_utxo(dc, &input_map, expected_spk, input_spk)) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -217,8 +242,12 @@ bool sign_custom_inputs(
                                 G_scratch.tls.leaf_script_len,
                                 leaf_hash);
 
+        /* Standalone refund has no loaded intent to reconstruct the HTLC spk from;
+         * _validate_display_refund binds it via the taproot control-block commitment
+         * (NUMS internal key + Merkle root verifying against this spk), so a
+         * structural-only read is sufficient here. */
         uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!read_p2tr_witness_utxo(dc, &input_map, input_spk)) {
+        if (!read_p2tr_witness_utxo(dc, &input_map, NULL, input_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
