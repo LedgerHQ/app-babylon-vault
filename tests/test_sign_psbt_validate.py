@@ -30,7 +30,7 @@ from ledger_bitcoin.key import ExtendedKey, KeyOriginInfo
 from ledger_bitcoin.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
 from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
-from test_utils.taproot import tagged_hash, taproot_tweak_pubkey, ser_script
+from test_utils.taproot import tagged_hash, taproot_tweak_pubkey, ser_script, pubkey_gen
 
 from .vault_client import (
     SW_DENY,
@@ -108,6 +108,15 @@ _HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + 234_567  # 10_1
 # Single keeper and challenger for all tests (sorted ascending — key[0] < key[1])
 _TEST_KEEPER_PKS     = [TEST_VALID_KEYS[0]]
 _TEST_CHALLENGER_PKS = [TEST_VALID_KEYS[1]]
+
+# Firmware participant caps and script buffer ceiling — must match src/vault_intent.h
+# (VAULT_MAX_KEEPERS / VAULT_MAX_CHALLENGERS) and src/vault_script.h
+# (VAULT_SCRIPT_MAX_LEN).  At the 32/32 maximum, HTLC Leaf 0 — which embeds
+# depositor + VP + every keeper + every challenger — is the largest single script
+# the device reconstructs into its VAULT_SCRIPT_MAX_LEN buffer.
+VAULT_MAX_KEEPERS     = 32
+VAULT_MAX_CHALLENGERS = 32
+VAULT_SCRIPT_MAX_LEN  = 2560
 
 # Session 2: the txid of the Pre-PegIn transaction committed to in the intent.
 _PREPEGIN_TXID = bytes(range(32))
@@ -283,6 +292,8 @@ def _build_pegin_psbt(
     htlc_value: int = _HTLC_VALUE,
     vault_amount: int = _VAULT_AMOUNT,
     depositor_claim_value: int = _DEPOSITOR_CLAIM_VALUE,
+    keeper_pks: Optional[List[bytes]] = None,
+    challenger_pks: Optional[List[bytes]] = None,
 ) -> PSBT:
     """Build a correct PegIn PSBTv0.
 
@@ -290,14 +301,22 @@ def _build_pegin_psbt(
     Output 0 = Vault UTXO, output 1 = Depositor Claim UTXO.
     TAP_LEAF_SCRIPT carries Leaf 0 (the hashlock leaf) keyed by the control block
     for spending via Leaf 0.
+
+    keeper_pks / challenger_pks default to the single-keeper / single-challenger
+    test sets; pass larger sorted sets to grow Leaf 0 toward VAULT_SCRIPT_MAX_LEN.
     """
+    if keeper_pks is None:
+        keeper_pks = _TEST_KEEPER_PKS
+    if challenger_pks is None:
+        challenger_pks = _TEST_CHALLENGER_PKS
+
     parity, merkle_root, leaf0, leaf1, htlc_spk = _htlc_output(
-        depositor_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        depositor_pk, TEST_VP_KEY, keeper_pks, challenger_pks,
         _HTLC_REFUND_TIMELOCK, hashlock,
     )
 
     vault_spk = _p2tr_from_single_leaf(_vault_utxo_leaf(
-        depositor_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _PEGIN_CSV_TIMELOCK,
+        depositor_pk, TEST_VP_KEY, keeper_pks, challenger_pks, _PEGIN_CSV_TIMELOCK,
     ))
     claim_spk = _p2tr_from_single_leaf(_depositor_claim_leaf(depositor_pk))
 
@@ -358,7 +377,13 @@ def _depositor_pk(bitcoin_network: str) -> bytes:
 def _build_intent_tlv_for_test(
     coin_type: int,
     prepegin_txid: bytes,
+    keeper_pks: Optional[List[bytes]] = None,
+    challenger_pks: Optional[List[bytes]] = None,
 ) -> bytes:
+    if keeper_pks is None:
+        keeper_pks = _TEST_KEEPER_PKS
+    if challenger_pks is None:
+        challenger_pks = _TEST_CHALLENGER_PKS
     return build_intent_tlv(
         coin_type=coin_type,
         vault_provider_pk=TEST_VP_KEY,
@@ -373,8 +398,8 @@ def _build_intent_tlv_for_test(
         htlc_vout=_HTLC_VOUT,
         htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
         depositor_path=[HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0],
-        keeper_count=len(_TEST_KEEPER_PKS),
-        challenger_count=len(_TEST_CHALLENGER_PKS),
+        keeper_count=len(keeper_pks),
+        challenger_count=len(challenger_pks),
     )
 
 
@@ -403,18 +428,27 @@ def _setup_s2_state(
     device,
     coin_type: int,
     prepegin_txid: bytes = _PREPEGIN_TXID,
+    keeper_pks: Optional[List[bytes]] = None,
+    challenger_pks: Optional[List[bytes]] = None,
 ) -> bytes:
     """Derive hashlock + approve intent (Session 2).  Returns the 32-byte hashlock.
 
     After this call the device is in VAULT_STATE_SESSION2_PEGIN_EXPECTED.
     prepegin_txid must be non-zero to trigger the extra state transition.
+
+    keeper_pks / challenger_pks default to the single-keeper / single-challenger
+    test sets; pass larger sorted sets to approve a many-participant vault.
     """
+    if keeper_pks is None:
+        keeper_pks = _TEST_KEEPER_PKS
+    if challenger_pks is None:
+        challenger_pks = _TEST_CHALLENGER_PKS
     assert any(prepegin_txid), "prepegin_txid must be non-zero for Session 2"
     hashlock = derive_context_hash(client, b"BabylonVault", b"")
-    scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid)
+    scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid, keeper_pks, challenger_pks)
     approve_vault_intent_with_nav(
         client, navigator, device,
-        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        scalars_tlv, keeper_pks, challenger_pks,
     )
     return hashlock
 
@@ -1526,3 +1560,78 @@ def test_sign_psbt_payout_wrong_input1_sequence(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ===========================================================================
+# Maximum-participant memory stress (NAPPS — VAULT_SCRIPT_MAX_LEN ceiling)
+# ===========================================================================
+
+def _distinct_sorted_keys(count: int, exclude: List[bytes]) -> List[bytes]:
+    """Return `count` distinct, valid, lexicographically-ascending x-only pubkeys.
+
+    Each key is secret*G for secret = 2, 3, 4, … (secret 1 == G == TEST_VP_KEY, so
+    we start at 2).  All are valid curve points, mutually distinct (small secrets
+    < n/2 never share an x-coordinate), and any key in `exclude` (the VP or
+    depositor key) is skipped.  The firmware requires each group's keys to be
+    strictly ascending by memcmp, so the caller slices a sorted list.
+    """
+    keys: List[bytes] = []
+    seen = set(exclude)
+    secret = 2
+    while len(keys) < count:
+        k = pubkey_gen(secret.to_bytes(32, "big"))
+        if k not in seen:
+            seen.add(k)
+            keys.append(k)
+        secret += 1
+    return sorted(keys)
+
+
+def test_sign_psbt_pegin_max_participants(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """PegIn validation at the 32-keeper / 32-challenger maximum.
+
+    This is the memory-critical case: HTLC Leaf 0 embeds depositor + VP + all 32
+    keepers + all 32 challengers (~34 B/key), so the device must reconstruct a
+    ~2.3 KB script into its VAULT_SCRIPT_MAX_LEN (2560 B) buffer AND read the
+    equally-large leaf back from the PSBT.  If either buffer were undersized the
+    leaf check would fail with SW_INCORRECT_DATA; a clean SW_BAD_STATE means
+    validation passed and the leaf was reconstructed/compared at full size
+    (signing itself is the NAPPS-1377 stub).
+
+    Unlike the captured sample-vector test (which rejects at the state guard
+    before any vault buffering), this drives the largest reconstruction path the
+    firmware has.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    all_keys = _distinct_sorted_keys(
+        VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS, exclude=[TEST_VP_KEY, dep_pk]
+    )
+    keeper_pks = all_keys[:VAULT_MAX_KEEPERS]
+    challenger_pks = all_keys[VAULT_MAX_KEEPERS:]
+
+    # Sanity: Leaf 0 sits just under the firmware buffer ceiling — i.e. this test
+    # genuinely exercises the near-max buffer, not a comfortably small script.
+    leaf0 = _htlc_leaf0(dep_pk, TEST_VP_KEY, keeper_pks, challenger_pks, bytes(32))
+    assert 2000 < len(leaf0) <= VAULT_SCRIPT_MAX_LEN, f"Leaf 0 len = {len(leaf0)}"
+
+    hashlock = _setup_s2_state(
+        client, navigator, device, coin_type, _PREPEGIN_TXID,
+        keeper_pks=keeper_pks, challenger_pks=challenger_pks,
+    )
+
+    psbt = _build_pegin_psbt(
+        dep_pk, hashlock, _PREPEGIN_TXID,
+        keeper_pks=keeper_pks, challenger_pks=challenger_pks,
+    )
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_BAD_STATE
