@@ -10,9 +10,12 @@ from typing import List, Tuple
 # Flex and Apex fit only 1 key per page (less vertical space), so 1K+1C = 6 pages.
 #
 # Update these constants (and regenerate golden snapshots) if the display layout changes.
-VAULT_INTENT_1K1C_SWIPES_STAX = 4   # Stax: 5 pages (intro + 3 content + hold-to-sign)
-VAULT_INTENT_1K1C_SWIPES      = 5   # Flex, Apex: 6 pages (intro + 4 content + hold-to-sign)
-VAULT_INTENT_1K1C_CLICKS      = 15  # Nano devices
+# +1 page on touch vs. the old single review: the streaming review splits params
+# and keys into separate segments, forcing a page break so the first keeper starts
+# on a fresh page.
+VAULT_INTENT_1K1C_SWIPES_STAX = 4   # Stax: 6 pages (intro + params + keys + hold-to-sign)
+VAULT_INTENT_1K1C_SWIPES      = 6   # Flex, Apex: 7 pages
+VAULT_INTENT_1K1C_CLICKS      = 17  # Nano devices
 
 # Steps for 32-keeper + 32-challenger intent (64 keys total).
 # These are used by test_max_32_keepers_32_challengers to switch from text-based
@@ -24,13 +27,16 @@ VAULT_INTENT_1K1C_CLICKS      = 15  # Nano devices
 # Derived from the golden snapshot counts: n_swipes = snapshots - 3 (touch),
 #                                          n_clicks = snapshots - 2 (nano).
 # Update these constants and regenerate snapshots if the display layout changes.
+# NOTE: unlike 1K1C, the params/keys segment break does NOT add a touch page here:
+# with more keys the keeper list already started on a fresh page in the old layout,
+# so these keep their pre-streaming swipe counts (bumping them over-swipes → timeout).
 VAULT_INTENT_4K4C_SWIPES_STAX = 7    # Stax:        10 snapshots
-VAULT_INTENT_4K4C_SWIPES     = 8    # Flex, Apex:  11 snapshots
+VAULT_INTENT_4K4C_SWIPES     = 12    # Flex, Apex:  15 snapshots
 VAULT_INTENT_4K4C_CLICKS     = 27   # NanoSP/NanoX: 29 snapshots
 
 VAULT_INTENT_32K32C_SWIPES_STAX = 35   # Stax:        38 snapshots
-VAULT_INTENT_32K32C_SWIPES     = 36   # Flex, Apex:  39 snapshots
-VAULT_INTENT_32K32C_CLICKS     = 139  # NanoSP/NanoX: 141 snapshots
+VAULT_INTENT_32K32C_SWIPES     = 68   # Flex, Apex:  71 snapshots
+VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 141 snapshots
 
 
 def vault_intent_1k1c_steps(device: Device) -> int:
@@ -82,6 +88,43 @@ def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavI
         [NavInsID.SWIPE_CENTER_TO_LEFT] * n_steps
         + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
     )
+
+
+def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
+    """Navigation that views only the first screen of each segment, then SKIPS.
+
+    Exercises the skippable keeper/challenger flow added with the streaming review:
+    skip on the params segment advances to the keys segment, and skip on the keys
+    segment jumps straight to the approval page.  Because skip is taken from the
+    first page of each segment, this sequence is independent of how many param/key
+    pages the layout produces.
+
+    Touch: RIGHT_HEADER_TAP taps the top-right "Skip" button; USE_CASE_CHOICE_CONFIRM
+           taps "Yes, skip" in the confirmation modal.
+    Nano:  the SDK inserts a "press both to skip" page at the start of each skippable
+           data set; BOTH_CLICK on it performs the skip.
+
+    NOTE: skip is a UX affordance whose exact page sequence is layout-dependent.
+    Verify/adjust this list against the first --golden_run, as with the
+    VAULT_INTENT_* step constants above.
+    """
+    if device.is_nano:
+        return [
+            NavInsID.RIGHT_CLICK,             # intro → params "skip" page
+            NavInsID.BOTH_CLICK,              # skip params → keys "skip" page
+            NavInsID.BOTH_CLICK,              # skip keys → approval
+            NavInsID.RIGHT_CLICK,             # → "Approve intent?"
+            NavInsID.BOTH_CLICK,              # confirm approval
+        ]
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,         # intro → first params page
+        NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on params
+        NavInsID.USE_CASE_CHOICE_CONFIRM,     # "Yes, skip" → keys segment
+        NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on keys
+        NavInsID.USE_CASE_CHOICE_CONFIRM,     # "Yes, skip" → approval page
+        NavInsID.USE_CASE_REVIEW_CONFIRM,     # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,     # dismiss "Operation signed"
+    ]
 
 
 def vault_intent_reject_instructions(device: Device, n_steps: int) -> List[NavInsID]:

@@ -15,13 +15,6 @@ static void review_choice(bool approved) {
     }
 }
 
-static void vault_review_choice(bool approved) {
-    set_ux_flow_response(approved);
-    nbgl_useCaseReviewStatus(
-        approved ? STATUS_TYPE_OPERATION_SIGNED : STATUS_TYPE_OPERATION_REJECTED,
-        ui_menu_main);
-}
-
 #define MAX_N_PAIRS 4
 
 _Static_assert(MAX_N_PAIRS == TX_DISPLAY_MAX_PAIRS,
@@ -223,6 +216,88 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 #define VAULT_VP_KEY_LABEL        "Provider key"
 #endif
 
+// Number of scalar (non-key) pairs shown before the keeper/challenger keys.
+#define VAULT_INTENT_SCALAR_PAIRS 9
+
+// ---- Streaming review state machine ----
+//
+// The vault intent is reviewed as a streaming review so the keeper/challenger key
+// list can be made skippable without making the scalar parameters skippable to the
+// approval:
+//
+//   intro → [params segment] → [keys segment] → approve/reject
+//
+// SKIPPABLE_OPERATION enables a "Skip" affordance. The SDK shows it on every
+// content segment (it cannot be scoped to one segment), so skip is wired by
+// destination instead: skipping the params segment only advances to the keys
+// segment (params can never be skipped straight to approval), while skipping the
+// keys segment jumps to the approval page.
+//
+// All intent data is already in G_vault_intent, so the whole chain is driven from
+// the choice/skip callbacks within a single io_ui_process() pump in
+// display_vault_intent; only the final approve/reject sets the UX flow response.
+//
+// Single-flow invariant: display_vault_intent blocks on io_ui_process for the whole
+// review, so these file-scope lists are safe (no re-entrancy).
+static nbgl_layoutTagValueList_t g_vault_params_list;
+static nbgl_layoutTagValueList_t g_vault_keys_list;
+
+static void vault_stream_keys(void);
+static void vault_stream_finish(void);
+
+static void vault_stream_reject(void) {
+    set_ux_flow_response(false);
+    nbgl_useCaseReviewStatus(STATUS_TYPE_OPERATION_REJECTED, ui_menu_main);
+}
+
+static void vault_stream_final_choice(bool approved) {
+    set_ux_flow_response(approved);
+    nbgl_useCaseReviewStatus(
+        approved ? STATUS_TYPE_OPERATION_SIGNED : STATUS_TYPE_OPERATION_REJECTED,
+        ui_menu_main);
+}
+
+// After the keys segment (paged through) or its Skip: go to the approval page.
+static void vault_stream_finish(void) {
+    nbgl_useCaseReviewStreamingFinish(VAULT_INTENT_FINISH_TITLE, vault_stream_final_choice);
+}
+
+static void vault_after_keys(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_finish();
+}
+
+// After the params segment (paged through) or its Skip: go to the keys segment.
+// vault_stream_finish is the keys segment's skip callback (Skip on keys → approve).
+static void vault_stream_keys(void) {
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list,
+                                           vault_after_keys,
+                                           vault_stream_finish);
+}
+
+static void vault_after_params(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_keys();
+}
+
+// After the intro page: start the params segment. vault_stream_keys is the params
+// segment's skip callback (Skip on params → keys, never straight to approval).
+static void vault_stream_intro_choice(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list,
+                                           vault_after_params,
+                                           vault_stream_keys);
+}
+
 bool display_vault_intent(dispatcher_context_t *dc) {
     // vault_pairs and key string/label arrays all live in G_scratch.display.
     // Scalar string buffers stay on the stack (small, and the frame must stay
@@ -231,7 +306,6 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // and cannot overlap with the hkdf or script_scratch union members.
     nbgl_layoutTagValue_t *const vault_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
-    nbgl_layoutTagValueList_t vault_pair_list;
     char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];
     char vault_amount_str[MAX_AMOUNT_LENGTH + 1];
     char vault_commission_str[MAX_AMOUNT_LENGTH + 1];
@@ -295,6 +369,8 @@ bool display_vault_intent(dispatcher_context_t *dc) {
 
     // ---- Keeper public keys ----
 
+    assert(n == VAULT_INTENT_SCALAR_PAIRS);
+
     for (uint8_t i = 0; i < G_vault_intent.keeper_count; i++) {
         format_hex(G_vault_intent.keeper_pks[i],
                    VAULT_XONLY_PUBKEY_LEN,
@@ -326,17 +402,24 @@ bool display_vault_intent(dispatcher_context_t *dc) {
 
     assert(n <= VAULT_INTENT_MAX_PAIRS);
 
-    vault_pair_list.pairs = vault_pairs;
-    vault_pair_list.nbPairs = n;
-    vault_pair_list.nbMaxLinesForValue = 0;
+    // Split the single pair array into two streaming segments: scalar params
+    // (mandatory) then keeper/challenger keys (skippable).  Both lists point into
+    // the same vault_pairs buffer in G_scratch.display; the value strings live on
+    // this stack frame (scalars) or in G_scratch.display (keys) and stay valid
+    // because io_ui_process blocks here for the whole flow.
+    g_vault_params_list.pairs = vault_pairs;
+    g_vault_params_list.nbPairs = VAULT_INTENT_SCALAR_PAIRS;
+    g_vault_params_list.nbMaxLinesForValue = 0;
 
-    nbgl_useCaseReview(TYPE_OPERATION,
-                       &vault_pair_list,
-                       &ICON_APP_ACTION,
-                       VAULT_INTENT_REVIEW_TITLE,
-                       NULL,
-                       VAULT_INTENT_FINISH_TITLE,
-                       vault_review_choice);
+    g_vault_keys_list.pairs = vault_pairs + VAULT_INTENT_SCALAR_PAIRS;
+    g_vault_keys_list.nbPairs = (uint8_t) (n - VAULT_INTENT_SCALAR_PAIRS);
+    g_vault_keys_list.nbMaxLinesForValue = 0;
+
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
+                                     &ICON_APP_ACTION,
+                                     VAULT_INTENT_REVIEW_TITLE,
+                                     NULL,
+                                     vault_stream_intro_choice);
 
     bool approved = io_ui_process(dc);
     if (!approved) {
