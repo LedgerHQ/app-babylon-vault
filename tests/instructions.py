@@ -15,7 +15,7 @@ from typing import List, Tuple
 # on a fresh page.
 VAULT_INTENT_1K1C_SWIPES_STAX = 4   # Stax: 6 pages (intro + params + keys + hold-to-sign)
 VAULT_INTENT_1K1C_SWIPES      = 6   # Flex, Apex: 7 pages
-VAULT_INTENT_1K1C_CLICKS      = 17  # Nano devices
+VAULT_INTENT_1K1C_CLICKS      = 15  # Nano devices
 
 # Steps for 32-keeper + 32-challenger intent (64 keys total).
 # These are used by test_max_32_keepers_32_challengers to switch from text-based
@@ -36,7 +36,7 @@ VAULT_INTENT_4K4C_CLICKS     = 27   # NanoSP/NanoX: 29 snapshots
 
 VAULT_INTENT_32K32C_SWIPES_STAX = 35   # Stax:        38 snapshots
 VAULT_INTENT_32K32C_SWIPES     = 68   # Flex, Apex:  71 snapshots
-VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 141 snapshots
+VAULT_INTENT_32K32C_CLICKS     = 139  # NanoSP/NanoX: 141 snapshots
 
 
 def vault_intent_1k1c_steps(device: Device) -> int:
@@ -99,23 +99,17 @@ def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
     first page of each segment, this sequence is independent of how many param/key
     pages the layout produces.
 
+    Skip is a touch-only affordance: on nano the SDK interleaves a skip page after
+    every screen, so the firmware does not enable SKIPPABLE_OPERATION there.
+
     Touch: RIGHT_HEADER_TAP taps the top-right "Skip" button; USE_CASE_CHOICE_CONFIRM
            taps "Yes, skip" in the confirmation modal.
-    Nano:  the SDK inserts a "press both to skip" page at the start of each skippable
-           data set; BOTH_CLICK on it performs the skip.
 
     NOTE: skip is a UX affordance whose exact page sequence is layout-dependent.
     Verify/adjust this list against the first --golden_run, as with the
     VAULT_INTENT_* step constants above.
     """
-    if device.is_nano:
-        return [
-            NavInsID.RIGHT_CLICK,             # intro → params "skip" page
-            NavInsID.BOTH_CLICK,              # skip params → keys "skip" page
-            NavInsID.BOTH_CLICK,              # skip keys → approval
-            NavInsID.RIGHT_CLICK,             # → "Approve intent?"
-            NavInsID.BOTH_CLICK,              # confirm approval
-        ]
+    assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
     return [
         NavInsID.USE_CASE_REVIEW_TAP,         # intro → first params page
         NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on params

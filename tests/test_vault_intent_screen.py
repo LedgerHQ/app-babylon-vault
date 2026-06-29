@@ -174,7 +174,13 @@ def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
     navigates intro → first params page → Skip (advances to keys) → Skip (jumps to
     approval) → approve, capturing the short skip path as goldens (far fewer screens
     than the full review).  Approval returns SW_OK, so no exception is expected.
+
+    Skip is touch-only: on nano the SDK interleaves a skip page after every screen,
+    so the firmware does not enable it there and this flow does not apply.
     """
+    if device.is_nano:
+        pytest.skip("skip affordance is touch-only; nano uses the full review")
+
     client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,

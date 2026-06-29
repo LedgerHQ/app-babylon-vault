@@ -227,11 +227,13 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 //
 //   intro → [params segment] → [keys segment] → approve/reject
 //
-// SKIPPABLE_OPERATION enables a "Skip" affordance. The SDK shows it on every
-// content segment (it cannot be scoped to one segment), so skip is wired by
+// On touch, SKIPPABLE_OPERATION enables a "Skip" affordance. The SDK shows it on
+// every content segment (it cannot be scoped to one segment), so skip is wired by
 // destination instead: skipping the params segment only advances to the keys
 // segment (params can never be skipped straight to approval), while skipping the
-// keys segment jumps to the approval page.
+// keys segment jumps to the approval page. On nano the flag is left off (the SDK
+// would otherwise interleave a skip page after every screen), so the skip
+// callbacks below are simply never invoked there.
 //
 // All intent data is already in G_vault_intent, so the whole chain is driven from
 // the choice/skip callbacks within a single io_ui_process() pump in
@@ -244,6 +246,15 @@ static nbgl_layoutTagValueList_t g_vault_keys_list;
 
 static void vault_stream_keys(void);
 static void vault_stream_finish(void);
+
+// Skip is touch-only. On nano, the SDK keys its skip page off a non-NULL
+// skipCallback (not off SKIPPABLE_OPERATION), so passing one would insert a skip
+// page before every screen even with the flag cleared — pass NULL there.
+#ifdef SCREEN_SIZE_WALLET
+#define VAULT_SKIP_CB(cb) (cb)
+#else
+#define VAULT_SKIP_CB(cb) NULL
+#endif
 
 static void vault_stream_reject(void) {
     set_ux_flow_response(false);
@@ -275,7 +286,7 @@ static void vault_after_keys(bool confirm) {
 static void vault_stream_keys(void) {
     nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list,
                                            vault_after_keys,
-                                           vault_stream_finish);
+                                           VAULT_SKIP_CB(vault_stream_finish));
 }
 
 static void vault_after_params(bool confirm) {
@@ -295,7 +306,7 @@ static void vault_stream_intro_choice(bool confirm) {
     }
     nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list,
                                            vault_after_params,
-                                           vault_stream_keys);
+                                           VAULT_SKIP_CB(vault_stream_keys));
 }
 
 bool display_vault_intent(dispatcher_context_t *dc) {
@@ -415,7 +426,15 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     g_vault_keys_list.nbPairs = (uint8_t) (n - VAULT_INTENT_SCALAR_PAIRS);
     g_vault_keys_list.nbMaxLinesForValue = 0;
 
-    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
+    // Skip is offered on touch only. On nano the SDK interleaves a "press both to
+    // skip" page after every content screen, which is far worse than just clicking
+    // through — so nano gets the plain (non-skippable) streaming review.
+    nbgl_operationType_t op_type = TYPE_OPERATION;
+#ifdef SCREEN_SIZE_WALLET
+    op_type |= SKIPPABLE_OPERATION;
+#endif
+
+    nbgl_useCaseReviewStreamingStart(op_type,
                                      &ICON_APP_ACTION,
                                      VAULT_INTENT_REVIEW_TITLE,
                                      NULL,
