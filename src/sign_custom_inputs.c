@@ -19,8 +19,14 @@
 #include "sign_psbt_validate.h"
 #include "sign_psbt_validate_helpers.h"
 
+/* A witness UTXO is serialized as: 8-byte value (LE) | 1-byte compact-size script
+ * length | scriptPubKey. A 34-byte P2TR script uses a single-byte length (0x22). */
+#define _WU_VALUE_LEN      8                        /* 8-byte little-endian amount */
+#define _WU_SCRIPT_LEN_OFF _WU_VALUE_LEN            /* offset of the 1-byte script-length */
+#define _WU_SCRIPT_OFF     (_WU_VALUE_LEN + 1)      /* offset of the scriptPubKey bytes */
+
 /* 8B value + 1B varint + 34B P2TR script */
-#define _MAX_WITNESS_UTXO_LEN (8 + 1 + 34)
+#define _MAX_WITNESS_UTXO_LEN (_WU_SCRIPT_OFF + VAULT_P2TR_SCRIPTPUBKEY_LEN)
 /* 1B n_hashes + up to 2×32B leaf_hashes + 4B fingerprint + 5*4B path */
 #define _MAX_TAP_BIP32_DERIV_LEN (1 + 2 * 32 + 4 + 5 * 4)
 
@@ -45,13 +51,15 @@ static bool read_p2tr_witness_utxo(dispatcher_context_t *dc,
                                                1,
                                                wu,
                                                sizeof(wu));
-    if (wu_len < 9 || wu_len != 9 + wu[8] || wu[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+    if (wu_len < _WU_SCRIPT_OFF || wu_len != _WU_SCRIPT_OFF + wu[_WU_SCRIPT_LEN_OFF] ||
+        wu[_WU_SCRIPT_LEN_OFF] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
         return false;
     }
-    if (expected_spk != NULL && memcmp(wu + 9, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+    if (expected_spk != NULL &&
+        memcmp(wu + _WU_SCRIPT_OFF, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
         return false;
     }
-    memcpy(spk_out, wu + 9, VAULT_P2TR_SCRIPTPUBKEY_LEN);
+    memcpy(spk_out, wu + _WU_SCRIPT_OFF, VAULT_P2TR_SCRIPTPUBKEY_LEN);
     return true;
 }
 
@@ -119,7 +127,7 @@ bool sign_custom_inputs(
                                       input_spk,
                                       VAULT_P2TR_SCRIPTPUBKEY_LEN,
                                       leaf_hash,
-                                      0x00,
+                                      SIGHASH_DEFAULT,
                                       sighash)) {
             return false; /* SW already sent by callee */
         }
@@ -132,7 +140,7 @@ bool sign_custom_inputs(
                                             NULL,
                                             0,
                                             leaf_hash,
-                                            0x00,
+                                            SIGHASH_DEFAULT,
                                             sighash)) {
             return false; /* SW already sent by callee */
         }
@@ -199,7 +207,7 @@ bool sign_custom_inputs(
                                       input_spk,
                                       VAULT_P2TR_SCRIPTPUBKEY_LEN,
                                       leaf_hash,
-                                      0x00,
+                                      SIGHASH_DEFAULT,
                                       sighash)) {
             vault_context_invalidate(&G_vault_context);
             return false; /* SW already sent by callee */
@@ -213,7 +221,7 @@ bool sign_custom_inputs(
                                             NULL,
                                             0,
                                             leaf_hash,
-                                            0x00,
+                                            SIGHASH_DEFAULT,
                                             sighash)) {
             vault_context_invalidate(&G_vault_context);
             return false; /* SW already sent by callee */
@@ -334,7 +342,7 @@ bool sign_custom_inputs(
                                       input_spk,
                                       VAULT_P2TR_SCRIPTPUBKEY_LEN,
                                       leaf_hash,
-                                      0x00,
+                                      SIGHASH_DEFAULT,
                                       sighash)) {
             return false; /* SW already sent by callee */
         }
@@ -347,7 +355,7 @@ bool sign_custom_inputs(
                                             NULL,
                                             0,
                                             leaf_hash,
-                                            0x00,
+                                            SIGHASH_DEFAULT,
                                             sighash)) {
             return false; /* SW already sent by callee */
         }

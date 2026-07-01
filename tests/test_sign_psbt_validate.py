@@ -374,6 +374,22 @@ def _depositor_pk(bitcoin_network: str) -> bytes:
     return TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main" else TEST_DEPOSITOR_XONLY_TESTNET
 
 
+def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: int = 0) -> None:
+    """Assert a custom-input sign yielded exactly one usable signature.
+
+    A successful vault custom-input sign (PegIn / Payout / Refund) returns a single
+    BIP-340 Schnorr signature — 64 bytes, since the device signs SIGHASH_DEFAULT — for
+    `expected_input`, produced by `expected_xonly`.  Checking the yielded value (not just
+    the SW_OK) guards against a regression that returns success without a valid signature.
+    """
+    assert len(result) == 1, f"expected exactly one signature, got {len(result)}: {result}"
+    input_index, partial_sig = result[0]
+    assert input_index == expected_input, f"signed unexpected input {input_index}"
+    assert partial_sig.pubkey[-32:] == expected_xonly, "signed with an unexpected key"
+    assert len(partial_sig.signature) == 64, (
+        f"expected 64-byte SIGHASH_DEFAULT Schnorr sig, got {len(partial_sig.signature)}")
+
+
 def _build_intent_tlv_for_test(
     coin_type: int,
     prepegin_txid: bytes,
@@ -758,7 +774,8 @@ def test_sign_psbt_pegin(
     psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
-    client.sign_psbt(psbt, dummy_wallet, None)
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # HTLC Leaf 0 signed by the depositor key
 
 
 def test_sign_psbt_pegin_wrong_txid(
@@ -1272,7 +1289,8 @@ def test_sign_psbt_payout_vp(
     psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
-    client.sign_psbt(psbt, dummy_wallet, None)
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
 
 
 def test_sign_psbt_payout_vk(
@@ -1290,11 +1308,13 @@ def test_sign_psbt_payout_vk(
     # VP payout — advances payout_index to 1
     vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    client.sign_psbt(vp_psbt, dummy_wallet, None)
+    result = client.sign_psbt(vp_psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
 
     # VK_1 payout — last payout, state transitions to SESSION2_COMPLETE
     vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
-    client.sign_psbt(vk_psbt, dummy_wallet, None)
+    result = client.sign_psbt(vk_psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
 
 
 def test_sign_psbt_payout_extra_input(
@@ -1751,11 +1771,13 @@ def test_sign_psbt_payout_signet_params(
 
     # VP payout — advances payout_index 0 → 1
     vp_psbt = _build_signet_payout_psbt(dep_pk, claimer_idx=0)
-    client.sign_psbt(vp_psbt, dummy_wallet, None)
+    result = client.sign_psbt(vp_psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
 
     # VK_1 payout — advances payout_index 1 → 2
     vk_psbt = _build_signet_payout_psbt(dep_pk, claimer_idx=1)
-    client.sign_psbt(vk_psbt, dummy_wallet, None)
+    result = client.sign_psbt(vk_psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
 
 
 # ===========================================================================
@@ -1829,4 +1851,5 @@ def test_sign_psbt_pegin_max_participants(
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     # Valid max-size PegIn: validation passes and sign_custom_inputs signs Leaf 0 → SW_OK.
-    client.sign_psbt(psbt, dummy_wallet, None)
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
