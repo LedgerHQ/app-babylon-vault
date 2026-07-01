@@ -71,7 +71,10 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
             case TAG_COMMISSION_FEE: {
                 if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint64_t val = U8BE(v, 0);
-                if (val == 0) return VAULT_TLV_ERR_VALIDATION;
+                /* The VP commission output pays exactly commission_fee to a P2TR
+                 * script (sign_psbt_validate.c Out1), so it must stay above the
+                 * relay dust limit for the payout tx to be standard/relayable. */
+                if (val < VAULT_DUST_LIMIT) return VAULT_TLV_ERR_VALIDATION;
                 out->commission_fee = val;
                 break;
             }

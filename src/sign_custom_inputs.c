@@ -105,6 +105,11 @@ bool sign_custom_inputs(
             return false;
         }
 
+        /* Sighash type SIGHASH_DEFAULT (0x00): the device reconstructs and
+         * validates the entire transaction from the approved intent, so the
+         * signature must commit to all inputs and outputs. SIGHASH_DEFAULT is
+         * the BIP-341 default (equivalent to SIGHASH_ALL, 64-byte signature);
+         * the PSBT validation path only accepts SIGHASH_DEFAULT as well. */
         uint8_t sighash[VAULT_HASH256_LEN];
         if (!compute_sighash_segwitv1(dc,
                                       st,
@@ -182,6 +187,9 @@ bool sign_custom_inputs(
             return false;
         }
 
+        /* Sighash type SIGHASH_DEFAULT (0x00): see PegIn branch above — the
+         * signature must commit to the whole device-reconstructed transaction,
+         * and the PSBT validation path only accepts SIGHASH_DEFAULT. */
         uint8_t sighash[VAULT_HASH256_LEN];
         if (!compute_sighash_segwitv1(dc,
                                       st,
