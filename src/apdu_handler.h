@@ -5,9 +5,8 @@
 #include "../bitcoin_app_base/src/boilerplate/dispatcher.h"
 
 // Babylon Vault custom APDU INS codes (>= 0x80 to avoid conflicts with base app)
-#define INS_APPROVE_VAULT_INTENT   0x80
-#define INS_DERIVE_CONTEXT_HASH    0x81
-#define INS_RELEASE_CONTEXT_SECRET 0x82
+#define INS_APPROVE_VAULT_INTENT 0x80
+#define INS_DERIVE_CONTEXT_HASH  0x81
 
 /**
  * @brief Dispatches Babylon Vault custom APDUs.

@@ -2,17 +2,14 @@
 
 /**
  * @file derive_context_hash_core.h
- * @brief Core HKDF streaming logic for DERIVE_CONTEXT_HASH (INS 0x81).
+ * @brief Core HKDF logic for DERIVE_CONTEXT_HASH (INS 0x81).
  *
  * All functions are static inline — zero call overhead when used from the handler.
  * No APDU layer references (no dispatcher_context_t, no SEND_SW).
  * Unit tests include this header directly and substitute mock cx_ implementations.
  *
- * Three-phase protocol matching the chunked APDU wire format:
- *   1. hkdf_stream_begin()  — BIP-32 derive → HKDF-Extract → HMAC init with SHA256(app_name)
- *   2. hkdf_stream_feed()   — feed context chunks into the running HMAC (zero or more times)
- *   3. hkdf_stream_finalize() — append 0x01 counter, finalise HMAC → htlc_preimage, compute
- * htlc_hashlock
+ * The Babylon vaultContext is a fixed ~72 bytes, so it always fits one APDU and the
+ * whole root is computed in a single call — hkdf_derive_root() — with no streaming.
  */
 
 #include <stdbool.h>
@@ -24,13 +21,21 @@
 
 #include "../globals.h"
 #include "../vault_intent.h"
+#include "../vault_constants.h"
 
 // BIP-32 path: m/73681862'  (0x80000000 | 73681862 = 0x84644BC6)
 #define VAULT_HKDF_PATH_INDEX (0x80000000u | 73681862u)
 
+// Compressed SEC1 public key length (0x02/0x03 prefix || x).
+#define VAULT_COMPRESSED_PUBKEY_LEN 33u
+
 // HKDF salt per spec (no null terminator counted)
 static const uint8_t HKDF_SALT[] = "derive-context-hash";
 #define HKDF_SALT_LEN ((uint32_t) (sizeof(HKDF_SALT) - 1u))
+
+// Canonical network name bytes + length (string literal, NUL excluded).
+static const uint8_t HKDF_NETWORK_NAME[] = VAULT_CANONICAL_NETWORK_NAME;
+#define HKDF_NETWORK_NAME_LEN ((uint32_t) (sizeof(HKDF_NETWORK_NAME) - 1u))
 
 // ---------------------------------------------------------------------------
 // Phase 1 — BIP-32 key derivation
@@ -66,34 +71,39 @@ static inline void extract_prk(const uint8_t *ikm, uint8_t *prk_out) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1 — Full stream begin: derive + extract + HMAC init
+// Single-shot root derivation
 // ---------------------------------------------------------------------------
 
-/** Zero sensitive intermediates on both success and error paths of hkdf_stream_begin(). */
-static inline void wipe_hkdf_intermediates(uint8_t *prk, uint8_t *app_name_hash) {
-    explicit_bzero(prk, VAULT_HASH256_LEN);
-    explicit_bzero(app_name_hash, VAULT_HASH256_LEN);
-}
-
 /**
- * @brief Begin a streaming HKDF derivation.
+ * @brief Compute the 32-byte DERIVE_CONTEXT_HASH root in one call.
  *
- * Derives the BIP-32 private key, runs HKDF-Extract, initialises the running
- * HMAC-SHA256 for HKDF-Expand, and feeds SHA256(app_name) as the first
- * part of the info string.  Sets context_total_len and resets context_received_len.
+ *   ikm  = privkey @ m/73681862'
+ *   salt = "derive-context-hash"
+ *   info = SHA-256(app_name) || SHA-256(canonicalNetworkName)
+ *          || connectedPubkey[33] || context
+ *   root = HKDF-SHA-256(ikm, salt, info, 32)
  *
- * Sensitive intermediates (privkey, PRK, app_name_hash) are zeroed before return.
+ * HKDF-Expand is a single HMAC block for L=32: HMAC-SHA256(PRK, info || 0x01).
+ * app_name is host-supplied over the APDU (per the deriveContextHash API; the host
+ * sends the fixed "babylon-btc-vault"). The whole vaultContext fits one APDU, so
+ * context is passed in full — no streaming.
  *
- * @param stream            Streaming state to initialise (must be zeroed by caller).
- * @param app_name          UTF-8 app name bytes (max 64 B).
- * @param app_name_len      Length of app_name in bytes.
- * @param context_total_len Total context byte count that will follow in feed() calls.
+ * Sensitive intermediates (privkey, PRK, hashes, HMAC ctx) are zeroed before return.
+ *
+ * @param app_name          UTF-8 app-name bytes (host-supplied, ≤64 B).
+ * @param app_name_len      Length of @p app_name.
+ * @param connected_pubkey  33-byte compressed SEC1 connected public key.
+ * @param context           Context bytes (vaultContext); must be non-empty.
+ * @param context_len       Length of @p context.
+ * @param root_out          32-byte output buffer for the HKDF root.
  * @return true on success; false on any crypto error.
  */
-static inline bool hkdf_stream_begin(hkdf_stream_t *stream,
-                                     const uint8_t *app_name,
-                                     uint8_t app_name_len,
-                                     uint16_t context_total_len) {
+static inline bool hkdf_derive_root(const uint8_t *app_name,
+                                    uint8_t app_name_len,
+                                    const uint8_t connected_pubkey[VAULT_COMPRESSED_PUBKEY_LEN],
+                                    const uint8_t *context,
+                                    size_t context_len,
+                                    uint8_t root_out[VAULT_HASH256_LEN]) {
     cx_ecfp_256_private_key_t privkey;
     if (!derive_vault_privkey(&privkey)) {
         explicit_bzero(&privkey, sizeof(privkey));
@@ -104,70 +114,35 @@ static inline bool hkdf_stream_begin(hkdf_stream_t *stream,
     extract_prk(privkey.d, prk);
     explicit_bzero(&privkey, sizeof(privkey));
 
-    uint8_t app_name_hash[VAULT_HASH256_LEN];
-
-    if (cx_hash_sha256(app_name, app_name_len, app_name_hash, VAULT_HASH256_LEN) !=
-        VAULT_HASH256_LEN) {
-        wipe_hkdf_intermediates(prk, app_name_hash);
-        return false;
-    }
-    if (cx_hmac_sha256_init_no_throw(&stream->hmac, prk, VAULT_HASH256_LEN) != CX_OK) {
-        wipe_hkdf_intermediates(prk, app_name_hash);
-        return false;
-    }
-    if (cx_hmac_update((cx_hmac_t *) &stream->hmac, app_name_hash, VAULT_HASH256_LEN) != CX_OK) {
-        wipe_hkdf_intermediates(prk, app_name_hash);
-        return false;
-    }
-
-    wipe_hkdf_intermediates(prk, app_name_hash);
-    stream->context_total_len = context_total_len;
-    stream->context_received_len = 0;
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// Phase 2 — Feed one context chunk
-// ---------------------------------------------------------------------------
-
-/**
- * @brief Feed @p len bytes of context data into the running HKDF-Expand HMAC.
- * @return true on success; false on HMAC update error.
- */
-static inline bool hkdf_stream_feed(hkdf_stream_t *stream, const uint8_t *data, uint8_t len) {
-    return cx_hmac_update((cx_hmac_t *) &stream->hmac, data, len) == CX_OK;
-}
-
-// ---------------------------------------------------------------------------
-// Phase 3 — Finalise: append HKDF counter byte, close HMAC, compute hashlock
-// ---------------------------------------------------------------------------
-
-/**
- * @brief Finalise the HKDF-Expand computation and derive htlc_preimage + htlc_hashlock.
- *
- * Appends the single-block HKDF counter byte (0x01), finalises the HMAC to
- * obtain htlc_preimage = OKM, then computes htlc_hashlock = SHA256(htlc_preimage).
- *
- * @param stream           Streaming state (HMAC context with all info already fed).
- * @param htlc_preimage_out  32-byte output buffer for the HTLC preimage.
- * @param htlc_hashlock_out  32-byte output buffer for the HTLC hashlock.
- * @return true on success; false on any crypto error.
- */
-static inline bool hkdf_stream_finalize(hkdf_stream_t *stream,
-                                        uint8_t *htlc_preimage_out,
-                                        uint8_t *htlc_hashlock_out) {
+    cx_hmac_sha256_t hmac;
+    uint8_t name_hash[VAULT_HASH256_LEN];  // reused for app-name then network-name hash
     const uint8_t counter = 0x01;
-    if (cx_hmac_update((cx_hmac_t *) &stream->hmac, &counter, 1) != CX_OK) {
-        return false;
+
+    bool ok =
+        cx_hmac_sha256_init_no_throw(&hmac, prk, VAULT_HASH256_LEN) == CX_OK &&
+        // info[0..31]: SHA-256(app_name)
+        cx_hash_sha256(app_name, app_name_len, name_hash, VAULT_HASH256_LEN) ==
+            VAULT_HASH256_LEN &&
+        cx_hmac_update((cx_hmac_t *) &hmac, name_hash, VAULT_HASH256_LEN) == CX_OK &&
+        // info[32..63]: SHA-256(canonicalNetworkName)
+        cx_hash_sha256(HKDF_NETWORK_NAME, HKDF_NETWORK_NAME_LEN, name_hash, VAULT_HASH256_LEN) ==
+            VAULT_HASH256_LEN &&
+        cx_hmac_update((cx_hmac_t *) &hmac, name_hash, VAULT_HASH256_LEN) == CX_OK &&
+        // info[64..96]: connectedPubkey (33-byte compressed)
+        cx_hmac_update((cx_hmac_t *) &hmac, connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN) ==
+            CX_OK &&
+        // info[97..]: context (vaultContext)
+        cx_hmac_update((cx_hmac_t *) &hmac, context, context_len) == CX_OK &&
+        // HKDF-Expand single-block counter
+        cx_hmac_update((cx_hmac_t *) &hmac, &counter, 1) == CX_OK;
+
+    if (ok) {
+        size_t out_len = VAULT_HASH256_LEN;
+        ok = cx_hmac_final((cx_hmac_t *) &hmac, root_out, &out_len) == CX_OK;
     }
 
-    size_t out_len = VAULT_HASH256_LEN;
-    if (cx_hmac_final((cx_hmac_t *) &stream->hmac, htlc_preimage_out, &out_len) != CX_OK) {
-        return false;
-    }
-
-    return cx_hash_sha256(htlc_preimage_out,
-                          VAULT_HASH256_LEN,
-                          htlc_hashlock_out,
-                          VAULT_HASH256_LEN) == VAULT_HASH256_LEN;
+    explicit_bzero(prk, sizeof(prk));
+    explicit_bzero(name_hash, sizeof(name_hash));
+    explicit_bzero(&hmac, sizeof(hmac));
+    return ok;
 }

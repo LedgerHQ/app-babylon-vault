@@ -61,10 +61,24 @@ add_executable(test_derive_context_hash
   ${SRC_DIR}/globals.c
 )
 
-target_compile_definitions(test_derive_context_hash PRIVATE TEST)
+# BIP44_COIN_TYPE=0 → canonicalNetworkName "bitcoin-mainnet" (matches the §4.2 vector).
+target_compile_definitions(test_derive_context_hash PRIVATE TEST BIP44_COIN_TYPE=0)
 target_link_libraries(test_derive_context_hash cmocka)
 
 add_test(NAME test_derive_context_hash COMMAND test_derive_context_hash)
+
+# -----------------------------------------------------------------------
+# test_derive_vault_secrets
+# -----------------------------------------------------------------------
+add_executable(test_derive_vault_secrets
+  test_derive_vault_secrets.c
+  mock_cx.c
+)
+
+target_compile_definitions(test_derive_vault_secrets PRIVATE TEST BIP44_COIN_TYPE=0)
+target_link_libraries(test_derive_vault_secrets cmocka)
+
+add_test(NAME test_derive_vault_secrets COMMAND test_derive_vault_secrets)
 
 # -----------------------------------------------------------------------
 # test_vault_tlv

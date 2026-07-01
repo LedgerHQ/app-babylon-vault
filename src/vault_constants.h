@@ -30,6 +30,18 @@
 #define VAULT_PROTOCOL_VERSION ((uint8_t) 0x01)
 
 /**
+ * Canonical network name fed (as SHA-256) into the DERIVE_CONTEXT_HASH HKDF `info`,
+ * per babylon-toolkit derive-context-hash spec v2.x §2.2. Selected at build time from
+ * the coin type: mainnet (SLIP-44 0) → "bitcoin-mainnet"; the testnet build targets
+ * Bitcoin signet (see Makefile) → "bitcoin-signet".
+ */
+#if BIP44_COIN_TYPE == 0
+#define VAULT_CANONICAL_NETWORK_NAME "bitcoin-mainnet"
+#else
+#define VAULT_CANONICAL_NETWORK_NAME "bitcoin-signet"
+#endif
+
+/**
  * P2TR dust threshold in satoshis.
  *
  * Outputs below this value are uneconomic to spend and rejected by node relay

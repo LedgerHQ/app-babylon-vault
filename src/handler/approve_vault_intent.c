@@ -1,5 +1,6 @@
 #include "approve_vault_intent.h"
 #include "approve_vault_intent_core.h"
+#include "derive_vault_secrets_core.h"
 
 #include "../display.h"
 #include "../globals.h"
@@ -37,24 +38,21 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    /* If DERIVE_CONTEXT_HASH completed (Session 2), preserve preimage/hashlock across the reset. */
-    uint8_t saved_preimage[VAULT_HASH256_LEN];
-    uint8_t saved_hashlock[VAULT_HASH256_LEN];
-    bool preserve_htlc = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
-    if (preserve_htlc) {
-        memcpy(saved_preimage, G_vault_context.htlc_preimage, VAULT_HASH256_LEN);
-        memcpy(saved_hashlock, G_vault_context.htlc_hashlock, VAULT_HASH256_LEN);
+    /* If DERIVE_CONTEXT_HASH completed, preserve the root across the reset. The
+     * per-vault commitments (htlc_hashlock, auth_anchor_hash) are recomputed from it
+     * once htlc_vout is known (see handle_key_batch). */
+    uint8_t saved_root[VAULT_HASH256_LEN];
+    bool preserve_root = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
+    if (preserve_root) {
+        memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
     }
 
     vault_context_invalidate(&G_vault_context);
     explicit_bzero(&G_scratch, sizeof(G_scratch));
-    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
 
-    if (preserve_htlc) {
-        memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);
-        memcpy(G_vault_context.htlc_hashlock, saved_hashlock, VAULT_HASH256_LEN);
-        explicit_bzero(saved_preimage, sizeof(saved_preimage));
-        explicit_bzero(saved_hashlock, sizeof(saved_hashlock));
+    if (preserve_root) {
+        memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
+        explicit_bzero(saved_root, sizeof(saved_root));
     }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
@@ -154,6 +152,24 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
 
     /* Store the x-only depositor key so vault_build_* script builders can embed it. */
     memcpy(G_vault_intent.depositor_pk, depositor_compressed + 1, VAULT_XONLY_PUBKEY_LEN);
+
+    /* If a root was derived (DERIVE_CONTEXT_HASH ran before this call), compute the
+     * on-chain commitments now that htlc_vout is known: the per-vault HTLC hashlock
+     * and the Pre-PegIn auth-anchor. Both are expanded from the root per
+     * derive-vault-secrets, then SHA-256'd. A zero root means no prior derive — the
+     * commitments stay zero and Pre-PegIn/PegIn validation rejects (hashlock guard). */
+    const uint8_t zeros32[VAULT_HASH256_LEN] = {0};
+    if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) != 0) {
+        if (!vault_derive_hashlock_commitment(G_vault_context.root,
+                                              (uint8_t) G_vault_intent.htlc_vout,
+                                              G_vault_context.htlc_hashlock) ||
+            !vault_derive_auth_anchor_commitment(G_vault_context.root,
+                                                 G_vault_context.auth_anchor_hash)) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_BAD_STATE);
+            return;
+        }
+    }
 
     /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));

@@ -3,7 +3,7 @@
  *
  * Covers:
  *   - vault_context_init: zeroes struct, sets IDLE
- *   - vault_context_invalidate: explicit_bzero on s, resets to IDLE, wipes intent, G_hkdf_stream, G_scratch
+ *   - vault_context_invalidate: explicit_bzero on root, resets to IDLE, wipes intent + G_scratch
  *   - vault_context_transition: all valid edges in the state diagram
  *   - vault_context_transition: invalid transitions → invalidate + return false
  *   - Idempotent invalidation (IDLE → invalidate → still IDLE)
@@ -31,8 +31,8 @@ static void _fill(vault_context_t *ctx) {
 }
 
 static bool _secret_is_zero(const vault_context_t *ctx) {
-    for (size_t i = 0; i < sizeof(ctx->htlc_preimage); i++) {
-        if (ctx->htlc_preimage[i] != 0) return false;
+    for (size_t i = 0; i < sizeof(ctx->root); i++) {
+        if (ctx->root[i] != 0) return false;
     }
     return true;
 }
@@ -70,9 +70,10 @@ static void test_invalidate_zeroes_secret_and_intent(void **state) {
     vault_context_t ctx;
     vault_context_init(&ctx);
 
-    /* Set a fake secret and advance state */
-    memset(ctx.htlc_preimage, 0xFF, sizeof(ctx.htlc_preimage));
+    /* Set a fake root + commitments and advance state */
+    memset(ctx.root, 0xFF, sizeof(ctx.root));
     memset(ctx.htlc_hashlock, 0xEE, sizeof(ctx.htlc_hashlock));
+    memset(ctx.auth_anchor_hash, 0xDD, sizeof(ctx.auth_anchor_hash));
     ctx.state = VAULT_STATE_INTENT_LOADED;
 
     /* Fill intent with non-zero data */
@@ -90,24 +91,15 @@ static void test_invalidate_zeroes_secret_and_intent(void **state) {
     }
 }
 
-static void test_invalidate_clears_hkdf_stream_and_scratch(void **state) {
+static void test_invalidate_clears_scratch(void **state) {
     (void) state;
     vault_context_t ctx;
     vault_context_init(&ctx);
-
-    /* Simulate an in-flight HKDF stream. */
-    G_hkdf_stream.active = true;
-    G_hkdf_stream.context_total_len    = 100;
-    G_hkdf_stream.context_received_len = 42;
 
     /* Simulate residual script data in the scratch union. */
     memset(&G_scratch, 0xAC, sizeof(G_scratch));
 
     vault_context_invalidate(&ctx);
-
-    assert_false(G_hkdf_stream.active);
-    assert_int_equal(G_hkdf_stream.context_total_len,    0);
-    assert_int_equal(G_hkdf_stream.context_received_len, 0);
 
     uint8_t *sp = (uint8_t *) &G_scratch;
     for (size_t i = 0; i < sizeof(G_scratch); i++) {
@@ -229,8 +221,8 @@ static void _assert_illegal(vault_state_t current_state,
     vault_context_init(&ctx);
     ctx.state = current_state;
 
-    /* Place non-zero secret so we can verify it gets wiped */
-    memset(ctx.htlc_preimage, 0x42, sizeof(ctx.htlc_preimage));
+    /* Place non-zero root so we can verify it gets wiped */
+    memset(ctx.root, 0x42, sizeof(ctx.root));
 
     bool ok = vault_context_transition(&ctx, from, to);
 
@@ -306,7 +298,7 @@ int main(void) {
         /* invalidate */
         cmocka_unit_test(test_invalidate_from_idle),
         cmocka_unit_test(test_invalidate_zeroes_secret_and_intent),
-        cmocka_unit_test(test_invalidate_clears_hkdf_stream_and_scratch),
+        cmocka_unit_test(test_invalidate_clears_scratch),
 
         /* valid transitions */
         cmocka_unit_test(test_transition_idle_to_intent_loaded),

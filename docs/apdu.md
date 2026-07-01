@@ -9,8 +9,7 @@
 | INS    | Name                     | Brief purpose |
 |--------|--------------------------|---------------|
 | `0x80` | `APPROVE_VAULT_INTENT`   | Parse and validate vault intent TLV (scalars + key batches); show approval screen; transition to `INTENT_LOADED`. |
-| `0x81` | `DERIVE_CONTEXT_HASH`    | Derive HTLC preimage via HKDF-SHA-256 at `m/73681862'`; return `htlc_hashlock = SHA256(htlc_preimage)`. No display. |
-| `0x82` | `RELEASE_CONTEXT_SECRET` | Return `htlc_preimage` (32 B) once state = `SESSION2_COMPLETE`; zero it; reset to `IDLE`. Rejected in all other states. |
+| `0x81` | `DERIVE_CONTEXT_HASH`    | Derive the 32-byte root via HKDF-SHA-256 at `m/73681862'` over `info = SHA256(appName) ‖ SHA256(networkName) ‖ connectedPubkey ‖ context`; return the root. No display. |
 
 ---
 
@@ -118,88 +117,61 @@ transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
 
 ## INS 0x81 — DERIVE_CONTEXT_HASH — Wire Format
 
-### P1=0x00 — Initial chunk
+Single APDU (P1=0x00), no user display. Returns the 32-byte **root**; the host expands
+it into the per-vault secrets (hashlock / auth-anchor / WOTS seed — see
+`derive-vault-secrets`). The device retains no preimage and has **no release step**.
+
+### P1=0x00 — payload
 
 | Offset | Field | Size | Notes |
 |--------|-------|------|-------|
-| 0 | `app_name_len` | 1 B | Length of `app_name`; must be ≤ 64 |
-| 1 | `app_name` | `app_name_len` B | UTF-8 app name |
-| 1+`app_name_len` | `context_total_len` | 2 B BE | Total byte count of context to follow in P1=0x01 chunks; may be 0 |
+| 0 | `app_name_len` | 1 B | Length of `app_name`; `1..64` |
+| 1 | `app_name` | `L` B | UTF-8 app name (host sends `"babylon-btc-vault"`) |
+| 1+`L` | `path_len` | 1 B | connectedPubkey BIP-32 depth in levels; `1..10` |
+| 2+`L` | `path` | `path_len`×4 B | each level as u32 **big-endian** (hardened bit set as usual) |
+| 2+`L`+4·`path_len` | `context` | remaining `Lc` | `vaultContext` bytes; must be non-empty |
 
-If `context_total_len == 0` the derivation completes immediately and the response carries `htlc_hashlock`.
-Otherwise the device responds `SW_OK` (`0x9000`) with no data and waits for P1=0x01 chunks.
+(`L = app_name_len`.) The whole payload fits one APDU — the Babylon `vaultContext` is a
+fixed ~72 bytes, so there is no chunking.
 
-### P1=0x01 — Continuation chunk
-
-| Offset | Field | Size | Notes |
-|--------|-------|------|-------|
-| 0 | `context_data` | `Lc` B | Next slice of context (up to 255 B per APDU) |
-
-The device accumulates chunks until `context_received == context_total_len`, then finalises and returns `htlc_hashlock`.
-Intermediate chunks receive `SW_OK` with no data.
-Sending more bytes than `context_total_len` returns `SW_INCORRECT_DATA` (`0x6A80`).
-
-### Response (final chunk or zero-context)
+### Response
 
 | Field | Size | Value |
 |-------|------|-------|
-| Data  | 32 B | `htlc_hashlock = SHA256(htlc_preimage)` |
+| Data  | 32 B | `root` (the 32-byte HKDF output) |
 | SW    | 2 B  | `0x9000` |
 
 ### Error conditions
 
 | SW     | Condition |
 |--------|-----------|
-| `0x6A80` | `app_name_len > 64`, malformed initial chunk, or chunk exceeds declared length |
-| `0x6A86` | P1 is not `0x00` or `0x01` |
-| `0x6A87` | Initial chunk too short to contain all mandatory fields |
-| `0xB007` | P1=0x01 received before P1=0x00 (no active stream) |
-| `0xB007` | BIP-32 derivation or HMAC operation failed |
+| `0x6A80` | `app_name_len` 0 or > 64; `path_len` 0 or > 10; empty `context`; truncated fields |
+| `0x6A86` | P1 is not `0x00` |
+| `0x6A87` | payload shorter than the mandatory fixed fields |
+| `0x6F00` | connected-pubkey BIP-32 derivation at `path` failed |
+| `0xB007` | HMAC / HKDF operation failed |
 
 ### Crypto detail
 
-- **IKM**: 32-byte private key derived at `m/73681862'` (hardened, `CX_CURVE_SECP256K1`)
+- **IKM**: 32-byte private key at `m/73681862'` (hardened, `CX_CURVE_SECP256K1`)
 - **HKDF-Extract**: `PRK = HMAC-SHA256(salt="derive-context-hash", ikm)`
-- **HKDF-Expand** (single block, L=32): `htlc_preimage = HMAC-SHA256(PRK, SHA256(app_name) || context || 0x01)`
-- **Hashlock**: `htlc_hashlock = SHA256(htlc_preimage)`
+- **info**: `SHA256(app_name) || SHA256(canonicalNetworkName) || connectedPubkey[33] || context`
+  - `canonicalNetworkName`: `"bitcoin-mainnet"` (mainnet build) / `"bitcoin-signet"` (testnet build)
+  - `connectedPubkey`: 33-byte compressed SEC1 key the device derives at `path`
+- **HKDF-Expand** (single block, L=32): `root = HMAC-SHA256(PRK, info || 0x01)`
 
-Implementation: `src/handler/derive_context_hash_core.h` (static inline, unit-testable without APDU layer).
+The on-chain HTLC hashlock is `SHA256(Expand(root, info("hashlock", I2OSP(htlc_vout, 4))))`
+and the Pre-PegIn OP_RETURN binds `SHA256(Expand(root, info("auth-anchor", [])))`; both are
+recomputed on-device at `APPROVE_VAULT_INTENT` (`src/handler/derive_vault_secrets_core.h`).
+The auth-anchor `OP_RETURN` output (`0x6A 0x20 || SHA256(authAnchor)`) MUST carry zero value:
+it is provably unspendable, so the Pre-PegIn validator rejects any non-zero amount to prevent
+a host from silently burning the depositor's change into it.
 
----
+Implementation: `src/handler/derive_context_hash_core.h` (static inline, unit-testable).
 
-## INS 0x82 — RELEASE_CONTEXT_SECRET — Wire Format
-
-Single-APDU command; no payload. Returns the 32-byte session secret `s`
-(`htlc_preimage`) exactly once, then zeroes it and resets the session to `IDLE`.
-
-| Field | Value |
-|-------|-------|
-| P1    | `0x00` (no sub-commands; any other value → `SW_WRONG_P1P2`) |
-| P2    | `0x00` (reserved; any other value → `SW_WRONG_P1P2`) |
-| Lc    | `0` (no data; any non-zero value → `SW_WRONG_DATA_LENGTH`) |
-
-**State requirement:** session must be in `SESSION2_COMPLETE`.
-Calling from any other state returns `SW_BAD_STATE` and leaves the session unchanged.
-
-### Response
-
-| Field | Size | Value |
-|-------|------|-------|
-| Data  | 32 B | `htlc_preimage` (the session secret `s`) |
-| SW    | 2 B  | `0x9000` |
-
-After sending the response the device calls `explicit_bzero` on `htlc_preimage` and
-resets the session to `VAULT_STATE_IDLE`, clearing all session globals.
-The secret is zeroed in device RAM before the packet leaves the device — the response
-buffer holds a copy staged before the zero operation.
-
-### Error conditions
-
-| SW       | Condition |
-|----------|-----------|
-| `0x6A86` | P1 or P2 is non-zero |
-| `0x6A87` | Lc is non-zero (payload present) |
-| `0xB007` | Session state is not `SESSION2_COMPLETE` |
+Upstream specs (captured in `docs/specs/`):
+[derive-context-hash.md](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-context-hash.md),
+[derive-vault-secrets.md](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-vault-secrets.md)
 
 ---
 

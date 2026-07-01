@@ -256,13 +256,42 @@ static bool _validate_display_prepegin(
         return false;
     }
 
-    /* 11. All outputs other than htlc_vout must be BIP-86 change (internal) */
+    /* 11. Every non-HTLC output must be either BIP-86 change (internal) or the single
+     * shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>". The OP_RETURN
+     * carries the auth-anchor commitment (derive-vault-secrets); the device binds it to
+     * the value expanded from the derived root so a host cannot substitute it.
+     *
+     * The expected OP_RETURN scriptPubKey is 0x6A 0x20 || auth_anchor_hash (34 bytes),
+     * which is exactly VAULT_P2TR_SCRIPTPUBKEY_LEN — so _read_output reads it directly. */
+    uint8_t expected_anchor_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    expected_anchor_spk[0] = 0x6A;  // OP_RETURN
+    expected_anchor_spk[1] = 0x20;  // OP_PUSHBYTES_32
+    memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
+
+    bool anchor_found = false;
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         if (i == intent->htlc_vout) continue;
-        if (!bitvector_get(internal_outputs, i)) {
+        if (bitvector_get(internal_outputs, i)) continue;  // BIP-86 change
+
+        /* Non-internal output: the only one allowed is the auth-anchor OP_RETURN, and it
+         * MUST carry zero value. The OP_RETURN is provably unspendable, so any value
+         * assigned to it is burned; since neither the OP_RETURN nor the change is shown
+         * on the approval screen, a non-zero value would let a malicious host silently
+         * burn the depositor's own change (WYSIWYS violation). Require value == 0. */
+        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t out_value;
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, i, out_spk, &out_value) ||
+            anchor_found || out_value != 0 ||
+            memcmp(out_spk, expected_anchor_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        anchor_found = true;
+    }
+    if (!anchor_found) {
+        /* The shared auth-anchor OP_RETURN is mandatory on the Pre-PegIn. */
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
     }
 
     /* 12. Fee */

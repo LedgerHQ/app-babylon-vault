@@ -27,13 +27,11 @@ from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
     derive_context_hash,
+    VAULT_APP_NAME,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
-    INS_DERIVE_CONTEXT_HASH,
     P1_SCALARS,
     P1_KEY_BATCH,
-    P1_INITIAL,
-    P1_CONTINUE,
     P2_UNUSED,
     SW_INCORRECT_DATA,
     SW_WRONG_DATA_LENGTH,
@@ -116,6 +114,13 @@ def _raw_exchange(client, p1: int, data: bytes):
         p2=P2_UNUSED,
         data=data,
     )
+
+
+def _derive(client, network: str, context: bytes = b"\xde\xad\xbe\xef") -> bytes:
+    """Run DERIVE_CONTEXT_HASH with the new wire format; returns the 32-byte root."""
+    ct = 0 if network == "main" else 1
+    path = [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0]
+    return derive_context_hash(client, VAULT_APP_NAME, path, context)
 
 
 # ---------------------------------------------------------------------------
@@ -267,11 +272,9 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, n
     confirmed externally until RELEASE_CONTEXT_SECRET is implemented; until then we verify
     that the full sequence is accepted and the resulting state is INTENT_LOADED.
     """
-    # Step 1 — derive with a context that forces two P1=0x01 chunks (>255 B) so the
-    # multi-chunk completion path in handle_context_chunk is exercised.
-    context = b"A" * 300  # 300 B → two chunks: 255 B + 45 B
-    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=context)
-    assert len(hashlock) == 32
+    # Step 1 — DERIVE_CONTEXT_HASH (single APDU) stores the root and reaches HASH_DERIVED.
+    root = _derive(client, bitcoin_network)
+    assert len(root) == 32
 
     # Step 2 — APPROVE_VAULT_INTENT must accept the HASH_DERIVED state and succeed.
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
@@ -302,8 +305,8 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
                                   n_swipes=vault_intent_1k1c_steps(device))
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
-    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")
-    assert len(hashlock) == 32
+    root = _derive(client, bitcoin_network)
+    assert len(root) == 32
 
     # State is now IDLE — P1=0x01 without prior P1=0x00 must fail.
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -516,41 +519,8 @@ def test_depositor_key_collision_as_challenger(client: RaggerClient, bitcoin_net
 
 
 # ---------------------------------------------------------------------------
-# Streaming state isolation
+# Session state isolation
 # ---------------------------------------------------------------------------
-
-def test_approve_p1_scalars_clears_hkdf_stream(client: RaggerClient, bitcoin_network: str):
-    """APPROVE_VAULT_INTENT P1=0x00 must clear an in-flight DERIVE_CONTEXT_HASH stream.
-
-    Before the fix, vault_context_invalidate() did not touch G_hkdf_stream, so
-    G_hkdf_stream.active remained true after the approve scalar payload was processed.
-    A subsequent DERIVE_CONTEXT_HASH P1=0x01 would then pass its sole active-check
-    gate and feed adversary-controlled bytes into the HKDF.
-
-    After the fix, the approve handler zeroes G_hkdf_stream, so the continuation
-    must be rejected with SW_BAD_STATE.
-    """
-    app_name = b"BabylonVault"
-    # Start a DERIVE_CONTEXT_HASH stream (declare 10 bytes of context, send none).
-    # This sets G_hkdf_stream.active = true and leaves the stream incomplete.
-    initial = bytes([len(app_name)]) + app_name + (10).to_bytes(2, "big")
-    client.transport_client.exchange(
-        cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-        p1=P1_INITIAL, p2=P2_UNUSED, data=initial,
-    )
-
-    # Send APPROVE_VAULT_INTENT P1=0x00 — must clear G_hkdf_stream.
-    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    _raw_exchange(client, P1_SCALARS, scalars)
-
-    # DERIVE_CONTEXT_HASH P1=0x01 must now be rejected because active == false.
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(
-            cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-            p1=P1_CONTINUE, p2=P2_UNUSED, data=b"A" * 10,
-        )
-    assert exc.value.status == SW_BAD_STATE
-
 
 def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_network: str):
     """DERIVE_CONTEXT_HASH P1=0x00 must clear G_approve_intent_state even when state is IDLE.
@@ -568,7 +538,7 @@ def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_netw
     _raw_exchange(client, P1_SCALARS, scalars)
 
     # Inject DERIVE_CONTEXT_HASH P1=0x00 — must clear G_approve_intent_state.
-    derive_context_hash(client, app_name=b"BabylonVault", context=b"")
+    _derive(client, bitcoin_network)
 
     # APPROVE_VAULT_INTENT P1=0x01 must now fail because scalars_loaded == false.
     with pytest.raises(ExceptionRAPDU) as exc:

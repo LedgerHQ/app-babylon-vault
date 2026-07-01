@@ -13,8 +13,8 @@ void vault_context_init(vault_context_t *ctx) {
 }
 
 void vault_context_invalidate(vault_context_t *ctx) {
-    // Zero the secret first to guarantee it is wiped even if we fault later.
-    explicit_bzero(ctx->htlc_preimage, sizeof(ctx->htlc_preimage));
+    // Zero the root first to guarantee it is wiped even if we fault later.
+    explicit_bzero(ctx->root, sizeof(ctx->root));
 
     // Zero the rest and return to IDLE.
     explicit_bzero(ctx, sizeof(*ctx));
@@ -23,7 +23,6 @@ void vault_context_invalidate(vault_context_t *ctx) {
     // Wipe all globals whose validity depends on state != IDLE.
     explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
-    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
     explicit_bzero(&G_scratch, sizeof(G_scratch));
 }
 

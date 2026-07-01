@@ -40,6 +40,9 @@ from .vault_client import (
     approve_vault_intent_with_nav,
     sign_psbt_with_nav_and_compare,
     build_intent_tlv,
+    VAULT_APP_NAME,
+    vault_hashlock,
+    vault_auth_anchor,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     TEST_DEPOSITOR_XONLY_MAINNET,
@@ -237,11 +240,15 @@ def _build_prepegin_psbt(
     input_internal_key: Optional[bytes] = None,
     input_fingerprint: Optional[bytes] = None,
     input_coin_type: int = 0,
+    auth_anchor: Optional[bytes] = None,
+    auth_anchor_value: int = 0,
 ) -> PSBT:
-    """1-input / 1-output (HTLC) Pre-PegIn PSBTv0.
+    """Pre-PegIn PSBTv0: HTLC output at htlc_vout, plus the mandatory auth-anchor
+    OP_RETURN when auth_anchor is given.
 
-    The single output is the HTLC P2TR at htlc_vout=0.  With no other outputs,
-    the 'all other outputs are internal' check trivially passes.
+    The device now requires the shared OP_RETURN = "OP_RETURN <SHA256(authAnchor)>"
+    (= 0x6A 0x20 || auth_anchor); pass auth_anchor=vault_auth_anchor(root) for the
+    happy path. Negative tests that reject before the output policy may omit it.
 
     When input_internal_key and input_fingerprint are provided the input is a
     proper BIP-86 key-path P2TR UTXO (required for the 'all inputs internal'
@@ -262,13 +269,17 @@ def _build_prepegin_psbt(
     tx.vin[0].prevout = COutPoint(int.from_bytes(b'\xaa' * 32, 'little'), 0)
     tx.vin[0].nSequence = 0xFFFFFFFF
     tx.vout = [CTxOut(htlc_value, htlc_spk)]
+    if auth_anchor is not None:
+        # Shared auth-anchor OP_RETURN: OP_RETURN OP_PUSHBYTES_32 <SHA256(authAnchor)>.
+        # Value is 0 on the happy path; auth_anchor_value > 0 exercises the burn guard.
+        tx.vout.append(CTxOut(auth_anchor_value, bytes([0x6A, 0x20]) + auth_anchor))
     tx.wit = CTxWitness()
 
     psbt = PSBT()
     psbt.version = 0
     psbt.tx = tx
     psbt.inputs = [PartiallySignedInput(0)]
-    psbt.outputs = [PartiallySignedOutput(0)]
+    psbt.outputs = [PartiallySignedOutput(0) for _ in tx.vout]
 
     psbt.inputs[0].witness_utxo = CTxOut(input_value, input_spk)
 
@@ -403,17 +414,41 @@ def _build_intent_tlv_for_test(
     )
 
 
+# DERIVE_CONTEXT_HASH session inputs. The context just needs to be non-empty (the
+# device folds it into the root); the connectedPubkey path is any valid BIP-32 path
+# the device can derive. The device returns the root, from which the host recomputes
+# the same on-chain commitments via Expand (vault_hashlock / vault_auth_anchor).
+_DERIVE_CONTEXT = bytes(range(72))  # fixed non-empty vaultContext-shaped blob
+
+
+def _connected_path(coin_type: int) -> List[int]:
+    return [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]
+
+
+# Root returned by the most recent _setup_sN call — used to bind the Pre-PegIn
+# OP_RETURN auth-anchor in _build_prepegin_psbt.
+_DERIVED_ROOT: bytes = b""
+
+
+def _derive_root_and_hashlock(client: "RaggerClient", coin_type: int) -> bytes:
+    """Run DERIVE_CONTEXT_HASH, stash the root, and return the per-vault hashlock h."""
+    global _DERIVED_ROOT
+    _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME, _connected_path(coin_type),
+                                        _DERIVE_CONTEXT)
+    return vault_hashlock(_DERIVED_ROOT, _HTLC_VOUT)
+
+
 def _setup_s1_state(
     client: "RaggerClient",
     navigator: "Navigator",
     device,
     coin_type: int,
 ) -> bytes:
-    """Derive hashlock + approve intent (Session 1).  Returns the 32-byte hashlock.
+    """Derive root + approve intent (Session 1).  Returns the 32-byte hashlock h.
 
     After this call the device is in VAULT_STATE_INTENT_LOADED with htlc_hashlock set.
     """
-    hashlock = derive_context_hash(client, b"BabylonVault", b"")
+    hashlock = _derive_root_and_hashlock(client, coin_type)
     scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
     approve_vault_intent_with_nav(
         client, navigator, device,
@@ -431,7 +466,7 @@ def _setup_s2_state(
     keeper_pks: Optional[List[bytes]] = None,
     challenger_pks: Optional[List[bytes]] = None,
 ) -> bytes:
-    """Derive hashlock + approve intent (Session 2).  Returns the 32-byte hashlock.
+    """Derive root + approve intent (Session 2).  Returns the 32-byte hashlock h.
 
     After this call the device is in VAULT_STATE_SESSION2_PEGIN_EXPECTED.
     prepegin_txid must be non-zero to trigger the extra state transition.
@@ -444,7 +479,7 @@ def _setup_s2_state(
     if challenger_pks is None:
         challenger_pks = _TEST_CHALLENGER_PKS
     assert any(prepegin_txid), "prepegin_txid must be non-zero for Session 2"
-    hashlock = derive_context_hash(client, b"BabylonVault", b"")
+    hashlock = _derive_root_and_hashlock(client, coin_type)
     scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid, keeper_pks, challenger_pks)
     approve_vault_intent_with_nav(
         client, navigator, device,
@@ -573,7 +608,8 @@ def test_sign_psbt_prepegin_screen(
     psbt = _build_prepegin_psbt(htlc_spk,
                                 input_internal_key=input_key,
                                 input_fingerprint=fingerprint,
-                                input_coin_type=coin_type)
+                                input_coin_type=coin_type,
+                                auth_anchor=vault_auth_anchor(_DERIVED_ROOT))
     wallet = _standard_taproot_wallet(client, coin_type)
     tname = "prepegin/screen_" + bitcoin_network
 
@@ -585,6 +621,40 @@ def test_sign_psbt_prepegin_screen(
             sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
                                            testname=tname, nav_instructions=sign_psbt_prepegin_nav(device))
     assert exc.value.status == SW_DENY
+
+
+def test_sign_psbt_prepegin_anchor_nonzero_value_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """The auth-anchor OP_RETURN must carry zero value.
+
+    A non-zero value burns the depositor's own change into a provably-unspendable
+    output, and neither the OP_RETURN nor the change is shown on the approval screen —
+    so the device must reject it (WYSIWYS) rather than sign a hidden burn.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s1_state(client, navigator, device, coin_type)
+    _, _, _, _, htlc_spk = _htlc_output(
+        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock,
+    )
+
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
+    wallet = _standard_taproot_wallet(client, coin_type)
+    psbt = _build_prepegin_psbt(htlc_spk,
+                                input_internal_key=input_key,
+                                input_fingerprint=fingerprint,
+                                input_coin_type=coin_type,
+                                auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
+                                auth_anchor_value=1000)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
 
 
 def test_sign_psbt_prepegin_no_state(

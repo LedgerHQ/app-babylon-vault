@@ -6,13 +6,15 @@ directly via the ragger transport, which is necessary for vault-specific
 INS codes that the bitcoin library doesn't know about.
 
 Usage:
-    from vault_client import derive_context_hash
+    from vault_client import derive_context_hash, VAULT_APP_NAME
 
-    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")
+    root = derive_context_hash(client, VAULT_APP_NAME, path=[...], context=b"...")
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import types
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Union
@@ -116,57 +118,66 @@ def _exchange(client: RaggerClient, p1: int, data: bytes) -> bytes:
     return bytes(response.data)
 
 
+def _encode_bip32_path(path: List[int]) -> bytes:
+    """Encode a BIP-32 path as path_len(1B) | level×u32-BE (Ledger wire convention)."""
+    assert len(path) <= 10, "path too deep"
+    return bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path)
+
+
 def derive_context_hash(client: RaggerClient,
                         app_name: bytes,
+                        path: List[int],
                         context: bytes) -> bytes:
-    """Send DERIVE_CONTEXT_HASH APDUs and return the 32-byte htlc_hashlock.
+    """Send the single DERIVE_CONTEXT_HASH APDU and return the 32-byte root.
 
-    Handles chunking automatically: sends P1=0x00 with the initial fields,
-    then as many P1=0x01 chunks as needed.
+    Wire (P1=0x00): app_name_len(1B) | app_name | path_len(1B) | path(4·n B BE) | context.
+    The device derives the connected pubkey at `path`, computes the HKDF root over
+    SHA256(app_name) || SHA256(networkName) || connectedPubkey || context, and returns it.
 
     Args:
         client:    RaggerClient fixture from conftest.
-        app_name:  UTF-8 app name, max 64 bytes.
-        context:   Arbitrary context bytes; may be empty.
+        app_name:  UTF-8 app name, 1..64 bytes (host sends b"babylon-btc-vault").
+        path:      connectedPubkey BIP-32 path (u32 levels, hardened bit set as usual).
+        context:   vaultContext bytes; must be non-empty.
 
     Returns:
-        32-byte htlc_hashlock = SHA256(htlc_preimage).
+        32-byte root.
     """
-    assert len(app_name) <= 64, "app_name must be ≤ 64 bytes"
+    assert 1 <= len(app_name) <= 64, "app_name must be 1..64 bytes"
+    assert len(context) > 0, "context must be non-empty"
 
-    # Build P1=0x00 payload: app_name_len(1B) | app_name | context_total_len(2B BE)
-    initial = (
-        bytes([len(app_name)])
-        + app_name
-        + len(context).to_bytes(2, "big")
-    )
+    payload = bytes([len(app_name)]) + app_name + _encode_bip32_path(path) + context
+    response_data = _exchange(client, P1_INITIAL, payload)
+    assert len(response_data) == 32
+    return response_data
 
-    response_data = _exchange(client, P1_INITIAL, initial)
 
-    if not context:
-        # Zero-context path: device finalises immediately and returns hashlock
-        assert len(response_data) == 32
-        return response_data
+# ---------------------------------------------------------------------------
+# Host-side expansion of the root into on-chain commitments (mirror of
+# src/handler/derive_vault_secrets_core.h). Lets tests compute the same
+# hashlock / auth-anchor the device binds, from the device-returned root.
+# ---------------------------------------------------------------------------
 
-    # Intermediate P1=0x00 response carries no data
-    assert len(response_data) == 0
+# Fixed app name the host sends (derive-vault-secrets §2.1).
+VAULT_APP_NAME = b"babylon-btc-vault"
+_VS_DOMAIN_TAG = b"babylonbtcvault"
 
-    # Stream context in chunks
-    offset = 0
-    while offset < len(context):
-        chunk   = context[offset : offset + _CHUNK_SIZE]
-        offset += len(chunk)
-        is_last = offset == len(context)
 
-        response_data = _exchange(client, P1_CONTINUE, chunk)
+def _vault_expand_commitment(root: bytes, label: bytes, ctx: bytes) -> bytes:
+    """SHA256(HKDF-Expand-SHA256(root, info(label, ctx), 32)) — Expand-only, single block."""
+    info = _VS_DOMAIN_TAG + bytes([len(label)]) + label + len(ctx).to_bytes(2, "big") + ctx
+    secret = hmac.new(root, info + b"\x01", hashlib.sha256).digest()
+    return hashlib.sha256(secret).digest()
 
-        if is_last:
-            assert len(response_data) == 32
-            return response_data
-        else:
-            assert len(response_data) == 0
 
-    raise RuntimeError("unreachable")
+def vault_hashlock(root: bytes, htlc_vout: int) -> bytes:
+    """On-chain HTLC hashlock h = SHA256(Expand(root, "hashlock" || I2OSP(htlc_vout, 4)))."""
+    return _vault_expand_commitment(root, b"hashlock", htlc_vout.to_bytes(4, "big"))
+
+
+def vault_auth_anchor(root: bytes) -> bytes:
+    """Pre-PegIn auth-anchor commitment SHA256(Expand(root, "auth-anchor"))."""
+    return _vault_expand_commitment(root, b"auth-anchor", b"")
 
 
 # ---------------------------------------------------------------------------

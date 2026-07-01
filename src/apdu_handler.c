@@ -4,7 +4,6 @@
 
 #include "handler/approve_vault_intent.h"
 #include "handler/derive_context_hash.h"
-#include "handler/release_context_secret.h"
 
 /**
  * @brief Babylon Vault APDU dispatcher.
@@ -28,10 +27,6 @@ bool custom_apdu_handler(dispatcher_context_t *dc, const command_t *cmd) {
 
         case INS_DERIVE_CONTEXT_HASH:
             handler_derive_context_hash(dc, cmd);
-            return true;
-
-        case INS_RELEASE_CONTEXT_SECRET:
-            handler_release_context_secret(dc, cmd);
             return true;
 
         default:

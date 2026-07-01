@@ -1,34 +1,27 @@
 """
-Ragger integration tests for DERIVE_CONTEXT_HASH (INS 0x81).
+Ragger integration tests for DERIVE_CONTEXT_HASH (INS 0x81), realigned to
+derive-context-hash v2.x.
 
-Device: Speculos emulator seeded with the default test mnemonic (see conftest.py).
-No UX navigation needed — DERIVE_CONTEXT_HASH has no display.
+Single APDU: app_name_len | app_name | path_len | path | context.
+The device derives the connected pubkey at `path` and returns the 32-byte root:
 
-Reference values were pre-computed with Python using the same mnemonic:
+    info = SHA256(app_name) || SHA256(canonicalNetworkName) || connectedPubkey[33] || context
+    root = HKDF-SHA256(ikm = privkey@m/73681862', salt = "derive-context-hash", info, 32)
 
-    from mnemonic import Mnemonic
-    from bip32 import BIP32
-    import hmac, hashlib
-
-    MNEMONIC = "glory promote mansion idle axis ..."
-    seed  = Mnemonic.to_seed(MNEMONIC)
-    bip32 = BIP32.from_seed(seed)
-    ikm   = bip32.get_privkey_from_path("m/73681862h")
-    salt  = b"derive-context-hash"
-    prk   = hmac.new(salt, ikm, hashlib.sha256).digest()
-    def expand(prk, info):
-        return hmac.new(prk, info + b"\\x01", hashlib.sha256).digest()
-    preimage = expand(prk, hashlib.sha256(app_name).digest() + context)
-    hashlock = hashlib.sha256(preimage).digest()
+Expected roots are computed at runtime from the Speculos seed (conftest mnemonic) using
+only `bip32` + stdlib, so the tests are self-validating (no precomputed constants).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import hashlib
+import hmac
+from typing import List, TYPE_CHECKING
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
 import pytest
+from bip32 import BIP32
 
 from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
@@ -39,156 +32,143 @@ from .vault_client import (
     CLA_VAULT,
     INS_DERIVE_CONTEXT_HASH,
     P1_INITIAL,
-    P1_CONTINUE,
     P2_UNUSED,
 )
 
-# ---------------------------------------------------------------------------
-# Pre-computed reference values (Speculos default seed, see module docstring)
-# ---------------------------------------------------------------------------
+HARDENED = 0x80000000
+APP_NAME = b"babylon-btc-vault"
+_HKDF_PATH = [HARDENED | 73681862]
 
-# app_name=b"BabylonVault", context=b""
-HASHLOCK_NO_CTX   = bytes.fromhex("b8f292ec5ae6a422b3d857ed53d4723cb393b6befa65b4140d5f52e8a0923daa")
+# Same mnemonic Speculos is seeded with (conftest.py). The BIP-39 seed is derived with
+# stdlib PBKDF2 (BIP-39: PBKDF2-HMAC-SHA512, salt "mnemonic", 2048 iters) — no extra dep.
+_MNEMONIC = ("glory promote mansion idle axis finger extra february uncover one trip "
+             "resource lawn turtle enact monster seven myth punch hobby comfort wild "
+             "raise skin")
+_SEED = hashlib.pbkdf2_hmac("sha512", _MNEMONIC.encode("utf-8"), b"mnemonic", 2048)
+_BIP32 = BIP32.from_seed(_SEED)
 
-# app_name=b"BabylonVault", context=b"session_context_data"
-HASHLOCK_WITH_CTX = bytes.fromhex("01c7b70fae3f336cf5e772cc0e4ae73bb486086ef8348a666aba1edf513b6286")
 
-# app_name=b"OtherApp", context=b""  — must differ from HASHLOCK_NO_CTX
-HASHLOCK_OTHER_APP = bytes.fromhex("a809f4575c4e25586da6cb6e6bb4db0f9dad91d6f1192e6e39ba3a9601cd4d28")
+def _network_name(bitcoin_network: str) -> bytes:
+    return b"bitcoin-mainnet" if bitcoin_network == "main" else b"bitcoin-signet"
+
+
+def _connected_path(ct: int) -> List[int]:
+    """connectedPubkey path used by these tests (depositor BIP-86 receive leaf)."""
+    return [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0]
+
+
+def _expected_root(app_name: bytes, path: List[int], context: bytes, bitcoin_network: str) -> bytes:
+    ikm = _BIP32.get_privkey_from_path(_HKDF_PATH)
+    pubkey = _BIP32.get_pubkey_from_path(path)  # 33-byte compressed
+    prk = hmac.new(b"derive-context-hash", ikm, hashlib.sha256).digest()
+    info = (hashlib.sha256(app_name).digest()
+            + hashlib.sha256(_network_name(bitcoin_network)).digest()
+            + pubkey
+            + context)
+    return hmac.new(prk, info + b"\x01", hashlib.sha256).digest()
+
 
 # ---------------------------------------------------------------------------
 # Happy paths
 # ---------------------------------------------------------------------------
 
-def test_zero_context(client: RaggerClient):
-    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")
-    assert len(hashlock) == 32
-    assert hashlock == HASHLOCK_NO_CTX
+def test_root_matches_reference(client: "RaggerClient", bitcoin_network: str):
+    ct = 0 if bitcoin_network == "main" else 1
+    path, ctx = _connected_path(ct), b"\xde\xad\xbe\xef"
+    root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx)
+    assert len(root) == 32
+    assert root == _expected_root(APP_NAME, path, ctx, bitcoin_network)
 
 
-def test_single_chunk_context(client: RaggerClient):
-    hashlock = derive_context_hash(
-        client, app_name=b"BabylonVault", context=b"session_context_data"
-    )
-    assert hashlock == HASHLOCK_WITH_CTX
+def test_deterministic(client: "RaggerClient", bitcoin_network: str):
+    ct = 0 if bitcoin_network == "main" else 1
+    path = _connected_path(ct)
+    a = derive_context_hash(client, APP_NAME, path, b"\x01\x02")
+    b = derive_context_hash(client, APP_NAME, path, b"\x01\x02")
+    assert a == b
 
 
-def test_multi_chunk_context(client: RaggerClient):
-    # Same context split across two P1=0x01 chunks — must match single-chunk result.
-    # "session_" (8 B) + "context_data" (12 B) == "session_context_data" (20 B)
-    hashlock = derive_context_hash(
-        client,
-        app_name=b"BabylonVault",
-        context=b"session_" + b"context_data",
-    )
-    assert hashlock == HASHLOCK_WITH_CTX
+def test_different_app_name_diverges(client: "RaggerClient", bitcoin_network: str):
+    ct = 0 if bitcoin_network == "main" else 1
+    path, ctx = _connected_path(ct), b"\xaa\xbb"
+    base = derive_context_hash(client, APP_NAME, path, ctx)
+    other = derive_context_hash(client, b"other-app", path, ctx)
+    assert other != base
+    assert other == _expected_root(b"other-app", path, ctx, bitcoin_network)
 
 
-def test_deterministic(client: RaggerClient):
-    hashlock_a = derive_context_hash(client, b"BabylonVault", b"")
-    hashlock_b = derive_context_hash(client, b"BabylonVault", b"")
-    assert hashlock_a == hashlock_b
+def test_different_context_diverges(client: "RaggerClient", bitcoin_network: str):
+    ct = 0 if bitcoin_network == "main" else 1
+    path = _connected_path(ct)
+    a = derive_context_hash(client, APP_NAME, path, b"\x11\x11")
+    b = derive_context_hash(client, APP_NAME, path, b"\x22\x22")
+    assert a != b
 
 
-def test_different_app_name_produces_different_hashlock(client: RaggerClient):
-    hashlock = derive_context_hash(client, app_name=b"OtherApp", context=b"")
-    assert hashlock != HASHLOCK_NO_CTX
-    assert hashlock == HASHLOCK_OTHER_APP
-
-
-def test_different_context_produces_different_hashlock(client: RaggerClient):
-    hashlock = derive_context_hash(client, b"BabylonVault", b"different_data")
-    assert hashlock != HASHLOCK_NO_CTX
-    assert hashlock != HASHLOCK_WITH_CTX
-
-
-def test_hashlock_is_32_bytes(client: RaggerClient):
-    hashlock = derive_context_hash(client, b"BabylonVault", b"")
-    assert len(hashlock) == 32
-
-
-def test_large_context_chunked(client: RaggerClient):
-    # 600 bytes of context — forces three 255-byte + one 90-byte chunk
-    context = bytes(range(256)) * 2 + bytes(range(88))
-    hashlock_chunked = derive_context_hash(client, b"BabylonVault", context)
-
-    # Same context in one shot (255 + remainder via helper internals) — same result
-    hashlock_again = derive_context_hash(client, b"BabylonVault", context)
-    assert hashlock_chunked == hashlock_again
-    assert len(hashlock_chunked) == 32
+def test_different_path_diverges(client: "RaggerClient", bitcoin_network: str):
+    ct = 0 if bitcoin_network == "main" else 1
+    ctx = b"\xab\xcd"
+    a = derive_context_hash(client, APP_NAME, _connected_path(ct), ctx)
+    other_path = [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 1]  # different receive leaf
+    b = derive_context_hash(client, APP_NAME, other_path, ctx)
+    assert a != b
+    assert b == _expected_root(APP_NAME, other_path, ctx, bitcoin_network)
 
 
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
 
-def test_p1_continue_before_initial_raises(client: RaggerClient):
-    """P1=0x01 with no prior P1=0x00 must return SW_BAD_STATE (0xB007)."""
+def test_invalid_p1_raises(client: "RaggerClient"):
+    """Unknown P1 must return SW_WRONG_P1P2 (0x6A86) — no continuation chunks exist."""
     with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(
-            cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-            p1=P1_CONTINUE, p2=P2_UNUSED,
-            data=b"some_data",
-        )
-    assert exc.value.status == 0xB007
-
-
-def test_invalid_p1_raises(client: RaggerClient):
-    """Unknown P1 must return SW_WRONG_P1P2 (0x6A86)."""
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(
-            cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-            p1=0x42, p2=P2_UNUSED,
-            data=b"",
-        )
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=0x42, p2=P2_UNUSED, data=b"")
     assert exc.value.status == 0x6A86
 
 
-def test_app_name_too_long_raises(client: RaggerClient):
-    """app_name_len > 64 must return SW_INCORRECT_DATA (0x6A80)."""
-    oversized = b"A" * 65
-    payload = bytes([len(oversized)]) + oversized + (0).to_bytes(2, "big")
+def test_app_name_too_long_raises(client: "RaggerClient"):
+    """app_name_len > 64 → SW_INCORRECT_DATA (0x6A80)."""
+    payload = bytes([65]) + b"A" * 65
     with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(
-            cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-            p1=P1_INITIAL, p2=P2_UNUSED,
-            data=payload,
-        )
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_INITIAL, p2=P2_UNUSED, data=payload)
     assert exc.value.status == 0x6A80
 
 
-def test_chunk_exceeds_declared_length_raises(client: RaggerClient):
-    """Sending more context bytes than declared must return SW_INCORRECT_DATA (0x6A80)."""
-    app_name = b"BabylonVault"
-    # Declare 5 bytes of context but then send 10
-    initial = bytes([len(app_name)]) + app_name + (5).to_bytes(2, "big")
-    client.transport_client.exchange(
-        cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-        p1=P1_INITIAL, p2=P2_UNUSED,
-        data=initial,
-    )
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(
-            cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-            p1=P1_CONTINUE, p2=P2_UNUSED,
-            data=b"0123456789",  # 10 bytes, but only 5 declared
-        )
-    assert exc.value.status == 0x6A80
-
-
-def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
-                                    device: Device, bitcoin_network: str):
-    """Calling DERIVE_CONTEXT_HASH while intent is loaded must invalidate the session.
-
-    Covered more thoroughly in test_approve_vault_intent.py::test_approve_resets_session_derive_can_run.
-    This test just verifies the inverse: DERIVE_CONTEXT_HASH still works after an intent was loaded.
-    """
-    from .vault_client import approve_vault_intent_with_nav, build_intent_tlv, TEST_VP_KEY, TEST_VALID_KEYS
-
-    HARDENED = 0x80000000
+def test_empty_context_raises(client: "RaggerClient", bitcoin_network: str):
+    """app_name + path but no context → SW_INCORRECT_DATA (0x6A80)."""
     ct = 0 if bitcoin_network == "main" else 1
-    key_a = TEST_VALID_KEYS[0]
-    key_b = TEST_VALID_KEYS[1]
+    path = _connected_path(ct)
+    payload = (bytes([len(APP_NAME)]) + APP_NAME
+               + bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path))
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_INITIAL, p2=P2_UNUSED, data=payload)
+    assert exc.value.status == 0x6A80
+
+
+def test_zero_path_len_raises(client: "RaggerClient"):
+    """path_len == 0 → SW_INCORRECT_DATA (0x6A80)."""
+    payload = bytes([len(APP_NAME)]) + APP_NAME + bytes([0]) + b"\xde\xad\xbe\xef"
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_INITIAL, p2=P2_UNUSED, data=payload)
+    assert exc.value.status == 0x6A80
+
+
+# ---------------------------------------------------------------------------
+# Session interaction
+# ---------------------------------------------------------------------------
+
+def test_invalidates_loaded_intent(client: "RaggerClient", navigator: Navigator,
+                                    device: Device, bitcoin_network: str):
+    """DERIVE_CONTEXT_HASH after an intent is loaded must reset the session and still work."""
+    from .vault_client import (
+        approve_vault_intent_with_nav, build_intent_tlv, TEST_VP_KEY, TEST_VALID_KEYS,
+    )
+
+    ct = 0 if bitcoin_network == "main" else 1
     scalars = build_intent_tlv(
         coin_type=ct, vault_provider_pk=TEST_VP_KEY,
         vault_amount=100_000, commission_fee=1_000,
@@ -199,9 +179,10 @@ def test_invalidates_loaded_intent(client: RaggerClient, navigator: Navigator,
         keeper_count=1, challenger_count=1,
     )
     approve_vault_intent_with_nav(client, navigator, device, scalars,
-                                  keeper_pks=[key_a], challenger_pks=[key_b])
+                                  keeper_pks=[TEST_VALID_KEYS[0]],
+                                  challenger_pks=[TEST_VALID_KEYS[1]])
 
-    # DERIVE_CONTEXT_HASH must still work (and resets state to IDLE)
-    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")
-    assert len(hashlock) == 32
-    assert hashlock == HASHLOCK_NO_CTX
+    path, ctx = _connected_path(ct), b"\xde\xad\xbe\xef"
+    root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx)
+    assert len(root) == 32
+    assert root == _expected_root(APP_NAME, path, ctx, bitcoin_network)

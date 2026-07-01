@@ -16,27 +16,6 @@ extern vault_intent_t G_vault_intent;
 extern vault_context_t G_vault_context;
 
 /**
- * @brief In-flight state for a streaming HKDF-SHA-256 derivation (DERIVE_CONTEXT_HASH).
- *
- * Lives for the duration of one chunked APDU exchange (P1=0x00 through the
- * final P1=0x01).  Zeroed at the start of every P1=0x00 call.
- * Never written to NVM — s is re-derivable on demand.
- */
-typedef struct {
-    /** True after a valid P1=0x00 chunk; gates acceptance of P1=0x01 chunks. */
-    bool active;
-    /** Total context byte count declared in P1=0x00. */
-    uint16_t context_total_len;
-    /** Context bytes fed so far via P1=0x01 chunks. */
-    uint16_t context_received_len;
-    /**
-     * Running HMAC-SHA256 context for HKDF-Expand.
-     * Keyed with PRK; fed SHA256(app_name) then context chunks then 0x01.
-     */
-    cx_hmac_sha256_t hmac;
-} hkdf_stream_t;
-
-/**
  * @brief In-flight state for a two-phase APPROVE_VAULT_INTENT exchange.
  *
  * Lives from the first P1=0x00 call until all keys are accepted or any
@@ -141,12 +120,11 @@ typedef struct {
  * display_tx is written (addr_str) and then read (io_ui_process) only after
  * tls and leaf_check are fully consumed.
  *
- * hkdf_stream_t and approve_intent_state_t are intentionally NOT in this
- * union.  Both have a boolean guard at their first byte (hkdf.active /
- * scalars_loaded).  If either were a union member, stale non-zero bytes
- * left by script_scratch or display (e.g. an opcode or ASCII hex char at
- * offset 0) would alias that guard and cause handle_context_chunk() or
- * handle_key_batch() to treat spurious data as an in-progress stream.
+ * approve_intent_state_t is intentionally NOT in this union.  Its boolean guard
+ * at the first byte (scalars_loaded) would, if it were a union member, be aliased
+ * by stale non-zero bytes left by script_scratch or display (e.g. an opcode or
+ * ASCII hex char at offset 0) and cause handle_key_batch() to treat spurious data
+ * as an in-progress exchange.
  */
 typedef union {
     uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
@@ -157,10 +135,6 @@ typedef union {
 } vault_scratch_t;
 
 extern vault_scratch_t G_scratch;
-
-/** In-flight state for a streaming HKDF derivation — kept outside the
- *  scratch union to prevent offset-0 aliasing with script_scratch/display. */
-extern hkdf_stream_t G_hkdf_stream;
 
 /** In-flight state for APPROVE_VAULT_INTENT multi-step exchange. */
 extern approve_intent_state_t G_approve_intent_state;
