@@ -45,6 +45,10 @@ APPNAME = "Babylon Vault"
 BITCOIN_NETWORK = mainnet
 
 else ifeq ($(COIN),babylon_vault_testnet)
+# Babylon's test network is Bitcoin signet, which is indistinguishable from testnet on the
+# device (same tb prefix, BIP-32 version bytes, coin type 1; no network stack), so this
+# build targets signet. The official app name stays "Babylon Vault Testnet" (the guideline
+# enforcer pins it), but the amount ticker is overridden to "sBTC" below the include.
 APPNAME = "Babylon Vault Testnet"
 BITCOIN_NETWORK = testnet
 
@@ -69,6 +73,14 @@ ICON_APEX_P = icons/apex_p_app_babylon_vault.png
 APP_LOAD_PARAMS = --path "73681862'"
 
 include bitcoin_app_base/Makefile
+
+# The base Makefile hardcodes COIN_COINID_SHORT="TEST" for the testnet network. This build
+# presents as Signet, so override the amount ticker to "sBTC". DEFINES is expanded into -D
+# flags at compile time (see the SDK's cc_cmdline in Makefile.rules_generic), so this
+# post-include override wins; filtering the base entry first avoids a -D redefinition.
+ifeq ($(COIN),babylon_vault_testnet)
+DEFINES := $(filter-out COIN_COINID_SHORT=%,$(DEFINES)) COIN_COINID_SHORT=\"sBTC\"
+endif
 
 # arm-none-eabi-size always reports bss == total SRAM on Ledger targets: the
 # linker script extends .bss to END_STACK to reserve stack space, so the bss

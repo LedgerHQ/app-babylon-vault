@@ -56,6 +56,30 @@ Handles the three Babylon-specific INS codes on `CLA 0xE1`:
 | `0x81` | `DERIVE_CONTEXT_HASH` |
 | `0x82` | `RELEASE_CONTEXT_SECRET` |
 
+## Build variants
+
+The app builds two variants, selected with `COIN=<variant>`:
+
+| `COIN` | App name | Network params | Ticker |
+|--------|----------|----------------|--------|
+| `babylon_vault` | Babylon Vault | mainnet | `BTC` |
+| `babylon_vault_testnet` (default) | Babylon Vault Testnet | testnet | `sBTC` |
+
+**Babylon's test network runs on Bitcoin signet, and the test build targets it.** From the
+device's point of view signet and testnet3 are indistinguishable — same `tb` address prefix,
+BIP-32 version bytes and coin type (1), and the app has no network stack to notice the
+consensus/magic-byte differences. So no separate signet variant is needed: the
+`babylon_vault_testnet` build, with `BITCOIN_NETWORK = testnet` for the shared coin params,
+signs signet transactions byte-for-byte correctly.
+
+The official app name stays **"Babylon Vault Testnet"** (the Ledger guideline enforcer pins
+the `appName` in the per-target manifests, and it is the single source for the on-device
+name). The one signet-specific touch is the amount ticker, which reads **`sBTC`** instead of
+`TEST`: the base submodule hardcodes `COIN_COINID_SHORT="TEST"` for the testnet network, so
+the app Makefile overrides it *after* the `include` — `DEFINES` is expanded into `-D` flags
+at compile time, so the post-include value wins (the base entry is filtered out first to
+avoid a redefinition). No submodule change is required.
+
 ## Compiling the app
 
 Initialize the submodule with:

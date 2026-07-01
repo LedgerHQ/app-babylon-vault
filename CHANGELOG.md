@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - NAPPS-1416: Signet ticker
+
+### Changed
+
+- The test build (`COIN=babylon_vault_testnet`) now displays amounts with the **`sBTC`**
+  ticker instead of `TEST`. Babylon's test network is Bitcoin signet, which is
+  indistinguishable from testnet on-device (same `tb` prefix, BIP-32 version bytes, coin
+  type 1), so the single testnet build targets signet; the `sBTC` ticker reflects that. The
+  base submodule hardcodes `COIN_COINID_SHORT="TEST"` for the testnet network, so the app
+  Makefile overrides it after the `include` (DEFINES is expanded into `-D` flags at compile
+  time, so the override wins), with no `bitcoin_app_base` change. The official app name is
+  unchanged — it stays "Babylon Vault Testnet" (pinned by the guideline enforcer), as do the
+  `babylon_vault_testnet` variant name and `BITCOIN_NETWORK = testnet`.
+- Golden snapshots updated to show `sBTC` amounts.
+
 ## [Unreleased] - NAPPS-1376: Payout validation
 
 ### Added
