@@ -21,9 +21,9 @@
 
 /* A witness UTXO is serialized as: 8-byte value (LE) | 1-byte compact-size script
  * length | scriptPubKey. A 34-byte P2TR script uses a single-byte length (0x22). */
-#define _WU_VALUE_LEN      8                        /* 8-byte little-endian amount */
-#define _WU_SCRIPT_LEN_OFF _WU_VALUE_LEN            /* offset of the 1-byte script-length */
-#define _WU_SCRIPT_OFF     (_WU_VALUE_LEN + 1)      /* offset of the scriptPubKey bytes */
+#define _WU_VALUE_LEN      8                   /* 8-byte little-endian amount */
+#define _WU_SCRIPT_LEN_OFF _WU_VALUE_LEN       /* offset of the 1-byte script-length */
+#define _WU_SCRIPT_OFF     (_WU_VALUE_LEN + 1) /* offset of the scriptPubKey bytes */
 
 /* 8B value + 1B varint + 34B P2TR script */
 #define _MAX_WITNESS_UTXO_LEN (_WU_SCRIPT_OFF + VAULT_P2TR_SCRIPTPUBKEY_LEN)
