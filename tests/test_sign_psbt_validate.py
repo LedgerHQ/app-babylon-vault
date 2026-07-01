@@ -1789,15 +1789,15 @@ def test_sign_psbt_pegin_max_participants(
     bitcoin_network: str,
     device,
 ) -> None:
-    """PegIn validation at the 32-keeper / 32-challenger maximum.
+    """PegIn validation + signing at the 32-keeper / 32-challenger maximum.
 
     This is the memory-critical case: HTLC Leaf 0 embeds depositor + VP + all 32
     keepers + all 32 challengers (~34 B/key), so the device must reconstruct a
     ~2.3 KB script into its VAULT_SCRIPT_MAX_LEN (2560 B) buffer AND read the
     equally-large leaf back from the PSBT.  If either buffer were undersized the
-    leaf check would fail with SW_INCORRECT_DATA; a clean SW_BAD_STATE means
-    validation passed and the leaf was reconstructed/compared at full size
-    (signing itself is the NAPPS-1377 stub).
+    leaf check would fail with SW_INCORRECT_DATA; SW_OK means validation passed,
+    the leaf was reconstructed/compared at full size, and sign_custom_inputs
+    (NAPPS-1377) signed the HTLC Leaf 0 input.
 
     Unlike the captured sample-vector test (which rejects at the state guard
     before any vault buffering), this drives the largest reconstruction path the
@@ -1828,6 +1828,5 @@ def test_sign_psbt_pegin_max_participants(
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    # Valid max-size PegIn: validation passes and sign_custom_inputs signs Leaf 0 → SW_OK.
+    client.sign_psbt(psbt, dummy_wallet, None)
