@@ -60,15 +60,19 @@ Duplicate tags, unknown tags, and wrong-length fields are rejected.
 **State context:**
 This command is accepted from any session state. The meaningful distinction is:
 
-- **Called from `HASH_DERIVED`** (after a successful `DERIVE_CONTEXT_HASH`) — Session 2 path.
-  The `htlc_preimage` and `htlc_hashlock` produced by `DERIVE_CONTEXT_HASH` are copied to
-  a stack buffer before the internal session reset, then restored afterwards. They remain
-  held in the session context through `INTENT_LOADED` → `SESSION2_PEGIN_EXPECTED` →
-  `SESSION2_PAYOUT_EXPECTED` → `SESSION2_COMPLETE`, at which point `RELEASE_CONTEXT_SECRET`
-  will return the preimage to the host and zero it.
-- **Called from any other state** — Session 1 path (or intent replacement).
-  The session is reset normally; no preimage is preserved. A prior `DERIVE_CONTEXT_HASH`
-  result is discarded if the device was not in `HASH_DERIVED` state at call time.
+- **Called from `HASH_DERIVED`** (after a successful `DERIVE_CONTEXT_HASH`).
+  The 32-byte `root` produced by `DERIVE_CONTEXT_HASH` is copied to a stack buffer before
+  the internal session reset, then restored afterwards. Once `htlc_vout` is known (after the
+  key batch) the device recomputes the on-chain commitments from the root —
+  `htlc_hashlock = SHA256(Expand(root, "hashlock" ‖ I2OSP(htlc_vout,4)))` and
+  `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` — and binds them during Pre-PegIn /
+  PegIn validation. The root stays held through `INTENT_LOADED` → `SESSION2_PEGIN_EXPECTED` →
+  `SESSION2_PAYOUT_EXPECTED` → `SESSION2_COMPLETE`, which is terminal. The host already holds
+  the root (returned by `DERIVE_CONTEXT_HASH`) and expands the per-vault secrets itself, so
+  there is **no on-device secret-release step**.
+- **Called from any other state** — intent replacement / no-derive path.
+  The session is reset normally; no root is preserved, so `htlc_hashlock`/`auth_anchor_hash`
+  stay zero and Pre-PegIn/PegIn signing is rejected until a `DERIVE_CONTEXT_HASH` runs first.
 
 ---
 

@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - NAPPS-1422: Realign DERIVE_CONTEXT_HASH with the new babylon-toolkit spec
+
+Realigns `DERIVE_CONTEXT_HASH` (INS `0x81`) to babylon-toolkit `derive-context-hash` rev 2.1
+and `derive-vault-secrets` rev 0.1 (both captured under `docs/specs/`).
+
+### Changed
+
+- `DERIVE_CONTEXT_HASH` now returns the **32-byte root** instead of a hashlock, and takes a
+  single-APDU payload `app_name_len | app_name | path_len | path | context`. The HKDF `info`
+  is `SHA256(app_name) || SHA256(canonicalNetworkName) || connectedPubkey[33] || context`; the
+  device derives `connectedPubkey` from the host-supplied path. `canonicalNetworkName` is
+  `"bitcoin-mainnet"` on the mainnet build and `"bitcoin-signet"` on the testnet/signet build.
+- The on-chain HTLC hashlock is now `SHA256(HKDF-Expand(root, "hashlock" || I2OSP(htlc_vout, 4)))`
+  — **not** `SHA256(root)`. The device recomputes it (and the auth-anchor commitment) from the
+  preserved root at `APPROVE_VAULT_INTENT`, once `htlc_vout` is known, and binds it in Pre-PegIn
+  and PegIn Leaf 0 validation.
+- The session context holds the derived `root` (zeroed on invalidation) instead of an HTLC
+  preimage; `vault_context_t` gains `auth_anchor_hash`.
+
+### Added
+
+- Pre-PegIn validation now **requires** the shared auth-anchor `OP_RETURN`
+  (`0x6A 0x20 || SHA256(authAnchor)`, 34 bytes, **value 0**) and binds it to the value expanded
+  from the derived root, so a host cannot substitute or fund it.
+- On-device HKDF-Expand-only commitment helper (`src/handler/derive_vault_secrets_core.h`) for
+  the `hashlock` and `auth-anchor` labels under the `"babylonbtcvault"` domain tag.
+
+### Removed
+
+- `RELEASE_CONTEXT_SECRET` (INS `0x82`) and the `SESSION2_COMPLETE` custody gating. The device
+  no longer retains or releases a preimage — the host holds the root (returned by
+  `DERIVE_CONTEXT_HASH`) and expands the per-vault secrets itself. `SESSION2_COMPLETE` is now a
+  terminal state.
+
+### Notes
+
+- Batched deposits (multiple HTLC outputs per Pre-PegIn) remain **out of scope**: the intent
+  carries a single `htlc_vout`. The new per-output-keyed secrets are the protocol primitive that
+  would enable batching later.
+
 ## [Unreleased] - NAPPS-1416: Signet ticker
 
 ### Changed
@@ -38,6 +78,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `validate_and_display_transaction` to `sign_custom_inputs` (NAPPS-1377), so the
   state only advances when the HTLC input is actually signed and the host can retry on
   signing failure.
+- `vault_tlv.c` now rejects `commission_fee < VAULT_DUST_LIMIT` (previously only `0`), so
+  the VP commission payout output can no longer be a below-dust P2TR output, keeping the
+  payout transaction standard/relayable as documented in `vault_constants.h`.
 
 ---
 

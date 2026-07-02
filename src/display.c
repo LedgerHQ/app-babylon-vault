@@ -216,9 +216,6 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 #define VAULT_VP_KEY_LABEL        "Provider key"
 #endif
 
-// Number of scalar (non-key) pairs shown before the keeper/challenger keys.
-#define VAULT_INTENT_SCALAR_PAIRS 9
-
 // ---- Streaming review state machine ----
 //
 // The vault intent is reviewed as a streaming review so the keeper/challenger key
@@ -380,7 +377,10 @@ bool display_vault_intent(dispatcher_context_t *dc) {
 
     // ---- Keeper public keys ----
 
-    assert(n == VAULT_INTENT_SCALAR_PAIRS);
+    // Boundary between the mandatory scalar-parameter segment and the skippable
+    // keeper/challenger key segment.  Captured from n itself so the split below is
+    // correct by construction, regardless of how many scalar pairs were appended.
+    const uint8_t n_scalars = n;
 
     for (uint8_t i = 0; i < G_vault_intent.keeper_count; i++) {
         format_hex(G_vault_intent.keeper_pks[i],
@@ -414,16 +414,18 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     assert(n <= VAULT_INTENT_MAX_PAIRS);
 
     // Split the single pair array into two streaming segments: scalar params
-    // (mandatory) then keeper/challenger keys (skippable).  Both lists point into
-    // the same vault_pairs buffer in G_scratch.display; the value strings live on
-    // this stack frame (scalars) or in G_scratch.display (keys) and stay valid
-    // because io_ui_process blocks here for the whole flow.
+    // (mandatory) then keeper/challenger keys (skippable).  The boundary is n_scalars
+    // (captured above), so the split stays consistent no matter how many scalar pairs
+    // precede the keys.  Both lists point into the same vault_pairs buffer in
+    // G_scratch.display; the value strings live on this stack frame (scalars) or in
+    // G_scratch.display (keys) and stay valid because io_ui_process blocks here for
+    // the whole flow.
     g_vault_params_list.pairs = vault_pairs;
-    g_vault_params_list.nbPairs = VAULT_INTENT_SCALAR_PAIRS;
+    g_vault_params_list.nbPairs = n_scalars;
     g_vault_params_list.nbMaxLinesForValue = 0;
 
-    g_vault_keys_list.pairs = vault_pairs + VAULT_INTENT_SCALAR_PAIRS;
-    g_vault_keys_list.nbPairs = (uint8_t) (n - VAULT_INTENT_SCALAR_PAIRS);
+    g_vault_keys_list.pairs = vault_pairs + n_scalars;
+    g_vault_keys_list.nbPairs = (uint8_t) (n - n_scalars);
     g_vault_keys_list.nbMaxLinesForValue = 0;
 
     // Skip is offered on touch only. On nano the SDK interleaves a "press both to

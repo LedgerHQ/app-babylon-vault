@@ -362,12 +362,22 @@ static void test_tlv_empty_payload(void **state) {
     assert_int_equal(vault_tlv_parse(NULL, 0, &out), VAULT_TLV_ERR_MISSING_FIELD);
 }
 
-static void test_tlv_commission_fee_zero(void **state) {
+static void test_tlv_commission_fee_below_dust(void **state) {
     (void) state;
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
+
+    /* commission_fee == 0 → the VP commission output would be empty → fail */
     patch_tlv_u64be(buf, len, TAG_COMMISSION_FEE, 0);
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+
+    /* commission_fee just below the relay dust limit → fail */
+    patch_tlv_u64be(buf, len, TAG_COMMISSION_FEE, VAULT_DUST_LIMIT - 1);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+
+    /* commission_fee exactly at the relay dust limit → OK */
+    patch_tlv_u64be(buf, len, TAG_COMMISSION_FEE, VAULT_DUST_LIMIT);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
 }
 
 static void test_tlv_vault_amount_exactly_at_boundary(void **state) {
@@ -679,7 +689,7 @@ int main(void) {
         cmocka_unit_test(test_tlv_challenger_count_too_large),
 
         /* vault_tlv_parse — amount / fee validation */
-        cmocka_unit_test(test_tlv_commission_fee_zero),
+        cmocka_unit_test(test_tlv_commission_fee_below_dust),
         cmocka_unit_test(test_tlv_vault_amount_exactly_at_boundary),
         cmocka_unit_test(test_tlv_vault_amount_just_above_boundary),
 

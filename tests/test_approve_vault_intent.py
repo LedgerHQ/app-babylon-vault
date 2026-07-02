@@ -264,13 +264,14 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
 
 def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, navigator: Navigator,
                                                           device: Device, bitcoin_network: str):
-    """Session 2 setup: DERIVE_CONTEXT_HASH (multi-chunk) followed by APPROVE_VAULT_INTENT
+    """Session 2 setup: DERIVE_CONTEXT_HASH (single APDU) followed by APPROVE_VAULT_INTENT
     must complete without error and leave the session in INTENT_LOADED.
 
-    This exercises the HASH_DERIVED → (invalidate+restore) → INTENT_LOADED path introduced
-    in approve_vault_intent.c::handle_scalar_payload.  The preimage preservation cannot be
-    confirmed externally until RELEASE_CONTEXT_SECRET is implemented; until then we verify
-    that the full sequence is accepted and the resulting state is INTENT_LOADED.
+    This exercises the HASH_DERIVED → (invalidate+restore) → INTENT_LOADED path in
+    approve_vault_intent.c::handle_scalar_payload, where the derived root is preserved
+    across the reset.  The device never returns the root again (the host already holds it
+    from DERIVE_CONTEXT_HASH), so we verify externally only that the full sequence is
+    accepted and the resulting state is INTENT_LOADED.
     """
     # Step 1 — DERIVE_CONTEXT_HASH (single APDU) stores the root and reaches HASH_DERIVED.
     root = _derive(client, bitcoin_network)

@@ -22,3 +22,19 @@ bool validate_and_display_transaction(
     sign_psbt_state_t *st,
     const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)],
     const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]);
+
+/**
+ * @brief Re-read the PSBT_IN_TAP_LEAF_SCRIPT entry for a Refund input.
+ *
+ * Fills G_scratch.tls with the leaf script found in the PSBT input map.
+ * Also fills *input_map_out with the input's merkleized map commitment so
+ * the caller can do further PSBT reads (WITNESS_UTXO, TAP_BIP32_DERIVATION).
+ *
+ * Called from sign_custom_inputs for Refund signing, after validate_and_display_transaction
+ * has returned (G_scratch.tls was clobbered by display_refund_transaction in the meantime).
+ *
+ * @return true on success; sends SW_INCORRECT_DATA and returns false on any error.
+ */
+bool vault_read_refund_leaf_script(dispatcher_context_t *dc,
+                                   sign_psbt_state_t *st,
+                                   merkleized_map_commitment_t *input_map_out);
