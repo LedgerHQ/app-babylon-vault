@@ -24,8 +24,8 @@
 #include "read.h"
 
 /* Maximum length of a TAP_BIP32_DERIVATION value that we'll read:
- * 1B n_hashes + 32B leaf_hash + 4B fingerprint + 5*4B path = 57 bytes max */
-#define MAX_TAP_BIP32_DERIV_VALUE_LEN (1 + 32 + 4 + 5 * 4)
+ * 1B n_hashes + up to 2×32B leaf_hashes + 4B fingerprint + 5*4B path = 89 bytes max */
+#define MAX_TAP_BIP32_DERIV_VALUE_LEN (1 + 2 * 32 + 4 + 5 * 4)
 
 /* Maximum WITNESS_UTXO size: 8B value + 1B script_len varint + 34B P2TR script */
 #define MAX_WITNESS_UTXO_LEN (8 + 1 + 34)
@@ -1241,16 +1241,18 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t out_value;
 
-    /* 6a. Read Out0 and verify claimer's BIP-86 P2TR scriptPubKey */
+    /* 6a. Read Out0:
+     *   VP claimer: BIP-86 P2TR(depositor)        — depositor receives V - fee - Fc
+     *   VK claimer: BIP-86 P2TR(keeper[i])        — VaultKeeper receives V - fee */
     if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out_spk, &out_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
     {
-        const uint8_t *claimer_pk =
-            (claimer_idx == 0) ? intent->vault_provider_pk : intent->keeper_pks[claimer_idx - 1];
+        const uint8_t *out0_pk =
+            (claimer_idx == 0) ? intent->depositor_pk : intent->keeper_pks[claimer_idx - 1];
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!_bip86_p2tr_spk(claimer_pk, expected_spk)) {
+        if (!_bip86_p2tr_spk(out0_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1261,9 +1263,9 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     }
     uint64_t total_out = out_value; /* out0: bounded by out_value; no overflow risk yet */
 
-    /* 6b. Read Out1 and verify:
+    /* 6b. Read Out1:
      *   VP: amount == commission_fee, script == BIP-86 P2TR(vault_provider_pk)
-     *   VK: amount == VAULT_DUST_LIMIT, script == BIP-86 P2TR(depositor_pk) */
+     *   VK: amount == VAULT_DUST_LIMIT (CPFP anchor), script == BIP-86 P2TR(keeper[i]) */
     if (!_read_output(dc, st->outputs_root, st->n_outputs, 1, out_spk, &out_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -1275,7 +1277,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             out1_pk = intent->vault_provider_pk;
             expected_out1_value = intent->commission_fee;
         } else {
-            out1_pk = intent->depositor_pk;
+            out1_pk = intent->keeper_pks[claimer_idx - 1]; /* CPFP anchor to claimer */
             expected_out1_value = VAULT_DUST_LIMIT;
         }
         if (out_value != expected_out1_value) {
@@ -1298,8 +1300,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     }
     total_out += out_value;
 
-    /* 6c. VP only: read Out2, verify amount == VAULT_DUST_LIMIT and script ==
-     * BIP-86 P2TR(depositor_pk) */
+    /* 6c. VP only: Out2 = CPFP anchor (VAULT_DUST_LIMIT) to Claimer (vault_provider_pk) */
     if (claimer_idx == 0) {
         if (!_read_output(dc, st->outputs_root, st->n_outputs, 2, out_spk, &out_value)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1310,7 +1311,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!_bip86_p2tr_spk(intent->depositor_pk, expected_spk)) {
+        if (!_bip86_p2tr_spk(intent->vault_provider_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1341,6 +1342,51 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
+    /* Advance the payout cursor now that this claimer validated.  Ordering is
+     * enforced via claimer_idx == payout_index above; the matching signature is
+     * produced afterwards in sign_custom_inputs.  A signing failure there calls
+     * vault_context_invalidate(), so advancing here cannot leave a half-signed
+     * session releasable.  After the last claimer (index == keeper_count) the
+     * session moves to SESSION2_COMPLETE; the final payout's signing runs in
+     * that state, which is expected and gates RELEASE_CONTEXT_SECRET. */
+    G_vault_context.payout_index++;
+    if (G_vault_context.payout_index > intent->keeper_count) {
+        if (!vault_context_transition(&G_vault_context,
+                                      VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
+                                      VAULT_STATE_SESSION2_COMPLETE)) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_BAD_STATE);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* -------------------------------------------------------------------------
+ * Public helpers for sign_custom_inputs
+ * ---------------------------------------------------------------------- */
+
+bool vault_read_refund_leaf_script(dispatcher_context_t *dc,
+                                   sign_psbt_state_t *st,
+                                   merkleized_map_commitment_t *input_map_out) {
+    memset(&G_scratch.tls, 0, sizeof(G_scratch.tls));
+    if (call_get_merkleized_map_with_callback(
+            dc,
+            &G_scratch.tls,
+            st->inputs_root,
+            st->n_inputs,
+            0,
+            (merkle_tree_elements_callback_t) _tap_leaf_script_callback,
+            input_map_out) < 0 ||
+        !G_scratch.tls.found || G_scratch.tls.ambiguous) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    if (G_scratch.tls.leaf_version != TAPSCRIPT_LEAF_VERSION) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     return true;
 }
 

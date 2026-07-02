@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `validate_and_display_transaction` to `sign_custom_inputs` (NAPPS-1377), so the
   state only advances when the HTLC input is actually signed and the host can retry on
   signing failure.
+- `vault_tlv.c` now rejects `commission_fee < VAULT_DUST_LIMIT` (previously only `0`), so
+  the VP commission payout output can no longer be a below-dust P2TR output, keeping the
+  payout transaction standard/relayable as documented in `vault_constants.h`.
 
 ---
 
