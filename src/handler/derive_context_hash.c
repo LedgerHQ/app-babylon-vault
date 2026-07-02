@@ -65,8 +65,7 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
     uint8_t path_len = data[off++];
-    if (path_len == 0u || path_len > MAX_DERIVATION_PATH_LEN ||
-        off + (size_t) path_len * 4u > lc) {
+    if (path_len == 0u || path_len > MAX_DERIVATION_PATH_LEN || off + (size_t) path_len * 4u > lc) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }

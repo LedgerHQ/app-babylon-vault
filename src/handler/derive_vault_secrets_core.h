@@ -56,16 +56,15 @@ static inline bool vault_expand_commitment(const uint8_t root[VAULT_HASH256_LEN]
     const uint8_t ctx_len_be[2] = {(uint8_t) (ctx_len >> 8), (uint8_t) (ctx_len & 0xFFu)};
     const uint8_t counter = 0x01;
 
-    bool ok =
-        cx_hmac_sha256_init_no_throw(&hmac, root, VAULT_HASH256_LEN) == CX_OK &&
-        // info = "babylonbtcvault" || len(label) || label || len(ctx):u16-BE || ctx
-        cx_hmac_update((cx_hmac_t *) &hmac, VS_DOMAIN_TAG, VS_DOMAIN_TAG_LEN) == CX_OK &&
-        cx_hmac_update((cx_hmac_t *) &hmac, &label_len_b, 1) == CX_OK &&
-        cx_hmac_update((cx_hmac_t *) &hmac, label, label_len) == CX_OK &&
-        cx_hmac_update((cx_hmac_t *) &hmac, ctx_len_be, 2) == CX_OK &&
-        (ctx_len == 0u || cx_hmac_update((cx_hmac_t *) &hmac, ctx, ctx_len) == CX_OK) &&
-        // HKDF-Expand single-block counter
-        cx_hmac_update((cx_hmac_t *) &hmac, &counter, 1) == CX_OK;
+    bool ok = cx_hmac_sha256_init_no_throw(&hmac, root, VAULT_HASH256_LEN) == CX_OK &&
+              // info = "babylonbtcvault" || len(label) || label || len(ctx):u16-BE || ctx
+              cx_hmac_update((cx_hmac_t *) &hmac, VS_DOMAIN_TAG, VS_DOMAIN_TAG_LEN) == CX_OK &&
+              cx_hmac_update((cx_hmac_t *) &hmac, &label_len_b, 1) == CX_OK &&
+              cx_hmac_update((cx_hmac_t *) &hmac, label, label_len) == CX_OK &&
+              cx_hmac_update((cx_hmac_t *) &hmac, ctx_len_be, 2) == CX_OK &&
+              (ctx_len == 0u || cx_hmac_update((cx_hmac_t *) &hmac, ctx, ctx_len) == CX_OK) &&
+              // HKDF-Expand single-block counter
+              cx_hmac_update((cx_hmac_t *) &hmac, &counter, 1) == CX_OK;
 
     if (ok) {
         size_t out_len = VAULT_HASH256_LEN;

@@ -121,8 +121,7 @@ static inline bool hkdf_derive_root(const uint8_t *app_name,
     bool ok =
         cx_hmac_sha256_init_no_throw(&hmac, prk, VAULT_HASH256_LEN) == CX_OK &&
         // info[0..31]: SHA-256(app_name)
-        cx_hash_sha256(app_name, app_name_len, name_hash, VAULT_HASH256_LEN) ==
-            VAULT_HASH256_LEN &&
+        cx_hash_sha256(app_name, app_name_len, name_hash, VAULT_HASH256_LEN) == VAULT_HASH256_LEN &&
         cx_hmac_update((cx_hmac_t *) &hmac, name_hash, VAULT_HASH256_LEN) == CX_OK &&
         // info[32..63]: SHA-256(canonicalNetworkName)
         cx_hash_sha256(HKDF_NETWORK_NAME, HKDF_NETWORK_NAME_LEN, name_hash, VAULT_HASH256_LEN) ==
