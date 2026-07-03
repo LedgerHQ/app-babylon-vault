@@ -38,6 +38,24 @@ static const uint8_t HKDF_NETWORK_NAME[] = VAULT_CANONICAL_NETWORK_NAME;
 #define HKDF_NETWORK_NAME_LEN ((uint32_t) (sizeof(HKDF_NETWORK_NAME) - 1u))
 
 // ---------------------------------------------------------------------------
+// appName charset validation — spec §2.1: [a-z0-9\-] only
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Return true iff every byte of @p name is in [a-z0-9\-].
+ *
+ * Extracted here so it can be included directly by unit tests without
+ * bringing in the full handler (which requires dispatcher_context_t).
+ */
+static inline bool app_name_charset_valid(const uint8_t *name, uint8_t len) {
+    for (uint8_t i = 0; i < len; i++) {
+        uint8_t c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Phase 1 — BIP-32 key derivation
 // ---------------------------------------------------------------------------
 

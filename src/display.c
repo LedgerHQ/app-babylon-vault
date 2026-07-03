@@ -1,6 +1,7 @@
 #include "display.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "../bitcoin_app_base/src/ui/display.h"
 #include "../bitcoin_app_base/src/ui/menu.h"
@@ -23,6 +24,75 @@ _Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= MAX_AMOUNT_LENGTH + 1,
                "TX_DISPLAY_AMOUNT_STR_SIZE too small; update globals.h");
 _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
                "TX_DISPLAY_ADDR_STR_SIZE too small; update globals.h");
+
+// ---------------------------------------------------------------------------
+// DERIVE_CONTEXT_HASH approval screen
+// ---------------------------------------------------------------------------
+
+// Separate rejection callback so TYPE_OPERATION reviews show STATUS_TYPE_OPERATION_REJECTED
+// rather than STATUS_TYPE_TRANSACTION_REJECTED (which review_choice emits).
+static void derive_context_hash_choice(bool approved) {
+    set_ux_flow_response(approved);
+    if (!approved) {
+        nbgl_useCaseReviewStatus(STATUS_TYPE_OPERATION_REJECTED, ui_menu_main);
+    }
+}
+
+bool display_derive_context_hash(dispatcher_context_t *dc,
+                                 const uint8_t *app_name,
+                                 uint8_t app_name_len,
+                                 const uint8_t *context,
+                                 size_t context_len) {
+    static const char hex_chars[] = "0123456789abcdef";
+
+    // app_name_len <= 64, addr_str is 80 bytes — safe.
+    char *const name_str = G_scratch.display_tx.addr_str;
+    memcpy(name_str, app_name, app_name_len);
+    name_str[app_name_len] = '\0';
+
+    // Spec §2.1 SHOULD: display context bytes.
+    // extra_str is TX_DISPLAY_AMOUNT_STR_SIZE = 28 bytes.
+    //   context_len <= 12 → up to 24 hex chars + NUL  (25 B, fits)
+    //   context_len >  12 → 20 hex chars + "..." + NUL (24 B, fits)
+    char *const ctx_str = G_scratch.display_tx.extra_str;
+    const size_t show = context_len > 12u ? 10u : context_len;
+    char *p = ctx_str;
+    for (size_t i = 0; i < show; i++) {
+        *p++ = hex_chars[(context[i] >> 4) & 0x0fu];
+        *p++ = hex_chars[context[i] & 0x0fu];
+    }
+    if (context_len > 12u) {
+        *p++ = '.';
+        *p++ = '.';
+        *p++ = '.';
+    }
+    *p = '\0';
+
+    nbgl_layoutTagValue_t *const pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    pairs[0] = (nbgl_layoutTagValue_t) {.item = "App name", .value = name_str};
+    pairs[1] = (nbgl_layoutTagValue_t) {.item = "Context", .value = ctx_str};
+
+    nbgl_layoutTagValueList_t pair_list = {
+        .nbMaxLinesForValue = 0,
+        .nbPairs = 2,
+        .pairs = pairs,
+    };
+
+    nbgl_useCaseReview(TYPE_OPERATION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Derive context hash",
+                       NULL,
+                       "Allow derivation?",
+                       derive_context_hash_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
 
 bool display_transaction(dispatcher_context_t *dc,
                          int64_t value_spent,

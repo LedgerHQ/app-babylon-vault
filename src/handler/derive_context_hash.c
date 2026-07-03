@@ -1,6 +1,7 @@
 #include "derive_context_hash.h"
 #include "derive_context_hash_core.h"
 
+#include "../display.h"
 #include "../globals.h"
 #include "../vault_context.h"
 #include "../../bitcoin_app_base/src/boilerplate/sw.h"
@@ -59,6 +60,12 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
     const uint8_t *app_name = data + off;
     off += app_name_len;
 
+    // Validate appName charset: spec §2.1 requires [a-z0-9\-] only.
+    if (!app_name_charset_valid(app_name, app_name_len)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+
     // path_len | path (u32 big-endian per level)
     if (off + 1u > lc) {
         SEND_SW(dc, SW_WRONG_DATA_LENGTH);
@@ -84,15 +91,32 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
 
+    // Copy app_name out of the APDU buffer before the blocking display call.
+    // io_ui_process may observe async transport frames; a local copy is unconditionally safe.
+    uint8_t app_name_buf[64];
+    memcpy(app_name_buf, app_name, app_name_len);
+
     // Derive the 33-byte compressed connected public key at the host-supplied path.
     uint8_t connected_pubkey[VAULT_COMPRESSED_PUBKEY_LEN];
     if (crypto_get_compressed_pubkey_at_path(path, path_len, connected_pubkey, NULL) != CX_OK) {
+        explicit_bzero(connected_pubkey, sizeof(connected_pubkey));
         SEND_SW(dc, SW_BIP32_FAIL);
         return;
     }
 
-    // Compute and store the root.
-    bool ok = hkdf_derive_root(app_name,
+    // Spec §2.1: user must approve before the root is derived and returned.
+    // context still points into cmd->data which is stable for the full handler
+    // invocation (no new APDU is processed while io_ui_process blocks).
+    // NOTE: spec §2.1 also requires "requesting origin" in the dialog; that field
+    // has no representation in the current APDU CData layout and cannot be shown
+    // without a protocol extension.
+    if (!display_derive_context_hash(dc, app_name_buf, app_name_len, context, context_len)) {
+        explicit_bzero(connected_pubkey, sizeof(connected_pubkey));
+        return;  // SW_DENY already sent
+    }
+
+    // Compute and store the root using the local app_name copy.
+    bool ok = hkdf_derive_root(app_name_buf,
                                app_name_len,
                                connected_pubkey,
                                context,

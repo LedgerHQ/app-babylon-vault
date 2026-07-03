@@ -1,8 +1,29 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "../bitcoin_app_base/src/boilerplate/dispatcher.h"
+
+/**
+ * @brief DERIVE_CONTEXT_HASH approval screen.
+ *
+ * Shows appName and a truncated hex preview of the context bytes, then asks
+ * the user to confirm before the device computes and returns the HKDF root.
+ *
+ * @param app_name      ASCII appName bytes (validated [a-z0-9\-], no NUL).
+ * @param app_name_len  Length (1–64).
+ * @param context       Raw context bytes (vaultContext APDU field).
+ * @param context_len   Length of @p context (non-zero).
+ * @return true   User approved; caller may proceed with derivation.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_derive_context_hash(dispatcher_context_t *dc,
+                                 const uint8_t *app_name,
+                                 uint8_t app_name_len,
+                                 const uint8_t *context,
+                                 size_t context_len);
 
 bool display_transaction(dispatcher_context_t *dc,
                          int64_t value_spent,

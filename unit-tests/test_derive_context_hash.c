@@ -57,6 +57,130 @@ static const uint8_t REF_ROOT_WITH_CTX[32] = {
 static const char CTX[] = "hello_context";  // 13 bytes
 
 // ---------------------------------------------------------------------------
+// derive-context-hash §4.1 HKDF function-level vectors
+//   IKM is the same as §4.2 (m/73681862' for the "abandon..." seed).
+//   Info bytes are opaque — these vectors pin the raw HKDF math independent
+//   of the v2 info construction. Verified against Node.js crypto.hkdf('sha256')
+//   and a manual HMAC-based implementation (per spec §4.1 note).
+// ---------------------------------------------------------------------------
+
+// Raw HKDF: PRK = HMAC-SHA256(salt, ikm); out = HMAC-SHA256(PRK, info || 0x01).
+static bool hkdf_raw(const uint8_t *ikm,
+                     size_t         ikm_len,
+                     const uint8_t *salt,
+                     size_t         salt_len,
+                     const uint8_t *info,
+                     size_t         info_len,
+                     uint8_t        out[32]) {
+    uint8_t salt_buf[32];  // salt is "derive-context-hash" = 19 B; fits easily
+    if (salt_len > sizeof(salt_buf)) return false;
+    memcpy(salt_buf, salt, salt_len);
+
+    uint8_t prk[32];
+    cx_hkdf_extract(CX_SHA256, ikm, (unsigned int) ikm_len,
+                    salt_buf, (unsigned int) salt_len, prk);
+
+    cx_hmac_sha256_t hmac;
+    const uint8_t counter = 0x01;
+    bool ok = cx_hmac_sha256_init_no_throw(&hmac, prk, 32) == CX_OK &&
+              cx_hmac_update((cx_hmac_t *) &hmac, info, info_len) == CX_OK &&
+              cx_hmac_update((cx_hmac_t *) &hmac, &counter, 1) == CX_OK;
+    size_t out_len = 32;
+    if (ok) ok = cx_hmac_final((cx_hmac_t *) &hmac, out, &out_len) == CX_OK;
+    return ok;
+}
+
+// SHA-256("test-app") — shared info prefix for all three §4.1 vectors.
+static const uint8_t V41_INFO_PREFIX[32] = {
+    0xb5, 0x8b, 0x0c, 0xb4, 0xec, 0xde, 0xa3, 0xc6, 0x53, 0x11, 0xb4, 0xca, 0x88, 0x33, 0xfe, 0x47,
+    0xb6, 0xae, 0x0a, 0x75, 0x00, 0xf8, 0x7a, 0x8e, 0xb3, 0x1e, 0x83, 0x79, 0xd3, 0xfe, 0x48, 0xf1};
+
+static const uint8_t V41_OUT1[32] = {
+    0x3b, 0x0e, 0x2d, 0x90, 0xa0, 0x11, 0x22, 0xee, 0xd8, 0xa5, 0x20, 0x64, 0x80, 0x73, 0x89, 0x2f,
+    0x6b, 0x2d, 0x8f, 0x44, 0x19, 0x21, 0x60, 0x23, 0xd6, 0x3c, 0xdb, 0xd4, 0x95, 0x00, 0xfc, 0xa3};
+
+static const uint8_t V41_OUT2[32] = {
+    0x50, 0x77, 0x51, 0x26, 0x78, 0x2c, 0x1a, 0x5e, 0x4d, 0x60, 0xda, 0xa4, 0x66, 0x6b, 0x2c, 0x75,
+    0x90, 0xf0, 0xb5, 0xa4, 0x45, 0xa4, 0x11, 0x5b, 0x0a, 0xbd, 0x41, 0x14, 0x67, 0xc9, 0x25, 0x97};
+
+static const uint8_t V41_OUT3[32] = {
+    0xd8, 0x1e, 0x4a, 0x91, 0xf3, 0x2e, 0xab, 0xd3, 0x4d, 0xf0, 0xe5, 0x5c, 0xa3, 0x6f, 0x26, 0xf2,
+    0x11, 0xaf, 0x65, 0xdf, 0xe5, 0x75, 0xb7, 0x20, 0x1c, 0x95, 0xba, 0xaa, 0x66, 0x08, 0xcd, 0xd9};
+
+// info = SHA-256("test-app") || 0xdeadbeef
+static void test_spec_vector_4_1_v1(void **state) {
+    (void) state;
+    uint8_t info[36];
+    memcpy(info, V41_INFO_PREFIX, 32);
+    info[32] = 0xde; info[33] = 0xad; info[34] = 0xbe; info[35] = 0xef;
+    uint8_t out[32];
+    assert_true(hkdf_raw(V42_IKM, 32,
+                         (const uint8_t *) "derive-context-hash", 19,
+                         info, 36, out));
+    assert_memory_equal(out, V41_OUT1, 32);
+}
+
+// info = SHA-256("test-app") || 0x00
+static void test_spec_vector_4_1_v2(void **state) {
+    (void) state;
+    uint8_t info[33];
+    memcpy(info, V41_INFO_PREFIX, 32);
+    info[32] = 0x00;
+    uint8_t out[32];
+    assert_true(hkdf_raw(V42_IKM, 32,
+                         (const uint8_t *) "derive-context-hash", 19,
+                         info, 33, out));
+    assert_memory_equal(out, V41_OUT2, 32);
+}
+
+// info = SHA-256("test-app") || 64 zero bytes
+static void test_spec_vector_4_1_v3(void **state) {
+    (void) state;
+    uint8_t info[96];
+    memcpy(info, V41_INFO_PREFIX, 32);
+    memset(info + 32, 0x00, 64);
+    uint8_t out[32];
+    assert_true(hkdf_raw(V42_IKM, 32,
+                         (const uint8_t *) "derive-context-hash", 19,
+                         info, 96, out));
+    assert_memory_equal(out, V41_OUT3, 32);
+}
+
+// ---------------------------------------------------------------------------
+// appName charset validation (spec §2.1: [a-z0-9\-] only)
+// ---------------------------------------------------------------------------
+
+static void test_charset_valid_lowercase_digits_hyphen(void **state) {
+    (void) state;
+    const uint8_t name[] = "babylon-btc-vault0";
+    assert_true(app_name_charset_valid(name, sizeof(name) - 1));
+}
+
+static void test_charset_valid_single_hyphen(void **state) {
+    (void) state;
+    const uint8_t name[] = "-";
+    assert_true(app_name_charset_valid(name, 1));
+}
+
+static void test_charset_invalid_uppercase(void **state) {
+    (void) state;
+    const uint8_t name[] = "TestApp";
+    assert_false(app_name_charset_valid(name, sizeof(name) - 1));
+}
+
+static void test_charset_invalid_space(void **state) {
+    (void) state;
+    const uint8_t name[] = "app name";
+    assert_false(app_name_charset_valid(name, sizeof(name) - 1));
+}
+
+static void test_charset_invalid_underscore(void **state) {
+    (void) state;
+    const uint8_t name[] = "app_name";
+    assert_false(app_name_charset_valid(name, sizeof(name) - 1));
+}
+
+// ---------------------------------------------------------------------------
 
 // Authoritative: full v2 info construction matches derive-context-hash §4.2.
 static void test_spec_vector_4_2(void **state) {
@@ -124,6 +248,14 @@ static void test_different_pubkey_diverges(void **state) {
 
 int main(void) {
     const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_charset_valid_lowercase_digits_hyphen),
+        cmocka_unit_test(test_charset_valid_single_hyphen),
+        cmocka_unit_test(test_charset_invalid_uppercase),
+        cmocka_unit_test(test_charset_invalid_space),
+        cmocka_unit_test(test_charset_invalid_underscore),
+        cmocka_unit_test(test_spec_vector_4_1_v1),
+        cmocka_unit_test(test_spec_vector_4_1_v2),
+        cmocka_unit_test(test_spec_vector_4_1_v3),
         cmocka_unit_test(test_spec_vector_4_2),
         cmocka_unit_test(test_root_no_ctx),
         cmocka_unit_test(test_root_with_ctx),
