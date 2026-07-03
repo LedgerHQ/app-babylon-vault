@@ -37,8 +37,11 @@
  */
 #if BIP44_COIN_TYPE == 0
 #define VAULT_CANONICAL_NETWORK_NAME "bitcoin-mainnet"
-#else
+#elif BIP44_COIN_TYPE == 1
 #define VAULT_CANONICAL_NETWORK_NAME "bitcoin-signet"
+#else
+#error \
+    "BIP44_COIN_TYPE has no mapped canonicalNetworkName — add an explicit entry or use 0 (mainnet) or 1 (signet)."
 #endif
 
 /**

@@ -38,6 +38,7 @@ from .vault_client import (
 HARDENED = 0x80000000
 APP_NAME = b"babylon-btc-vault"
 _HKDF_PATH = [HARDENED | 73681862]
+_MAX_CONTEXT_LEN = 1024  # spec §2.1
 
 # Same mnemonic Speculos is seeded with (conftest.py). The BIP-39 seed is derived with
 # stdlib PBKDF2 (BIP-39: PBKDF2-HMAC-SHA512, salt "mnemonic", 2048 iters) — no extra dep.
@@ -142,6 +143,19 @@ def test_empty_context_raises(client: "RaggerClient", bitcoin_network: str):
     path = _connected_path(ct)
     payload = (bytes([len(APP_NAME)]) + APP_NAME
                + bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path))
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_INITIAL, p2=P2_UNUSED, data=payload)
+    assert exc.value.status == 0x6A80
+
+
+def test_context_too_long_raises(client: "RaggerClient", bitcoin_network: str):
+    """context > _MAX_CONTEXT_LEN bytes → SW_INCORRECT_DATA (0x6A80) — spec §2.1 upper bound."""
+    ct = 0 if bitcoin_network == "main" else 1
+    path = _connected_path(ct)
+    payload = (bytes([len(APP_NAME)]) + APP_NAME
+               + bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path)
+               + b"\xff" * (_MAX_CONTEXT_LEN + 1))
     with pytest.raises(ExceptionRAPDU) as exc:
         client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
                                          p1=P1_INITIAL, p2=P2_UNUSED, data=payload)

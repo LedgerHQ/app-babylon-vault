@@ -19,9 +19,9 @@
  * @brief DERIVE_CONTEXT_HASH (INS 0x81) — single-APDU root derivation.
  *
  * P1 = 0x00, CData:
- *   app_name_len (1 B) | app_name (≤64 B)
+ *   app_name_len (1 B) | app_name (≤VAULT_APP_NAME_MAX_LEN B)
  *   path_len     (1 B) | path (path_len × 4 B, u32 big-endian)
- *   context      (remaining bytes, non-empty)
+ *   context      (remaining bytes, non-empty, ≤VAULT_CONTEXT_MAX_LEN B per spec §2.1)
  *
  * The device derives the 33-byte compressed connected pubkey at `path`, computes
  *   root = HKDF-SHA256(privkey@m/73681862', "derive-context-hash",
@@ -53,7 +53,7 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
     uint8_t app_name_len = data[off++];
-    if (app_name_len == 0u || app_name_len > 64u || off + app_name_len > lc) {
+    if (app_name_len == 0u || app_name_len > VAULT_APP_NAME_MAX_LEN || off + app_name_len > lc) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
@@ -83,17 +83,18 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         off += 4u;
     }
 
-    // context (the remainder) — must be non-empty
+    // context (the remainder) — must be non-empty and within the spec §2.1 limit
+    // (VAULT_CONTEXT_MAX_LEN).
     const uint8_t *context = data + off;
     const size_t context_len = lc - off;
-    if (context_len == 0u) {
+    if (context_len == 0u || context_len > VAULT_CONTEXT_MAX_LEN) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
 
     // Copy app_name out of the APDU buffer before the blocking display call.
     // io_ui_process may observe async transport frames; a local copy is unconditionally safe.
-    uint8_t app_name_buf[64];
+    uint8_t app_name_buf[VAULT_APP_NAME_MAX_LEN];
     memcpy(app_name_buf, app_name, app_name_len);
 
     // Derive the 33-byte compressed connected public key at the host-supplied path.

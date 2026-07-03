@@ -26,6 +26,10 @@
 // BIP-32 path: m/73681862'  (0x80000000 | 73681862 = 0x84644BC6)
 #define VAULT_HKDF_PATH_INDEX (0x80000000u | 73681862u)
 
+// Spec §2.1 input limits.
+#define VAULT_APP_NAME_MAX_LEN 64u    // appName: 1–64 bytes, [a-z0-9\-]
+#define VAULT_CONTEXT_MAX_LEN  1024u  // context: 1–1024 raw bytes
+
 // Compressed SEC1 public key length (0x02/0x03 prefix || x).
 #define VAULT_COMPRESSED_PUBKEY_LEN 33u
 
@@ -84,7 +88,7 @@ static inline bool derive_vault_privkey(cx_ecfp_256_private_key_t *privkey) {
 static inline void extract_prk(const uint8_t *ikm, uint8_t *prk_out) {
     uint8_t salt_buf[HKDF_SALT_LEN];
     memcpy(salt_buf, HKDF_SALT, HKDF_SALT_LEN);
-    cx_hkdf_extract(CX_SHA256, ikm, 32u, salt_buf, HKDF_SALT_LEN, prk_out);
+    cx_hkdf_extract(CX_SHA256, ikm, VAULT_HASH256_LEN, salt_buf, HKDF_SALT_LEN, prk_out);
     explicit_bzero(salt_buf, sizeof(salt_buf));
 }
 
