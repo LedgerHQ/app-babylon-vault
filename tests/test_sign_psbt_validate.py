@@ -446,11 +446,11 @@ def _connected_path(coin_type: int) -> List[int]:
 _DERIVED_ROOT: bytes = b""
 
 
-def _derive_root_and_hashlock(client: "RaggerClient", coin_type: int) -> bytes:
+def _derive_root_and_hashlock(client: "RaggerClient", navigator: "Navigator", device, coin_type: int) -> bytes:
     """Run DERIVE_CONTEXT_HASH, stash the root, and return the per-vault hashlock h."""
     global _DERIVED_ROOT
     _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME, _connected_path(coin_type),
-                                        _DERIVE_CONTEXT)
+                                        _DERIVE_CONTEXT, navigator, device)
     return vault_hashlock(_DERIVED_ROOT, _HTLC_VOUT)
 
 
@@ -464,7 +464,7 @@ def _setup_s1_state(
 
     After this call the device is in VAULT_STATE_INTENT_LOADED with htlc_hashlock set.
     """
-    hashlock = _derive_root_and_hashlock(client, coin_type)
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
     scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
     approve_vault_intent_with_nav(
         client, navigator, device,
@@ -495,7 +495,7 @@ def _setup_s2_state(
     if challenger_pks is None:
         challenger_pks = _TEST_CHALLENGER_PKS
     assert any(prepegin_txid), "prepegin_txid must be non-zero for Session 2"
-    hashlock = _derive_root_and_hashlock(client, coin_type)
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
     scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid, keeper_pks, challenger_pks)
     approve_vault_intent_with_nav(
         client, navigator, device,
@@ -1684,7 +1684,7 @@ def _setup_signet_payout_state(
     # New spec: DERIVE_CONTEXT_HASH returns the root; the per-vault hashlock is
     # SHA256(Expand(root, "hashlock" || I2OSP(htlc_vout,4))), matching what the device
     # recomputes at APPROVE_VAULT_INTENT.
-    hashlock = _derive_root_and_hashlock(client, coin_type)
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
 
     scalars_tlv = build_intent_tlv(
         coin_type=coin_type,
