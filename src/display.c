@@ -33,9 +33,9 @@ _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
 // rather than STATUS_TYPE_TRANSACTION_REJECTED (which review_choice emits).
 static void derive_context_hash_choice(bool approved) {
     set_ux_flow_response(approved);
-    if (!approved) {
-        nbgl_useCaseReviewStatus(STATUS_TYPE_OPERATION_REJECTED, ui_menu_main);
-    }
+    nbgl_useCaseReviewStatus(
+        approved ? STATUS_TYPE_OPERATION_SIGNED : STATUS_TYPE_OPERATION_REJECTED,
+        ui_menu_main);
 }
 
 bool display_derive_context_hash(dispatcher_context_t *dc,

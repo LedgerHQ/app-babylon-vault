@@ -126,29 +126,52 @@ def _encode_bip32_path(path: List[int]) -> bytes:
 def derive_context_hash(client: RaggerClient,
                         app_name: bytes,
                         path: List[int],
-                        context: bytes) -> bytes:
-    """Send the single DERIVE_CONTEXT_HASH APDU and return the 32-byte root.
+                        context: bytes,
+                        navigator: "Navigator",
+                        device: "Device") -> bytes:
+    """Send the single DERIVE_CONTEXT_HASH APDU, navigate the approval screen, and return
+    the 32-byte root.
 
     Wire (P1=0x00): app_name_len(1B) | app_name | path_len(1B) | path(4·n B BE) | context.
-    The device derives the connected pubkey at `path`, computes the HKDF root over
-    SHA256(app_name) || SHA256(networkName) || connectedPubkey || context, and returns it.
+    The handler shows an NBGL approval screen; the caller must supply navigator + device so
+    this function can drive the confirmation before the device sends its response.
 
     Args:
         client:    RaggerClient fixture from conftest.
         app_name:  UTF-8 app name, 1..64 bytes (host sends b"babylon-btc-vault").
         path:      connectedPubkey BIP-32 path (u32 levels, hardened bit set as usual).
         context:   vaultContext bytes; must be non-empty.
+        navigator: Ragger Navigator fixture.
+        device:    Ledgered Device fixture (selects Nano vs touch navigation).
 
     Returns:
         32-byte root.
     """
+    from .instructions import derive_context_hash_nav
+
     assert 1 <= len(app_name) <= 64, "app_name must be 1..64 bytes"
     assert len(context) > 0, "context must be non-empty"
 
     payload = bytes([len(app_name)]) + app_name + _encode_bip32_path(path) + context
-    response_data = _exchange(client, P1_INITIAL, payload)
+    nav_instr, confirm_instrs, search_text = derive_context_hash_nav(device)
+
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_DERIVE_CONTEXT_HASH,
+        p1=P1_INITIAL,
+        p2=P2_UNUSED,
+        data=payload,
+    ):
+        navigator.navigate_until_text(
+            navigate_instruction=nav_instr,
+            validation_instructions=confirm_instrs,
+            text=search_text,
+            screen_change_before_first_instruction=False,
+        )
+
+    _sw, response_data = client.last_async_response()
     assert len(response_data) == 32
-    return response_data
+    return bytes(response_data)
 
 
 # ---------------------------------------------------------------------------

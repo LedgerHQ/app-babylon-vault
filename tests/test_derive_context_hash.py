@@ -38,7 +38,6 @@ from .vault_client import (
 HARDENED = 0x80000000
 APP_NAME = b"babylon-btc-vault"
 _HKDF_PATH = [HARDENED | 73681862]
-_MAX_CONTEXT_LEN = 1024  # spec §2.1
 
 # Same mnemonic Speculos is seeded with (conftest.py). The BIP-39 seed is derived with
 # stdlib PBKDF2 (BIP-39: PBKDF2-HMAC-SHA512, salt "mnemonic", 2048 iters) — no extra dep.
@@ -73,45 +72,51 @@ def _expected_root(app_name: bytes, path: List[int], context: bytes, bitcoin_net
 # Happy paths
 # ---------------------------------------------------------------------------
 
-def test_root_matches_reference(client: "RaggerClient", bitcoin_network: str):
+def test_root_matches_reference(client: "RaggerClient", navigator: Navigator,
+                                device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
     path, ctx = _connected_path(ct), b"\xde\xad\xbe\xef"
-    root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx)
+    root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx,
+                               navigator=navigator, device=device)
     assert len(root) == 32
     assert root == _expected_root(APP_NAME, path, ctx, bitcoin_network)
 
 
-def test_deterministic(client: "RaggerClient", bitcoin_network: str):
+def test_deterministic(client: "RaggerClient", navigator: Navigator,
+                       device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
     path = _connected_path(ct)
-    a = derive_context_hash(client, APP_NAME, path, b"\x01\x02")
-    b = derive_context_hash(client, APP_NAME, path, b"\x01\x02")
+    a = derive_context_hash(client, APP_NAME, path, b"\x01\x02", navigator, device)
+    b = derive_context_hash(client, APP_NAME, path, b"\x01\x02", navigator, device)
     assert a == b
 
 
-def test_different_app_name_diverges(client: "RaggerClient", bitcoin_network: str):
+def test_different_app_name_diverges(client: "RaggerClient", navigator: Navigator,
+                                     device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
     path, ctx = _connected_path(ct), b"\xaa\xbb"
-    base = derive_context_hash(client, APP_NAME, path, ctx)
-    other = derive_context_hash(client, b"other-app", path, ctx)
+    base = derive_context_hash(client, APP_NAME, path, ctx, navigator, device)
+    other = derive_context_hash(client, b"other-app", path, ctx, navigator, device)
     assert other != base
     assert other == _expected_root(b"other-app", path, ctx, bitcoin_network)
 
 
-def test_different_context_diverges(client: "RaggerClient", bitcoin_network: str):
+def test_different_context_diverges(client: "RaggerClient", navigator: Navigator,
+                                    device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
     path = _connected_path(ct)
-    a = derive_context_hash(client, APP_NAME, path, b"\x11\x11")
-    b = derive_context_hash(client, APP_NAME, path, b"\x22\x22")
+    a = derive_context_hash(client, APP_NAME, path, b"\x11\x11", navigator, device)
+    b = derive_context_hash(client, APP_NAME, path, b"\x22\x22", navigator, device)
     assert a != b
 
 
-def test_different_path_diverges(client: "RaggerClient", bitcoin_network: str):
+def test_different_path_diverges(client: "RaggerClient", navigator: Navigator,
+                                 device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
     ctx = b"\xab\xcd"
-    a = derive_context_hash(client, APP_NAME, _connected_path(ct), ctx)
+    a = derive_context_hash(client, APP_NAME, _connected_path(ct), ctx, navigator, device)
     other_path = [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 1]  # different receive leaf
-    b = derive_context_hash(client, APP_NAME, other_path, ctx)
+    b = derive_context_hash(client, APP_NAME, other_path, ctx, navigator, device)
     assert a != b
     assert b == _expected_root(APP_NAME, other_path, ctx, bitcoin_network)
 
@@ -149,18 +154,10 @@ def test_empty_context_raises(client: "RaggerClient", bitcoin_network: str):
     assert exc.value.status == 0x6A80
 
 
-def test_context_too_long_raises(client: "RaggerClient", bitcoin_network: str):
-    """context > _MAX_CONTEXT_LEN bytes → SW_INCORRECT_DATA (0x6A80) — spec §2.1 upper bound."""
-    ct = 0 if bitcoin_network == "main" else 1
-    path = _connected_path(ct)
-    payload = (bytes([len(APP_NAME)]) + APP_NAME
-               + bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path)
-               + b"\xff" * (_MAX_CONTEXT_LEN + 1))
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-                                         p1=P1_INITIAL, p2=P2_UNUSED, data=payload)
-    assert exc.value.status == 0x6A80
-
+# NOTE: VAULT_CONTEXT_MAX_LEN (1024 bytes) cannot be tested at the integration level
+# because standard APDU Lc is a single byte (max 255).  The limit is covered by the
+# unit test in unit-tests/test_derive_context_hash.c via the handler's C validation
+# and serves as spec-aligned defensive code for any future extended-APDU transport.
 
 def test_zero_path_len_raises(client: "RaggerClient"):
     """path_len == 0 → SW_INCORRECT_DATA (0x6A80)."""
@@ -197,6 +194,7 @@ def test_invalidates_loaded_intent(client: "RaggerClient", navigator: Navigator,
                                   challenger_pks=[TEST_VALID_KEYS[1]])
 
     path, ctx = _connected_path(ct), b"\xde\xad\xbe\xef"
-    root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx)
+    root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx,
+                               navigator=navigator, device=device)
     assert len(root) == 32
     assert root == _expected_root(APP_NAME, path, ctx, bitcoin_network)

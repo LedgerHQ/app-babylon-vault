@@ -116,11 +116,12 @@ def _raw_exchange(client, p1: int, data: bytes):
     )
 
 
-def _derive(client, network: str, context: bytes = b"\xde\xad\xbe\xef") -> bytes:
+def _derive(client, navigator, device, network: str,
+            context: bytes = b"\xde\xad\xbe\xef") -> bytes:
     """Run DERIVE_CONTEXT_HASH with the new wire format; returns the 32-byte root."""
     ct = 0 if network == "main" else 1
     path = [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0]
-    return derive_context_hash(client, VAULT_APP_NAME, path, context)
+    return derive_context_hash(client, VAULT_APP_NAME, path, context, navigator, device)
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +275,7 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, n
     accepted and the resulting state is INTENT_LOADED.
     """
     # Step 1 — DERIVE_CONTEXT_HASH (single APDU) stores the root and reaches HASH_DERIVED.
-    root = _derive(client, bitcoin_network)
+    root = _derive(client, navigator, device, bitcoin_network)
     assert len(root) == 32
 
     # Step 2 — APPROVE_VAULT_INTENT must accept the HASH_DERIVED state and succeed.
@@ -306,7 +307,7 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
                                   n_swipes=vault_intent_1k1c_steps(device))
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
-    root = _derive(client, bitcoin_network)
+    root = _derive(client, navigator, device, bitcoin_network)
     assert len(root) == 32
 
     # State is now IDLE — P1=0x01 without prior P1=0x00 must fail.
@@ -523,7 +524,8 @@ def test_depositor_key_collision_as_challenger(client: RaggerClient, bitcoin_net
 # Session state isolation
 # ---------------------------------------------------------------------------
 
-def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_network: str):
+def test_derive_initial_clears_scalars_loaded(client: RaggerClient, navigator: Navigator,
+                                               device: Device, bitcoin_network: str):
     """DERIVE_CONTEXT_HASH P1=0x00 must clear G_approve_intent_state even when state is IDLE.
 
     Before the fix, handle_initial_chunk only called vault_context_invalidate() when
@@ -539,7 +541,7 @@ def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_netw
     _raw_exchange(client, P1_SCALARS, scalars)
 
     # Inject DERIVE_CONTEXT_HASH P1=0x00 — must clear G_approve_intent_state.
-    _derive(client, bitcoin_network)
+    _derive(client, navigator, device, bitcoin_network)
 
     # APPROVE_VAULT_INTENT P1=0x01 must now fail because scalars_loaded == false.
     with pytest.raises(ExceptionRAPDU) as exc:

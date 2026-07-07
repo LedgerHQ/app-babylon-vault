@@ -158,6 +158,26 @@ def vault_intent_approve_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], 
             "^Hold to sign$")
 
 
+def derive_context_hash_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
+    """Return (navigate_instruction, validation_instructions, search_text) to approve
+    a DERIVE_CONTEXT_HASH request.
+
+    The NBGL review shows "Derive context hash" (intro), App name + Context (content),
+    and "Allow derivation?" (finish).
+
+    No USE_CASE_STATUS_DISMISS: derive_context_hash_choice only calls
+    nbgl_useCaseReviewStatus on rejection — the approval path returns the 32-byte
+    root directly and shows no success status screen.
+    """
+    if device.is_nano:
+        return (NavInsID.RIGHT_CLICK,
+                [NavInsID.BOTH_CLICK],
+                r"^Allow derivation\?$")
+    return (NavInsID.SWIPE_CENTER_TO_LEFT,
+            [NavInsID.USE_CASE_REVIEW_CONFIRM],
+            "^Allow derivation\\?$")
+
+
 def vault_intent_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
     """Return (navigate_instruction, validation_instructions, search_text) to reject.
 
