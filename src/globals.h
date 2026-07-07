@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "vault_constants.h"
 #include "vault_intent.h"
 #include "vault_context.h"
 #include "vault_script.h"
@@ -105,12 +106,41 @@ typedef struct {
 } tap_leaf_script_state_t;
 
 /**
+ * Scratch for handler_derive_context_hash.
+ *
+ * display_tx must be first: display_derive_context_hash writes to its fields
+ * (offsets 0–227) while reading app_name_buf/context_buf via passed pointers.
+ * The copy buffers therefore sit above the display_tx footprint and are never
+ * clobbered during the blocking display call.  After display returns,
+ * hkdf_derive_root reads context_buf which display_tx never touches.
+ *
+ * Max context size is 255 (single-APDU Lc bound; VAULT_CONTEXT_MAX_LEN = 1024
+ * is unreachable via standard APDU).
+ */
+typedef struct {
+    display_tx_scratch_t display_tx;
+    uint8_t app_name_buf[VAULT_APP_NAME_MAX_LEN];
+    uint8_t context_buf[255];
+    // path[] and connected_pubkey live here (not on the handler stack) so that the
+    // combined stack depth during the blocking display call stays within budget.
+    uint32_t path[10];
+    uint8_t connected_pubkey[33];
+    // Pre-formatted display strings written by the handler before the display call.
+    // path_str: BIP-32 path as "m/86'/1'/0'/0/0" (NUL-terminated, ≤80 bytes).
+    // ctx_hash_str: SHA-256(context) as 64 lowercase hex chars + NUL.
+    uint8_t path_len;
+    char path_str[80];
+    char ctx_hash_str[65];
+} derive_context_hash_scratch_t;
+
+/**
  * Mutually-exclusive scratch union.
  *
  * Each member is live in exactly one handler and is zeroed before use:
  *   - script_scratch  vault_build_* signing hooks
  *   - display         display_vault_intent only (blocks on io_ui_process)
  *   - display_tx      display_transaction / display_prepegin / display_refund
+ *   - derive_ctx      handler_derive_context_hash
  *   - leaf_check      _validate_display_refund leaf-script comparison
  *   - tls             _tap_leaf_script_callback state during refund validation
  *
@@ -130,6 +160,7 @@ typedef union {
     uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
     display_vault_intent_scratch_t display;
     display_tx_scratch_t display_tx;
+    derive_context_hash_scratch_t derive_ctx;
     refund_leaf_check_t leaf_check;
     tap_leaf_script_state_t tls;
 } vault_scratch_t;

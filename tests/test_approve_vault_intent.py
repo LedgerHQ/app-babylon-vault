@@ -131,6 +131,7 @@ def _derive(client, navigator, device, network: str,
 def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigator,
                                        device: Device, bitcoin_network: str):
     """Load a minimal intent (1 keeper, 1 challenger) end-to-end → SW_OK."""
+    _derive(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
@@ -142,6 +143,7 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigato
 def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
                                     device: Device, bitcoin_network: str):
     """4 keepers + 4 challengers forces two P1=0x01 batches (7+1 keys)."""
+    _derive(client, navigator, device, bitcoin_network)
     keepers     = TEST_VALID_KEYS[0:4]
     challengers = TEST_VALID_KEYS[4:8]
     scalars = _make_scalars(bitcoin_network, keeper_count=4, challenger_count=4)
@@ -236,6 +238,7 @@ def test_max_32_keepers_32_challengers(client: RaggerClient, navigator: Navigato
     between wait_for_screen_change() and compare_screen_with_text(), causing the last
     content screenshot (last challenger) to be skipped on flex/apex_p.
     """
+    _derive(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=32, challenger_count=32)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=_MAX_KEEPERS,
@@ -250,12 +253,15 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
     """Loading a second intent while one is active must succeed (session reset)."""
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     # First load — approve the screen
+    _derive(client, navigator, device, bitcoin_network)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/reload_1_" + bitcoin_network,
                                   n_swipes=vault_intent_1k1c_steps(device))
-    # Second load — handler invalidates the first session and shows the screen again
+    # Second load — derive first to reach HASH_DERIVED, then handler invalidates the
+    # first session and shows the screen again
+    _derive(client, navigator, device, bitcoin_network)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=SCREENSHOT_PATH,
@@ -299,6 +305,7 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
 
     Replaces the skipped test in test_derive_context_hash.py.
     """
+    _derive(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],

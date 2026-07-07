@@ -26,10 +26,6 @@
 // BIP-32 path: m/73681862'  (0x80000000 | 73681862 = 0x84644BC6)
 #define VAULT_HKDF_PATH_INDEX (0x80000000u | 73681862u)
 
-// Spec §2.1 input limits.
-#define VAULT_APP_NAME_MAX_LEN 64u    // appName: 1–64 bytes, [a-z0-9\-]
-#define VAULT_CONTEXT_MAX_LEN  1024u  // context: 1–1024 raw bytes
-
 // Compressed SEC1 public key length (0x02/0x03 prefix || x).
 #define VAULT_COMPRESSED_PUBKEY_LEN 33u
 
@@ -120,6 +116,10 @@ static inline void extract_prk(const uint8_t *ikm, uint8_t *prk_out) {
  * @param root_out          32-byte output buffer for the HKDF root.
  * @return true on success; false on any crypto error.
  */
+// hkdf_derive_root places cx_ecfp_256_private_key_t (~80 B) and cx_hmac_sha256_t (~112 B)
+// on the caller's stack frame.  This is safe because it is called after io_ui_process()
+// returns, at which point the NBGL call stack is fully unwound and stack headroom is
+// at its maximum for the APDU handler.
 static inline bool hkdf_derive_root(const uint8_t *app_name,
                                     uint8_t app_name_len,
                                     const uint8_t connected_pubkey[VAULT_COMPRESSED_PUBKEY_LEN],

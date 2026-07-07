@@ -9,7 +9,7 @@ The device derives the connected pubkey at `path` and returns the 32-byte root:
     root = HKDF-SHA256(ikm = privkey@m/73681862', salt = "derive-context-hash", info, 32)
 
 Expected roots are computed at runtime from the Speculos seed (conftest mnemonic) using
-only `bip32` + stdlib, so the tests are self-validating (no precomputed constants).
+only `bip_utils` + stdlib, so the tests are self-validating (no precomputed constants).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
 import pytest
-from bip32 import BIP32
+from bip_utils import Bip32KeyIndex, Bip32Slip10Secp256k1
 
 from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
@@ -45,7 +45,14 @@ _MNEMONIC = ("glory promote mansion idle axis finger extra february uncover one 
              "resource lawn turtle enact monster seven myth punch hobby comfort wild "
              "raise skin")
 _SEED = hashlib.pbkdf2_hmac("sha512", _MNEMONIC.encode("utf-8"), b"mnemonic", 2048)
-_BIP32 = BIP32.from_seed(_SEED)
+_BIP32_ROOT = Bip32Slip10Secp256k1.FromSeed(_SEED)
+
+
+def _bip32_derive(path: List[int]) -> Bip32Slip10Secp256k1:
+    node = _BIP32_ROOT
+    for idx in path:
+        node = node.ChildKey(Bip32KeyIndex(idx))
+    return node
 
 
 def _network_name(bitcoin_network: str) -> bytes:
@@ -58,8 +65,8 @@ def _connected_path(ct: int) -> List[int]:
 
 
 def _expected_root(app_name: bytes, path: List[int], context: bytes, bitcoin_network: str) -> bytes:
-    ikm = _BIP32.get_privkey_from_path(_HKDF_PATH)
-    pubkey = _BIP32.get_pubkey_from_path(path)  # 33-byte compressed
+    ikm = _bip32_derive(_HKDF_PATH).PrivateKey().Raw().ToBytes()
+    pubkey = _bip32_derive(path).PublicKey().RawCompressed().ToBytes()  # 33-byte compressed
     prk = hmac.new(b"derive-context-hash", ikm, hashlib.sha256).digest()
     info = (hashlib.sha256(app_name).digest()
             + hashlib.sha256(_network_name(bitcoin_network)).digest()
@@ -189,6 +196,9 @@ def test_invalidates_loaded_intent(client: "RaggerClient", navigator: Navigator,
         depositor_path=[HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0],
         keeper_count=1, challenger_count=1,
     )
+    # Must derive first — state machine requires HASH_DERIVED before APPROVE_VAULT_INTENT.
+    derive_context_hash(client, APP_NAME, _connected_path(ct), b"\xde\xad\xbe\xef",
+                        navigator, device)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[TEST_VALID_KEYS[0]],
                                   challenger_pks=[TEST_VALID_KEYS[1]])

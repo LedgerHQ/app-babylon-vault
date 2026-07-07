@@ -36,6 +36,11 @@ from .vault_client import (
     SW_DENY,
     SW_BAD_STATE,
     SW_INCORRECT_DATA,
+    CLA_VAULT,
+    INS_APPROVE_VAULT_INTENT,
+    P1_SCALARS,
+    P1_KEY_BATCH,
+    P2_UNUSED,
     derive_context_hash,
     approve_vault_intent_with_nav,
     sign_psbt_with_nav_and_compare,
@@ -104,9 +109,12 @@ _PEGIN_CSV_TIMELOCK   = 144
 _PAYOUT_TIMELOCK      = 200
 _HTLC_REFUND_TIMELOCK = 144
 _HTLC_VOUT            = 0
-# htlc_value must be in [vault_amount + depositor_claim_value,
-#                         vault_amount + depositor_claim_value + pegin_max_fee]
-_HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + 234_567  # 10_123_455
+# P2A anchor value in the v3 PegIn — must match PEGIN_P2A_ANCHOR_VALUE in vault_constants.h
+_PEGIN_P2A_ANCHOR_VALUE = 240
+
+# htlc_value must be in [vault_amount + depositor_claim_value + anchor,
+#                         vault_amount + depositor_claim_value + anchor + pegin_max_fee]
+_HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_P2A_ANCHOR_VALUE + 234_567
 
 # Single keeper and challenger for all tests (sorted ascending — key[0] < key[1])
 _TEST_KEEPER_PKS     = [TEST_VALID_KEYS[0]]
@@ -335,20 +343,26 @@ def _build_pegin_psbt(
     lh1 = _tapleaf_hash(leaf1)
     control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY + lh1
 
+    p2a_spk = bytes([0x51, 0x02, 0x4e, 0x73])
+
     tx = CTransaction()
-    tx.nVersion = 2
+    tx.nVersion = 3  # TRUC (BIP-431)
     tx.nLockTime = 0
     tx.vin = [CTxIn()]
     tx.vin[0].prevout = COutPoint(int.from_bytes(prepegin_txid, 'little'), htlc_vout)
     tx.vin[0].nSequence = 0xFFFFFFFE
-    tx.vout = [CTxOut(vault_amount, vault_spk), CTxOut(depositor_claim_value, claim_spk)]
+    tx.vout = [
+        CTxOut(vault_amount, vault_spk),
+        CTxOut(depositor_claim_value, claim_spk),
+        CTxOut(_PEGIN_P2A_ANCHOR_VALUE, p2a_spk),
+    ]
     tx.wit = CTxWitness()
 
     psbt = PSBT()
     psbt.version = 0
     psbt.tx = tx
     psbt.inputs = [PartiallySignedInput(0)]
-    psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0)]
+    psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0), PartiallySignedOutput(0)]
 
     psbt.inputs[0].witness_utxo = CTxOut(htlc_value, htlc_spk)
     psbt.inputs[0].tap_internal_key = VAULT_NUMS_XONLY
@@ -689,24 +703,29 @@ def test_sign_psbt_prepegin_no_state(
 
 def test_sign_psbt_prepegin_no_hashlock(
     client: "RaggerClient",
-    navigator: Navigator,
     bitcoin_network: str,
-    device,
 ) -> None:
-    """Pre-PegIn fails with SW_BAD_STATE when intent is loaded but no hashlock was derived."""
+    """APPROVE_VAULT_INTENT key-batch is rejected with SW_BAD_STATE when DERIVE_CONTEXT_HASH
+    was not called first.
+
+    The state machine requires HASH_DERIVED before INTENT_LOADED.  The firmware detects
+    this before showing the approval screen so no navigation is needed.  As a consequence,
+    it is now impossible to reach INTENT_LOADED with an all-zero htlc_hashlock.
+    """
     coin_type = 0 if bitcoin_network == "main" else 1
-    # Approve intent without calling derive_context_hash first → hashlock stays zero
     scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
-    approve_vault_intent_with_nav(
-        client, navigator, device,
-        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+    # P1=0x00 (scalars) succeeds — it does not enforce state.
+    client.transport_client.exchange(
+        cla=CLA_VAULT, ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_SCALARS, p2=P2_UNUSED, data=scalars_tlv,
     )
-
-    wallet = _standard_taproot_wallet(client, coin_type)
-    psbt = _build_prepegin_psbt(bytes([0x51, 0x20]) + bytes(32))
-
+    # P1=0x01 (key batch) fails — state is IDLE, not HASH_DERIVED.
     with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, wallet, None)
+        client.transport_client.exchange(
+            cla=CLA_VAULT, ins=INS_APPROVE_VAULT_INTENT,
+            p1=P1_KEY_BATCH, p2=P2_UNUSED,
+            data=_TEST_KEEPER_PKS[0] + _TEST_CHALLENGER_PKS[0],
+        )
     assert exc.value.status == SW_BAD_STATE
 
 
@@ -875,13 +894,13 @@ def test_sign_psbt_pegin_fee_too_high(
     bitcoin_network: str,
     device,
 ) -> None:
-    """PegIn fails when htlc_value - vault_amount - depositor_claim_value > pegin_max_fee."""
+    """PegIn fails when htlc_value - vault_amount - depositor_claim_value - anchor > pegin_max_fee."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
     hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
 
-    excessive_htlc = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_MAX_FEE + 1
+    excessive_htlc = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_P2A_ANCHOR_VALUE + _PEGIN_MAX_FEE + 1
     psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID, htlc_value=excessive_htlc)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
@@ -1212,17 +1231,18 @@ def _compute_pegin_txid(prepegin_txid: bytes,
                          depositor_claim_value: int,
                          claim_spk: bytes) -> bytes:
     """Double-SHA256 of the PegIn non-witness serialization (mirrors vault_compute_pegin_txid)."""
-    buf = struct.pack('<I', 2)      # version
+    buf = struct.pack('<I', 3)      # version (TRUC v3, BIP-431)
     buf += b'\x01'                  # input count
     buf += prepegin_txid            # prevout txid (raw bytes, LE as stored)
     buf += struct.pack('<I', htlc_vout)
     buf += b'\x00'                  # scriptSig empty
     buf += struct.pack('<I', 0xFFFFFFFE)  # sequence
-    buf += b'\x02'                  # output count
+    buf += b'\x03'                  # output count
     buf += struct.pack('<Q', vault_amount)
     buf += bytes([len(vault_utxo_spk)]) + vault_utxo_spk
     buf += struct.pack('<Q', depositor_claim_value)
     buf += bytes([len(claim_spk)]) + claim_spk
+    buf += struct.pack('<Q', _PEGIN_P2A_ANCHOR_VALUE) + b'\x04\x51\x02\x4e\x73'  # P2A anchor
     buf += struct.pack('<I', 0)     # locktime
     return hashlib.sha256(hashlib.sha256(buf).digest()).digest()
 
@@ -1719,22 +1739,27 @@ def _setup_signet_payout_state(
     claim_spk = _p2tr_from_single_leaf(_depositor_claim_leaf(dep_pk))
     lh1 = _tapleaf_hash(leaf1)
     control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY + lh1
-    htlc_value = _SIGNET_VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + 1_000  # fee within max
+    htlc_value = _SIGNET_VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_P2A_ANCHOR_VALUE + 1_000
+    p2a_spk = bytes([0x51, 0x02, 0x4e, 0x73])
 
     tx = CTransaction()
-    tx.nVersion = 2
+    tx.nVersion = 3  # TRUC (BIP-431)
     tx.nLockTime = 0
     tx.vin = [CTxIn()]
     tx.vin[0].prevout = COutPoint(int.from_bytes(_PREPEGIN_TXID, 'little'), _HTLC_VOUT)
     tx.vin[0].nSequence = 0xFFFFFFFE
-    tx.vout = [CTxOut(_SIGNET_VAULT_AMOUNT, vault_spk), CTxOut(_DEPOSITOR_CLAIM_VALUE, claim_spk)]
+    tx.vout = [
+        CTxOut(_SIGNET_VAULT_AMOUNT, vault_spk),
+        CTxOut(_DEPOSITOR_CLAIM_VALUE, claim_spk),
+        CTxOut(_PEGIN_P2A_ANCHOR_VALUE, p2a_spk),
+    ]
     tx.wit = CTxWitness()
 
     psbt = PSBT()
     psbt.version = 0
     psbt.tx = tx
     psbt.inputs = [PartiallySignedInput(0)]
-    psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0)]
+    psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0), PartiallySignedOutput(0)]
     psbt.inputs[0].witness_utxo = CTxOut(htlc_value, htlc_spk)
     psbt.inputs[0].tap_internal_key = VAULT_NUMS_XONLY
     psbt.inputs[0].tap_merkle_root = merkle_root

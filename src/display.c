@@ -43,38 +43,36 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
                                  uint8_t app_name_len,
                                  const uint8_t *context,
                                  size_t context_len) {
-    static const char hex_chars[] = "0123456789abcdef";
-
     // app_name_len <= 64, addr_str is 80 bytes — safe.
     char *const name_str = G_scratch.display_tx.addr_str;
     memcpy(name_str, app_name, app_name_len);
     name_str[app_name_len] = '\0';
 
-    // Spec §2.1 SHOULD: display context bytes.
-    // extra_str is TX_DISPLAY_AMOUNT_STR_SIZE = 28 bytes.
-    //   context_len <= 12 → up to 24 hex chars + NUL  (25 B, fits)
-    //   context_len >  12 → 20 hex chars + "..." + NUL (24 B, fits)
-    char *const ctx_str = G_scratch.display_tx.extra_str;
-    const size_t show = context_len > 12u ? 10u : context_len;
-    char *p = ctx_str;
-    for (size_t i = 0; i < show; i++) {
-        *p++ = hex_chars[(context[i] >> 4) & 0x0fu];
-        *p++ = hex_chars[context[i] & 0x0fu];
-    }
-    if (context_len > 12u) {
-        *p++ = '.';
-        *p++ = '.';
-        *p++ = '.';
+    // Compute SHA-256 of the full context and hex-encode into ctx_hash_str (64 chars + NUL).
+    // Displaying the digest rather than raw bytes ensures the full context is committed to
+    // regardless of its length, with no truncation risk (WYSIWYS).
+    uint8_t ctx_hash[VAULT_HASH256_LEN];
+    cx_hash_sha256(context, context_len, ctx_hash, VAULT_HASH256_LEN);
+    char *p = G_scratch.derive_ctx.ctx_hash_str;
+    for (size_t i = 0; i < VAULT_HASH256_LEN; i++) {
+        uint8_t hi = (ctx_hash[i] >> 4) & 0x0fu;
+        uint8_t lo = ctx_hash[i] & 0x0fu;
+        *p++ = (char)(hi < 10u ? '0' + hi : 'a' + hi - 10u);
+        *p++ = (char)(lo < 10u ? '0' + lo : 'a' + lo - 10u);
     }
     *p = '\0';
+    explicit_bzero(ctx_hash, sizeof(ctx_hash));
 
+    // Three fields: app name, BIP-32 path (so user can verify which key is bound),
+    // and SHA-256 of the full context (TX_DISPLAY_MAX_PAIRS = 4 ≥ 3).
     nbgl_layoutTagValue_t *const pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     pairs[0] = (nbgl_layoutTagValue_t) {.item = "App name", .value = name_str};
-    pairs[1] = (nbgl_layoutTagValue_t) {.item = "Context", .value = ctx_str};
+    pairs[1] = (nbgl_layoutTagValue_t) {.item = "Path",     .value = G_scratch.derive_ctx.path_str};
+    pairs[2] = (nbgl_layoutTagValue_t) {.item = "Context",  .value = G_scratch.derive_ctx.ctx_hash_str};
 
     nbgl_layoutTagValueList_t pair_list = {
         .nbMaxLinesForValue = 0,
-        .nbPairs = 2,
+        .nbPairs = 3,
         .pairs = pairs,
     };
 

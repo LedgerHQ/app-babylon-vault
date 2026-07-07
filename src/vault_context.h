@@ -8,12 +8,12 @@
 /**
  * @brief Session state machine states.
  *
- * Transition table:
+ * Transition table (DERIVE_CONTEXT_HASH is mandatory before APPROVE_VAULT_INTENT):
  *
  *   IDLE
  *     └─(DERIVE_CONTEXT_HASH complete)──► HASH_DERIVED   [root held, no intent yet]
  *           │
- *           └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED   [root preserved;
+ *           └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED   [root zeroed after
  *                 │                                htlc_hashlock + auth_anchor_hash computed]
  *                 ├─(Session 1: prepegin_txid == 0)─► INTENT_LOADED
  *                 │         └─(Pre-PegIn SIGN_PSBT)──► SESSION1_PREPEGIN_EXPECTED ──► INTENT_LOADED
@@ -52,8 +52,9 @@ typedef struct {
     /**
      * DERIVE_CONTEXT_HASH root (the 32-byte HKDF output returned to the host).
      * Set by DERIVE_CONTEXT_HASH, preserved across the APPROVE_VAULT_INTENT reset.
-     * Zeroed on any invalidation. The host expands it into the per-vault secrets;
-     * the device retains it only to recompute on-chain commitments at approve-time.
+     * Zeroed immediately after APPROVE_VAULT_INTENT derives both on-chain commitments
+     * (htlc_hashlock, auth_anchor_hash) from it — the raw root is not needed after that.
+     * Also zeroed on any invalidation.
      */
     uint8_t root[VAULT_HASH256_LEN];
 

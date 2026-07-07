@@ -12,6 +12,24 @@
 // Upper bound on the connected-pubkey derivation path depth (levels).
 #define MAX_DERIVATION_PATH_LEN 10u
 
+static void format_bip32_path(const uint32_t *path, uint8_t len, char *out, size_t out_size) {
+    if (out_size == 0) return;
+    size_t pos = 0;
+    out[pos++] = 'm';
+    for (uint8_t i = 0; i < len && pos + 2u < out_size; i++) {
+        out[pos++] = '/';
+        uint32_t idx = path[i] & 0x7FFFFFFFu;
+        bool hd = (path[i] >> 31) != 0u;
+        char tmp[11];
+        uint8_t tlen = 0;
+        do { tmp[tlen++] = (char)('0' + idx % 10u); idx /= 10u; } while (idx > 0u);
+        for (uint8_t j = tlen; j > 0u && pos < out_size - 1u; j--) out[pos++] = tmp[j - 1u];
+        if (hd && pos < out_size - 1u) out[pos++] = '\'';
+    }
+    if (pos < out_size) out[pos] = '\0';
+    else out[out_size - 1u] = '\0';
+}
+
 /* SW for BIP-32 / connected-pubkey derivation failure (mirrors approve handler). */
 #define SW_BIP32_FAIL ((uint16_t) 0x6F00)
 
@@ -76,15 +94,16 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
-    uint32_t path[MAX_DERIVATION_PATH_LEN];
+    uint32_t *const path = G_scratch.derive_ctx.path;
     for (uint8_t i = 0; i < path_len; i++) {
         path[i] = ((uint32_t) data[off] << 24) | ((uint32_t) data[off + 1] << 16) |
                   ((uint32_t) data[off + 2] << 8) | (uint32_t) data[off + 3];
         off += 4u;
     }
 
-    // context (the remainder) — must be non-empty and within the spec §2.1 limit
-    // (VAULT_CONTEXT_MAX_LEN).
+    // context (the remainder) — must be non-empty and within the spec §2.1 limit.
+    // VAULT_CONTEXT_MAX_LEN (1024) is unreachable via standard APDU (Lc ≤ 255);
+    // the check is retained for spec alignment and future extended-APDU support.
     const uint8_t *context = data + off;
     const size_t context_len = lc - off;
     if (context_len == 0u || context_len > VAULT_CONTEXT_MAX_LEN) {
@@ -92,38 +111,50 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
 
-    // Copy app_name out of the APDU buffer before the blocking display call.
-    // io_ui_process may observe async transport frames; a local copy is unconditionally safe.
-    uint8_t app_name_buf[VAULT_APP_NAME_MAX_LEN];
+    // Copy both app_name and context out of the APDU buffer before the blocking
+    // display call.  io_ui_process may observe async transport frames; copies into
+    // G_scratch.derive_ctx are unconditionally safe.  G_scratch was zeroed above.
+    // context_len <= lc <= 255 (single-APDU Lc bound), so context_buf[255] always fits.
+    uint8_t *const app_name_buf = G_scratch.derive_ctx.app_name_buf;
     memcpy(app_name_buf, app_name, app_name_len);
+    uint8_t *const context_buf = G_scratch.derive_ctx.context_buf;
+    memcpy(context_buf, context, context_len);
+
+    // Pre-format the display strings the approval screen will show.
+    G_scratch.derive_ctx.path_len = path_len;
+    format_bip32_path(path, path_len,
+                      G_scratch.derive_ctx.path_str,
+                      sizeof(G_scratch.derive_ctx.path_str));
 
     // Derive the 33-byte compressed connected public key at the host-supplied path.
-    uint8_t connected_pubkey[VAULT_COMPRESSED_PUBKEY_LEN];
+    // path[] and connected_pubkey[] live in G_scratch (not on the stack) so that the
+    // combined stack depth during the blocking display call stays within budget.
+    uint8_t *const connected_pubkey = G_scratch.derive_ctx.connected_pubkey;
     if (crypto_get_compressed_pubkey_at_path(path, path_len, connected_pubkey, NULL) != CX_OK) {
-        explicit_bzero(connected_pubkey, sizeof(connected_pubkey));
+        explicit_bzero(connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN);
         SEND_SW(dc, SW_BIP32_FAIL);
         return;
     }
 
     // Spec §2.1: user must approve before the root is derived and returned.
-    // context still points into cmd->data which is stable for the full handler
-    // invocation (no new APDU is processed while io_ui_process blocks).
     // NOTE: spec §2.1 also requires "requesting origin" in the dialog; that field
     // has no representation in the current APDU CData layout and cannot be shown
     // without a protocol extension.
-    if (!display_derive_context_hash(dc, app_name_buf, app_name_len, context, context_len)) {
-        explicit_bzero(connected_pubkey, sizeof(connected_pubkey));
+    if (!display_derive_context_hash(dc, app_name_buf, app_name_len, context_buf, context_len)) {
+        explicit_bzero(connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN);
         return;  // SW_DENY already sent
     }
 
-    // Compute and store the root using the local app_name copy.
     bool ok = hkdf_derive_root(app_name_buf,
                                app_name_len,
                                connected_pubkey,
-                               context,
+                               context_buf,
                                context_len,
                                G_vault_context.root);
-    explicit_bzero(connected_pubkey, sizeof(connected_pubkey));
+    explicit_bzero(connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN);
+    // context_buf is no longer needed after derivation; zero it promptly.
+    explicit_bzero(G_scratch.derive_ctx.context_buf,
+                   sizeof(G_scratch.derive_ctx.context_buf));
     if (!ok) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);

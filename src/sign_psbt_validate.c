@@ -900,7 +900,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     uint64_t amount;
     uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
 
-    if (!_read_output(dc, st->outputs_root, 2, 0, spk, &amount)) {
+    if (!_read_output(dc, st->outputs_root, 3, 0, spk, &amount)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -912,7 +912,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     }
 
     /* 2. Output 1: Depositor Claim scriptPubKey and amount */
-    if (!_read_output(dc, st->outputs_root, 2, 1, spk, &amount)) {
+    if (!_read_output(dc, st->outputs_root, 3, 1, spk, &amount)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -923,8 +923,38 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
         return false;
     }
 
-    /* 3. Fee: htlc_value >= vault_amount + depositor_claim_value, remainder <= pegin_max_fee */
-    uint64_t outputs_sum = intent->vault_amount + intent->depositor_claim_value;
+    /* 3. Output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, PEGIN_P2A_ANCHOR_VALUE sats)
+     * P2A script is 4 bytes — _read_output enforces 34-byte P2TR scripts, so read inline. */
+    {
+        merkleized_map_commitment_t anchor_map;
+        if (call_get_merkleized_map(dc, st->outputs_root, 3, 2, &anchor_map) < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t raw_amount[8];
+        if (8 != call_get_merkleized_map_value(dc, &anchor_map,
+                                               (uint8_t[]) {PSBT_OUT_AMOUNT}, 1,
+                                               raw_amount, 8)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (read_u64_le(raw_amount, 0) != PEGIN_P2A_ANCHOR_VALUE) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        static const uint8_t P2A_SCRIPT[] = {0x51u, 0x02u, 0x4Eu, 0x73u};
+        uint8_t p2a_buf[sizeof(P2A_SCRIPT)];
+        if ((int) sizeof(P2A_SCRIPT) != call_get_merkleized_map_value(
+                dc, &anchor_map, (uint8_t[]) {PSBT_OUT_SCRIPT}, 1,
+                p2a_buf, sizeof(P2A_SCRIPT)) ||
+            memcmp(p2a_buf, P2A_SCRIPT, sizeof(P2A_SCRIPT)) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <= pegin_max_fee */
+    uint64_t outputs_sum = intent->vault_amount + intent->depositor_claim_value + PEGIN_P2A_ANCHOR_VALUE;
     if (outputs_sum < intent->vault_amount || htlc_value < outputs_sum ||
         (htlc_value - outputs_sum) > intent->pegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -949,8 +979,8 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
-    /* 2. Exactly 1 input, 2 outputs */
-    if (st->n_inputs != 1 || st->n_outputs != 2) {
+    /* 2. Exactly 1 input, 3 outputs (Vault UTXO + Depositor Claim + P2A anchor) */
+    if (st->n_inputs != 1 || st->n_outputs != 3) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }

@@ -53,6 +53,10 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     if (preserve_root) {
         memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
         explicit_bzero(saved_root, sizeof(saved_root));
+        // Restore state to HASH_DERIVED so handle_key_batch can transition
+        // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
+        // because vault_context_invalidate() left state at IDLE.
+        G_vault_context.state = VAULT_STATE_HASH_DERIVED;
     }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
@@ -153,11 +157,18 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     /* Store the x-only depositor key so vault_build_* script builders can embed it. */
     memcpy(G_vault_intent.depositor_pk, depositor_compressed + 1, VAULT_XONLY_PUBKEY_LEN);
 
-    /* If a root was derived (DERIVE_CONTEXT_HASH ran before this call), compute the
-     * on-chain commitments now that htlc_vout is known: the per-vault HTLC hashlock
-     * and the Pre-PegIn auth-anchor. Both are expanded from the root per
-     * derive-vault-secrets, then SHA-256'd. A zero root means no prior derive — the
-     * commitments stay zero and Pre-PegIn/PegIn validation rejects (hashlock guard). */
+    /* Enforce DERIVE_CONTEXT_HASH ordering before showing the approval screen.
+     * The transition HASH_DERIVED → INTENT_LOADED would fail anyway, but checking here
+     * avoids presenting a screen whose approval will be immediately discarded. */
+    if (G_vault_context.state != VAULT_STATE_HASH_DERIVED) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+
+    /* Compute the on-chain commitments from the HKDF root now that htlc_vout is known.
+     * DERIVE_CONTEXT_HASH is required before this point (enforced by the state machine),
+     * so the root is always non-zero here. The defense-in-depth zero-check is retained. */
     const uint8_t zeros32[VAULT_HASH256_LEN] = {0};
     if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) != 0) {
         if (!vault_derive_hashlock_commitment(G_vault_context.root,
@@ -169,6 +180,9 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
             SEND_SW(dc, SW_BAD_STATE);
             return;
         }
+        // Root is no longer needed — both commitments are stored in G_vault_context.
+        // Zero it now rather than waiting for session end to minimise exposure window.
+        explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
     }
 
     /* Intent fully loaded — show approval screen before committing the transition. */
@@ -177,7 +191,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         vault_context_invalidate(&G_vault_context);
         return;
     }
-    if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_INTENT_LOADED)) {
+    if (!vault_context_transition(&G_vault_context, VAULT_STATE_HASH_DERIVED, VAULT_STATE_INTENT_LOADED)) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
