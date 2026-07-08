@@ -42,8 +42,9 @@ set(STUBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
 # stubs/ must come first to shadow SDK headers (os_utils.h, etc.)
 include_directories(${STUBS_DIR} ${SRC_DIR})
 
-# BIP44_COIN_TYPE must be provided; 1 = testnet (matches the test binary)
-add_compile_definitions(BIP44_COIN_TYPE=1)
+# BIP44_COIN_TYPE=1 = signet (matches the test binary); VAULT_TARGET_SIGNET required by
+# vault_constants.h to disambiguate signet from testnet3/4 at compile time.
+add_compile_definitions(BIP44_COIN_TYPE=1 VAULT_TARGET_SIGNET)
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 function(add_fuzz_target TARGET)
