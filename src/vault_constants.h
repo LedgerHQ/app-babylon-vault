@@ -70,8 +70,19 @@
 /** Maximum byte length of the appName field. */
 #define VAULT_APP_NAME_MAX_LEN 64u
 
-/** Maximum byte length of the context field (single-APDU Lc ≤ 255 is the practical limit). */
-#define VAULT_CONTEXT_MAX_LEN 1024u
+/** Maximum depth of a BIP-32 derivation path (number of levels). */
+#define VAULT_MAX_PATH_DEPTH 10u
+
+/** Compressed SEC1 public key length: 1-byte parity prefix + 32-byte x-coordinate. */
+#define VAULT_COMPRESSED_PUBKEY_LEN 33u
+
+/**
+ * Maximum byte length of a BIP-32 path string including NUL terminator.
+ * Worst case: "m/" + VAULT_MAX_PATH_DEPTH components of up to 11 chars
+ * ("2147483647'") separated by "/" + NUL = 2 + 10×11 + 9 + 1 = 122 bytes.
+ * Rounded up to 128 for alignment.
+ */
+#define VAULT_PATH_STR_SIZE 128u
 
 /* Timelock range bounds (block counts). */
 

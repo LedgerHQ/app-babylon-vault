@@ -394,8 +394,10 @@ def test_duplicate_tlv_tag(client: RaggerClient, bitcoin_network: str):
 # P1=0x01 key batch errors
 # ---------------------------------------------------------------------------
 
-def test_keys_out_of_order(client: RaggerClient, bitcoin_network: str):
+def test_keys_out_of_order(client: RaggerClient, navigator: Navigator,
+                           device: Device, bitcoin_network: str):
     """Keepers sent in descending lex order must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=2, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -404,8 +406,10 @@ def test_keys_out_of_order(client: RaggerClient, bitcoin_network: str):
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_extra_keys_beyond_count(client: RaggerClient, bitcoin_network: str):
+def test_extra_keys_beyond_count(client: RaggerClient, navigator: Navigator,
+                                 device: Device, bitcoin_network: str):
     """Sending more keys than keeper_count + challenger_count must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -423,8 +427,10 @@ def test_key_batch_not_multiple_of_32(client: RaggerClient, bitcoin_network: str
     assert exc.value.status == SW_WRONG_DATA_LENGTH
 
 
-def test_key_equals_vault_provider_pk(client: RaggerClient, bitcoin_network: str):
+def test_key_equals_vault_provider_pk(client: RaggerClient, navigator: Navigator,
+                                      device: Device, bitcoin_network: str):
     """A keeper key equal to vault_provider_pk must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -432,8 +438,10 @@ def test_key_equals_vault_provider_pk(client: RaggerClient, bitcoin_network: str
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_duplicate_key_across_groups(client: RaggerClient, bitcoin_network: str):
+def test_duplicate_key_across_groups(client: RaggerClient, navigator: Navigator,
+                                     device: Device, bitcoin_network: str):
     """A challenger key identical to a keeper key must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -454,8 +462,10 @@ def test_invalid_vault_provider_pk_rejected(client: RaggerClient, bitcoin_networ
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_invalid_ec_point_keeper_rejected(client: RaggerClient, bitcoin_network: str):
+def test_invalid_ec_point_keeper_rejected(client: RaggerClient, navigator: Navigator,
+                                          device: Device, bitcoin_network: str):
     """A keeper key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -464,8 +474,10 @@ def test_invalid_ec_point_keeper_rejected(client: RaggerClient, bitcoin_network:
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_invalid_ec_point_challenger_rejected(client: RaggerClient, bitcoin_network: str):
+def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: Navigator,
+                                              device: Device, bitcoin_network: str):
     """A challenger key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -473,7 +485,8 @@ def test_invalid_ec_point_challenger_rejected(client: RaggerClient, bitcoin_netw
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_depositor_key_collision_as_keeper(client: RaggerClient, bitcoin_network: str):
+def test_depositor_key_collision_as_keeper(client: RaggerClient, navigator: Navigator,
+                                           device: Device, bitcoin_network: str):
     """Keeper key equal to the device's depositor x-only key must return SW_INCORRECT_DATA.
 
     The firmware derives the depositor pubkey via crypto_get_compressed_pubkey_at_path
@@ -484,6 +497,7 @@ def test_depositor_key_collision_as_keeper(client: RaggerClient, bitcoin_network
     The depositor x-only values are pre-computed from the test mnemonic (conftest.py)
     at m/86'/coin_type'/0'/0/0 using BIP-32 key derivation.
     """
+    derive_for_intent(client, navigator, device, bitcoin_network)
     depositor_key = (TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main"
                      else TEST_DEPOSITOR_XONLY_TESTNET)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
@@ -495,12 +509,14 @@ def test_depositor_key_collision_as_keeper(client: RaggerClient, bitcoin_network
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_depositor_key_collision_as_challenger(client: RaggerClient, bitcoin_network: str):
+def test_depositor_key_collision_as_challenger(client: RaggerClient, navigator: Navigator,
+                                               device: Device, bitcoin_network: str):
     """Challenger key equal to the device's depositor x-only key must return SW_INCORRECT_DATA.
 
     Same as test_depositor_key_collision_as_keeper but exercises the challenger_pks[]
     branch of vault_check_depositor_uniqueness.
     """
+    derive_for_intent(client, navigator, device, bitcoin_network)
     depositor_key = (TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main"
                      else TEST_DEPOSITOR_XONLY_TESTNET)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)

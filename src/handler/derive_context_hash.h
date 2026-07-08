@@ -8,7 +8,7 @@
  * Single APDU — no user display.
  *
  * P1=0x00  CData: app_name_len(1B) | app_name(≤VAULT_APP_NAME_MAX_LEN B) | path_len(1B)
- *          | path(path_len×4B u32 BE) | context(remaining bytes, 1–VAULT_CONTEXT_MAX_LEN B).
+ *          | path(path_len×4B u32 BE) | context(remaining bytes, 1–255 B).
  *          Derives the 33-byte compressed connected pubkey at `path`, then
  *          root = HKDF-SHA-256(privkey@m/73681862', "derive-context-hash",
  *                 SHA256(app_name)||SHA256(canonicalNetworkName)||pubkey||context, 32).

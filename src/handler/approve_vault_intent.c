@@ -56,7 +56,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         // Restore state to HASH_DERIVED so handle_key_batch can transition
         // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
         // because vault_context_invalidate() left state at IDLE.
-        G_vault_context.state = VAULT_STATE_HASH_DERIVED;
+        vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED);
     }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
@@ -96,6 +96,16 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     if (cmd->lc == 0 || cmd->lc % VAULT_XONLY_PUBKEY_LEN != 0) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_WRONG_DATA_LENGTH);
+        return;
+    }
+
+    /* Enforce DERIVE_CONTEXT_HASH ordering on every batch, not just the last.
+     * Without this check, a host in the wrong state would receive SW_OK for all
+     * intermediate batches, getting implicit per-batch confirmation before the
+     * final batch rejects.  Placing the check here short-circuits that. */
+    if (G_vault_context.state != VAULT_STATE_HASH_DERIVED) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
         return;
     }
 
@@ -156,15 +166,6 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
 
     /* Store the x-only depositor key so vault_build_* script builders can embed it. */
     memcpy(G_vault_intent.depositor_pk, depositor_compressed + 1, VAULT_XONLY_PUBKEY_LEN);
-
-    /* Enforce DERIVE_CONTEXT_HASH ordering before showing the approval screen.
-     * The transition HASH_DERIVED → INTENT_LOADED would fail anyway, but checking here
-     * avoids presenting a screen whose approval will be immediately discarded. */
-    if (G_vault_context.state != VAULT_STATE_HASH_DERIVED) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_BAD_STATE);
-        return;
-    }
 
     /* Compute the on-chain commitments from the HKDF root now that htlc_vout is known.
      * DERIVE_CONTEXT_HASH is required before this point (enforced by the state machine),

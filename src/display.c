@@ -53,7 +53,8 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
     // regardless of its length, with no truncation risk (WYSIWYS).
     uint8_t ctx_hash[VAULT_HASH256_LEN];
     cx_hash_sha256(context, context_len, ctx_hash, VAULT_HASH256_LEN);
-    format_hex(ctx_hash, VAULT_HASH256_LEN,
+    format_hex(ctx_hash,
+               VAULT_HASH256_LEN,
                G_scratch.derive_ctx.ctx_hash_str,
                sizeof(G_scratch.derive_ctx.ctx_hash_str));
     explicit_bzero(ctx_hash, sizeof(ctx_hash));

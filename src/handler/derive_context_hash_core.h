@@ -26,9 +26,6 @@
 // BIP-32 path: m/73681862'  (0x80000000 | 73681862 = 0x84644BC6)
 #define VAULT_HKDF_PATH_INDEX (0x80000000u | 73681862u)
 
-// Compressed SEC1 public key length (0x02/0x03 prefix || x).
-#define VAULT_COMPRESSED_PUBKEY_LEN 33u
-
 // HKDF salt per spec (no null terminator counted)
 static const uint8_t HKDF_SALT[] = "derive-context-hash";
 #define HKDF_SALT_LEN ((uint32_t) (sizeof(HKDF_SALT) - 1u))

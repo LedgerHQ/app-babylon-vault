@@ -9,10 +9,6 @@
 
 #define P1_DERIVE 0x00
 
-// Upper bound on the connected-pubkey derivation path depth (levels).
-#define MAX_DERIVATION_PATH_LEN 10u
-
-
 /* SW for BIP-32 / connected-pubkey derivation failure (mirrors approve handler). */
 #define SW_BIP32_FAIL ((uint16_t) 0x6F00)
 
@@ -22,7 +18,7 @@
  * P1 = 0x00, CData:
  *   app_name_len (1 B) | app_name (≤VAULT_APP_NAME_MAX_LEN B)
  *   path_len     (1 B) | path (path_len × 4 B, u32 big-endian)
- *   context      (remaining bytes, non-empty, ≤VAULT_CONTEXT_MAX_LEN B per spec §2.1)
+ *   context      (remaining bytes, non-empty, ≤255 B)
  *
  * The device derives the 33-byte compressed connected pubkey at `path`, computes
  *   root = HKDF-SHA256(privkey@m/73681862', "derive-context-hash",
@@ -73,7 +69,7 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
     uint8_t path_len = data[off++];
-    if (path_len == 0u || path_len > MAX_DERIVATION_PATH_LEN || off + (size_t) path_len * 4u > lc) {
+    if (path_len == 0u || path_len > VAULT_MAX_PATH_DEPTH || off + (size_t) path_len * 4u > lc) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
@@ -84,12 +80,9 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         off += 4u;
     }
 
-    // context (the remainder) — must be non-empty and within the spec §2.1 limit.
-    // VAULT_CONTEXT_MAX_LEN (1024) is unreachable via standard APDU (Lc ≤ 255);
-    // the check is retained for spec alignment and future extended-APDU support.
     const uint8_t *context = data + off;
     const size_t context_len = lc - off;
-    if (context_len == 0u || context_len > VAULT_CONTEXT_MAX_LEN) {
+    if (context_len == 0u) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
@@ -107,7 +100,8 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
     G_scratch.derive_ctx.path_len = path_len;
     G_scratch.derive_ctx.path_str[0] = 'm';
     G_scratch.derive_ctx.path_str[1] = '/';
-    bip32_path_format(path, path_len,
+    bip32_path_format(path,
+                      path_len,
                       G_scratch.derive_ctx.path_str + 2,
                       sizeof(G_scratch.derive_ctx.path_str) - 2);
 

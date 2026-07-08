@@ -9,8 +9,9 @@
 /**
  * @brief DERIVE_CONTEXT_HASH approval screen.
  *
- * Shows appName and a truncated hex preview of the context bytes, then asks
- * the user to confirm before the device computes and returns the HKDF root.
+ * Shows appName, the BIP-32 derivation path, and SHA-256(context) as a 64-char
+ * hex digest, then asks the user to confirm before the device computes and
+ * returns the HKDF root.
  *
  * @param app_name      ASCII appName bytes (validated [a-z0-9\-], no NUL).
  * @param app_name_len  Length (1–64).
