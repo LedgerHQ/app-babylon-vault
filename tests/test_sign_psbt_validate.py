@@ -318,7 +318,7 @@ def _build_pegin_psbt(
     """Build a correct PegIn PSBTv0.
 
     Input 0 spends the HTLC UTXO (previous txid = prepegin_txid, vout = htlc_vout).
-    Output 0 = Vault UTXO, output 1 = Depositor Claim UTXO.
+    Output 0 = Vault UTXO, output 1 = Depositor Claim UTXO, output 2 = P2A anchor.
     TAP_LEAF_SCRIPT carries Leaf 0 (the hashlock leaf) keyed by the control block
     for spending via Leaf 0.
 
@@ -1124,7 +1124,7 @@ def test_sign_psbt_pegin_extra_output(
     bitcoin_network: str,
     device,
 ) -> None:
-    """PegIn fails when the PSBT has 3 outputs instead of exactly 2."""
+    """PegIn fails when the PSBT has 4 outputs instead of exactly 3."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 

@@ -90,8 +90,8 @@ typedef struct {
      */
     uint8_t vault_provider_pk[VAULT_XONLY_PUBKEY_LEN];
 
-    /** Output index of the HTLC in the Pre-PegIn transaction. */
-    uint32_t htlc_vout;
+    /** Output index of the HTLC in the Pre-PegIn transaction. Protocol u8. */
+    uint8_t htlc_vout;
 
     /** Pre-PegIn transaction ID (little-endian). */
     uint8_t prepegin_txid[VAULT_HASH256_LEN];

@@ -123,7 +123,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_HTLC_VOUT:
                 if (field_len != 1) return VAULT_TLV_ERR_WRONG_LENGTH;
-                out->htlc_vout = (uint32_t) v[0];
+                out->htlc_vout = v[0];
                 break;
 
             case TAG_HTLC_REFUND_TIMELOCK: {

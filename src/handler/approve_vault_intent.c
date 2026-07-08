@@ -179,7 +179,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     const uint8_t zeros32[VAULT_HASH256_LEN] = {0};
     if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) != 0) {
         if (!vault_derive_hashlock_commitment(G_vault_context.root,
-                                              (uint8_t) G_vault_intent.htlc_vout,
+                                              G_vault_intent.htlc_vout,
                                               G_vault_context.htlc_hashlock) ||
             !vault_derive_auth_anchor_commitment(G_vault_context.root,
                                                  G_vault_context.auth_anchor_hash)) {
