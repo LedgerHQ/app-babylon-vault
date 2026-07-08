@@ -204,8 +204,14 @@ void cx_hkdf_extract(cx_md_t        hash_id,
 }
 
 // ---------------------------------------------------------------------------
-// BIP-32 mock: always returns 0x42-filled key regardless of path
+// BIP-32 mock: returns g_mock_bip32_key (default 0x42-filled) regardless of path.
+// Tests may set g_mock_bip32_key to pin a specific IKM (e.g. a published vector).
 // ---------------------------------------------------------------------------
+
+// When g_mock_bip32_key_set is false the mock returns the default 0x42-filled key;
+// a test sets g_mock_bip32_key[] and the flag to pin a specific IKM.
+uint8_t g_mock_bip32_key[32];
+bool    g_mock_bip32_key_set = false;
 
 cx_err_t bip32_derive_init_privkey_256(cx_curve_t                 curve,
                                         const uint32_t            *path,
@@ -215,7 +221,11 @@ cx_err_t bip32_derive_init_privkey_256(cx_curve_t                 curve,
     (void)curve; (void)path; (void)path_len; (void)chain_code;
     privkey->curve = curve;
     privkey->d_len = 32u;
-    memset(privkey->d, 0x42, 32u);
+    if (g_mock_bip32_key_set) {
+        memcpy(privkey->d, g_mock_bip32_key, 32u);
+    } else {
+        memset(privkey->d, 0x42, 32u);
+    }
     return CX_OK;
 }
 

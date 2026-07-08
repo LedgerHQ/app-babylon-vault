@@ -1,5 +1,6 @@
 #include "vault_script.h"
 #include "vault_intent.h"
+#include "vault_constants.h"
 #include "globals.h"
 
 #include <stdbool.h>
@@ -22,10 +23,11 @@
 #define VARINT_PREFIX_8BYTE 0xFFu
 
 /* PegIn transaction serialization constants */
-#define PEGIN_TX_VERSION  2u          /* version 2 required for CSV (BIP-68) */
+#define PEGIN_TX_VERSION  3u          /* TRUC (BIP-431) v3; satisfies CSV (BIP-68) v>=2 */
 #define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
 #define PEGIN_TX_LOCKTIME 0u
-#define PEGIN_TX_SIZE     137u /* exact non-witness serialization length */
+/* 4(ver) + 1(in_cnt) + 41(input) + 1(out_cnt) + 43(vault) + 43(claim) + 13(P2A) + 4(lock) */
+#define PEGIN_TX_SIZE 150u /* exact non-witness serialization length */
 
 /* Forward-declare the three btcext taproot functions vault_script.c uses.
  * On device these are implemented in bitcoin_app_base/src/crypto.c and
@@ -611,12 +613,13 @@ bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
  * Computes the SegWit txid of the PegIn transaction (double-SHA256 of the
  * non-witness serialization):
  *
- *   version=2  |  1 input: prepegin_txid:htlc_vout seq=0xFFFFFFFE
- *   2 outputs: Vault UTXO (vault_amount) + Depositor Claim (depositor_claim_value)
+ *   version=3  |  1 input: prepegin_txid:htlc_vout seq=0xFFFFFFFE
+ *   3 outputs: Vault UTXO (vault_amount) + Depositor Claim (depositor_claim_value)
+ *              + P2A anchor (PEGIN_P2A_ANCHOR_VALUE, script 0x51024e73)
  *   locktime=0
  *
- * Both output scriptPubKeys are P2TR (34 bytes) reconstructed from the intent.
- * The serialization is exactly 137 bytes (no segwit marker / witness data).
+ * The first two scriptPubKeys are P2TR (34 bytes) reconstructed from the intent.
+ * The serialization is exactly 150 bytes (no segwit marker / witness data).
  * ----------------------------------------------------------------------- */
 
 bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]) {
@@ -654,8 +657,8 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     tx[off++] = (uint8_t) (PEGIN_TX_SEQUENCE >> 16);
     tx[off++] = (uint8_t) (PEGIN_TX_SEQUENCE >> 24);
 
-    /* output count: 2 */
-    tx[off++] = 2u;
+    /* output count: 3 */
+    tx[off++] = 3u;
     /* output 0: Vault UTXO */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->vault_amount >> (i * 8));
     tx[off++] = (uint8_t) sizeof(vault_spk);
@@ -666,6 +669,13 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     tx[off++] = (uint8_t) sizeof(claim_spk);
     memcpy(tx + off, claim_spk, sizeof(claim_spk));
     off += sizeof(claim_spk);
+    /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
+    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (PEGIN_P2A_ANCHOR_VALUE >> (i * 8));
+    tx[off++] = 4u; /* script length */
+    tx[off++] = 0x51u;
+    tx[off++] = 0x02u;
+    tx[off++] = 0x4Eu;
+    tx[off++] = 0x73u;
 
     /* locktime (LE) */
     tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME);

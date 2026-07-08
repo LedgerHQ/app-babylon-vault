@@ -1,6 +1,7 @@
 #include "display.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "../bitcoin_app_base/src/ui/display.h"
 #include "../bitcoin_app_base/src/ui/menu.h"
@@ -23,6 +24,70 @@ _Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= MAX_AMOUNT_LENGTH + 1,
                "TX_DISPLAY_AMOUNT_STR_SIZE too small; update globals.h");
 _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
                "TX_DISPLAY_ADDR_STR_SIZE too small; update globals.h");
+
+// ---------------------------------------------------------------------------
+// DERIVE_CONTEXT_HASH approval screen
+// ---------------------------------------------------------------------------
+
+// Separate rejection callback so TYPE_OPERATION reviews show STATUS_TYPE_OPERATION_REJECTED
+// rather than STATUS_TYPE_TRANSACTION_REJECTED (which review_choice emits).
+static void derive_context_hash_choice(bool approved) {
+    set_ux_flow_response(approved);
+    nbgl_useCaseReviewStatus(
+        approved ? STATUS_TYPE_OPERATION_SIGNED : STATUS_TYPE_OPERATION_REJECTED,
+        ui_menu_main);
+}
+
+bool display_derive_context_hash(dispatcher_context_t *dc,
+                                 const uint8_t *app_name,
+                                 uint8_t app_name_len,
+                                 const uint8_t *context,
+                                 size_t context_len) {
+    // app_name_len <= 64, addr_str is 80 bytes — safe.
+    char *const name_str = G_scratch.display_tx.addr_str;
+    memcpy(name_str, app_name, app_name_len);
+    name_str[app_name_len] = '\0';
+
+    // Compute SHA-256 of the full context and hex-encode into ctx_hash_str (64 chars + NUL).
+    // Displaying the digest rather than raw bytes ensures the full context is committed to
+    // regardless of its length, with no truncation risk (WYSIWYS).
+    uint8_t ctx_hash[VAULT_HASH256_LEN];
+    cx_hash_sha256(context, context_len, ctx_hash, VAULT_HASH256_LEN);
+    format_hex(ctx_hash,
+               VAULT_HASH256_LEN,
+               G_scratch.derive_ctx.ctx_hash_str,
+               sizeof(G_scratch.derive_ctx.ctx_hash_str));
+    explicit_bzero(ctx_hash, sizeof(ctx_hash));
+
+    // Three fields: app name, BIP-32 path (so user can verify which key is bound),
+    // and SHA-256 of the full context (TX_DISPLAY_MAX_PAIRS = 4 ≥ 3).
+    nbgl_layoutTagValue_t *const pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    pairs[0] = (nbgl_layoutTagValue_t) {.item = "App name", .value = name_str};
+    pairs[1] = (nbgl_layoutTagValue_t) {.item = "Path", .value = G_scratch.derive_ctx.path_str};
+    pairs[2] =
+        (nbgl_layoutTagValue_t) {.item = "Context", .value = G_scratch.derive_ctx.ctx_hash_str};
+
+    nbgl_layoutTagValueList_t pair_list = {
+        .nbMaxLinesForValue = 0,
+        .nbPairs = 3,
+        .pairs = pairs,
+    };
+
+    nbgl_useCaseReview(TYPE_OPERATION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Derive context hash",
+                       NULL,
+                       "Allow derivation?",
+                       derive_context_hash_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
 
 bool display_transaction(dispatcher_context_t *dc,
                          int64_t value_spent,

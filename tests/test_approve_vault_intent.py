@@ -26,14 +26,12 @@ from ragger.navigator import Navigator
 from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
-    derive_context_hash,
+    derive_for_intent,
+    depositor_path,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
-    INS_DERIVE_CONTEXT_HASH,
     P1_SCALARS,
     P1_KEY_BATCH,
-    P1_INITIAL,
-    P1_CONTINUE,
     P2_UNUSED,
     SW_INCORRECT_DATA,
     SW_WRONG_DATA_LENGTH,
@@ -59,8 +57,6 @@ SCREENSHOT_PATH = Path(__file__).parent.resolve()
 # Test fixtures and helpers
 # ---------------------------------------------------------------------------
 
-HARDENED = 0x80000000
-
 VP_KEY = TEST_VP_KEY
 
 # Pre-PegIn txid placeholder
@@ -76,11 +72,6 @@ KEY_D = TEST_VALID_KEYS[3]
 
 def _coin_type(network: str) -> int:
     return 0 if network == "main" else 1
-
-
-def _depositor_path(coin_type: int) -> list:
-    """BIP-86 path m/86'/coin_type'/0'/0/0."""
-    return [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]
 
 
 def _make_scalars(network: str, **overrides) -> bytes:
@@ -99,7 +90,7 @@ def _make_scalars(network: str, **overrides) -> bytes:
         prepegin_txid=TXID,
         htlc_vout=0,
         htlc_refund_timelock=144,
-        depositor_path=_depositor_path(ct),
+        depositor_path=depositor_path(ct),
         keeper_count=1,
         challenger_count=1,
     )
@@ -125,6 +116,7 @@ def _raw_exchange(client, p1: int, data: bytes):
 def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigator,
                                        device: Device, bitcoin_network: str):
     """Load a minimal intent (1 keeper, 1 challenger) end-to-end → SW_OK."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
@@ -136,6 +128,7 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigato
 def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
                                     device: Device, bitcoin_network: str):
     """4 keepers + 4 challengers forces two P1=0x01 batches (7+1 keys)."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     keepers     = TEST_VALID_KEYS[0:4]
     challengers = TEST_VALID_KEYS[4:8]
     scalars = _make_scalars(bitcoin_network, keeper_count=4, challenger_count=4)
@@ -230,6 +223,7 @@ def test_max_32_keepers_32_challengers(client: RaggerClient, navigator: Navigato
     between wait_for_screen_change() and compare_screen_with_text(), causing the last
     content screenshot (last challenger) to be skipped on flex/apex_p.
     """
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=32, challenger_count=32)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=_MAX_KEEPERS,
@@ -244,12 +238,15 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
     """Loading a second intent while one is active must succeed (session reset)."""
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     # First load — approve the screen
+    derive_for_intent(client, navigator, device, bitcoin_network)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/reload_1_" + bitcoin_network,
                                   n_swipes=vault_intent_1k1c_steps(device))
-    # Second load — handler invalidates the first session and shows the screen again
+    # Second load — derive first to reach HASH_DERIVED, then handler invalidates the
+    # first session and shows the screen again
+    derive_for_intent(client, navigator, device, bitcoin_network)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   path=SCREENSHOT_PATH,
@@ -259,19 +256,18 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
 
 def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, navigator: Navigator,
                                                           device: Device, bitcoin_network: str):
-    """Session 2 setup: DERIVE_CONTEXT_HASH (multi-chunk) followed by APPROVE_VAULT_INTENT
+    """Session 2 setup: DERIVE_CONTEXT_HASH (single APDU) followed by APPROVE_VAULT_INTENT
     must complete without error and leave the session in INTENT_LOADED.
 
-    This exercises the HASH_DERIVED → (invalidate+restore) → INTENT_LOADED path introduced
-    in approve_vault_intent.c::handle_scalar_payload.  The preimage preservation cannot be
-    confirmed externally until RELEASE_CONTEXT_SECRET is implemented; until then we verify
-    that the full sequence is accepted and the resulting state is INTENT_LOADED.
+    This exercises the HASH_DERIVED → (invalidate+restore) → INTENT_LOADED path in
+    approve_vault_intent.c::handle_scalar_payload, where the derived root is preserved
+    across the reset.  The device never returns the root again (the host already holds it
+    from DERIVE_CONTEXT_HASH), so we verify externally only that the full sequence is
+    accepted and the resulting state is INTENT_LOADED.
     """
-    # Step 1 — derive with a context that forces two P1=0x01 chunks (>255 B) so the
-    # multi-chunk completion path in handle_context_chunk is exercised.
-    context = b"A" * 300  # 300 B → two chunks: 255 B + 45 B
-    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=context)
-    assert len(hashlock) == 32
+    # Step 1 — DERIVE_CONTEXT_HASH (single APDU) stores the root and reaches HASH_DERIVED.
+    root = derive_for_intent(client, navigator, device, bitcoin_network)
+    assert len(root) == 32
 
     # Step 2 — APPROVE_VAULT_INTENT must accept the HASH_DERIVED state and succeed.
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
@@ -294,6 +290,7 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
 
     Replaces the skipped test in test_derive_context_hash.py.
     """
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
@@ -302,8 +299,8 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
                                   n_swipes=vault_intent_1k1c_steps(device))
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
-    hashlock = derive_context_hash(client, app_name=b"BabylonVault", context=b"")
-    assert len(hashlock) == 32
+    root = derive_for_intent(client, navigator, device, bitcoin_network)
+    assert len(root) == 32
 
     # State is now IDLE — P1=0x01 without prior P1=0x00 must fail.
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -339,7 +336,7 @@ def test_wrong_structure_type(client: RaggerClient, bitcoin_network: str):
         depositor_claim_value=10_000, base_fee_rate=10, pegin_max_fee=50_000,
         pegin_csv_timelock=100, payout_timelock=200,
         prepegin_txid=TXID, htlc_vout=0, htlc_refund_timelock=144,
-        depositor_path=_depositor_path(ct),
+        depositor_path=depositor_path(ct),
         keeper_count=1, challenger_count=1,
     ).replace(
         bytes([TAG_STRUCTURE_TYPE, 1, VAULT_STRUCTURE_TYPE]),
@@ -356,7 +353,7 @@ def test_wrong_coin_type(client: RaggerClient, bitcoin_network: str):
     scalars = _make_scalars(
         bitcoin_network,
         coin_type=wrong_ct,
-        depositor_path=_depositor_path(wrong_ct),
+        depositor_path=depositor_path(wrong_ct),
     )
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, scalars)
@@ -397,8 +394,10 @@ def test_duplicate_tlv_tag(client: RaggerClient, bitcoin_network: str):
 # P1=0x01 key batch errors
 # ---------------------------------------------------------------------------
 
-def test_keys_out_of_order(client: RaggerClient, bitcoin_network: str):
+def test_keys_out_of_order(client: RaggerClient, navigator: Navigator,
+                           device: Device, bitcoin_network: str):
     """Keepers sent in descending lex order must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=2, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -407,8 +406,10 @@ def test_keys_out_of_order(client: RaggerClient, bitcoin_network: str):
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_extra_keys_beyond_count(client: RaggerClient, bitcoin_network: str):
+def test_extra_keys_beyond_count(client: RaggerClient, navigator: Navigator,
+                                 device: Device, bitcoin_network: str):
     """Sending more keys than keeper_count + challenger_count must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -426,8 +427,10 @@ def test_key_batch_not_multiple_of_32(client: RaggerClient, bitcoin_network: str
     assert exc.value.status == SW_WRONG_DATA_LENGTH
 
 
-def test_key_equals_vault_provider_pk(client: RaggerClient, bitcoin_network: str):
+def test_key_equals_vault_provider_pk(client: RaggerClient, navigator: Navigator,
+                                      device: Device, bitcoin_network: str):
     """A keeper key equal to vault_provider_pk must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -435,8 +438,10 @@ def test_key_equals_vault_provider_pk(client: RaggerClient, bitcoin_network: str
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_duplicate_key_across_groups(client: RaggerClient, bitcoin_network: str):
+def test_duplicate_key_across_groups(client: RaggerClient, navigator: Navigator,
+                                     device: Device, bitcoin_network: str):
     """A challenger key identical to a keeper key must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -457,8 +462,10 @@ def test_invalid_vault_provider_pk_rejected(client: RaggerClient, bitcoin_networ
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_invalid_ec_point_keeper_rejected(client: RaggerClient, bitcoin_network: str):
+def test_invalid_ec_point_keeper_rejected(client: RaggerClient, navigator: Navigator,
+                                          device: Device, bitcoin_network: str):
     """A keeper key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -467,8 +474,10 @@ def test_invalid_ec_point_keeper_rejected(client: RaggerClient, bitcoin_network:
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_invalid_ec_point_challenger_rejected(client: RaggerClient, bitcoin_network: str):
+def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: Navigator,
+                                              device: Device, bitcoin_network: str):
     """A challenger key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -476,7 +485,8 @@ def test_invalid_ec_point_challenger_rejected(client: RaggerClient, bitcoin_netw
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_depositor_key_collision_as_keeper(client: RaggerClient, bitcoin_network: str):
+def test_depositor_key_collision_as_keeper(client: RaggerClient, navigator: Navigator,
+                                           device: Device, bitcoin_network: str):
     """Keeper key equal to the device's depositor x-only key must return SW_INCORRECT_DATA.
 
     The firmware derives the depositor pubkey via crypto_get_compressed_pubkey_at_path
@@ -487,6 +497,7 @@ def test_depositor_key_collision_as_keeper(client: RaggerClient, bitcoin_network
     The depositor x-only values are pre-computed from the test mnemonic (conftest.py)
     at m/86'/coin_type'/0'/0/0 using BIP-32 key derivation.
     """
+    derive_for_intent(client, navigator, device, bitcoin_network)
     depositor_key = (TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main"
                      else TEST_DEPOSITOR_XONLY_TESTNET)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
@@ -498,12 +509,14 @@ def test_depositor_key_collision_as_keeper(client: RaggerClient, bitcoin_network
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_depositor_key_collision_as_challenger(client: RaggerClient, bitcoin_network: str):
+def test_depositor_key_collision_as_challenger(client: RaggerClient, navigator: Navigator,
+                                               device: Device, bitcoin_network: str):
     """Challenger key equal to the device's depositor x-only key must return SW_INCORRECT_DATA.
 
     Same as test_depositor_key_collision_as_keeper but exercises the challenger_pks[]
     branch of vault_check_depositor_uniqueness.
     """
+    derive_for_intent(client, navigator, device, bitcoin_network)
     depositor_key = (TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main"
                      else TEST_DEPOSITOR_XONLY_TESTNET)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
@@ -516,43 +529,11 @@ def test_depositor_key_collision_as_challenger(client: RaggerClient, bitcoin_net
 
 
 # ---------------------------------------------------------------------------
-# Streaming state isolation
+# Session state isolation
 # ---------------------------------------------------------------------------
 
-def test_approve_p1_scalars_clears_hkdf_stream(client: RaggerClient, bitcoin_network: str):
-    """APPROVE_VAULT_INTENT P1=0x00 must clear an in-flight DERIVE_CONTEXT_HASH stream.
-
-    Before the fix, vault_context_invalidate() did not touch G_hkdf_stream, so
-    G_hkdf_stream.active remained true after the approve scalar payload was processed.
-    A subsequent DERIVE_CONTEXT_HASH P1=0x01 would then pass its sole active-check
-    gate and feed adversary-controlled bytes into the HKDF.
-
-    After the fix, the approve handler zeroes G_hkdf_stream, so the continuation
-    must be rejected with SW_BAD_STATE.
-    """
-    app_name = b"BabylonVault"
-    # Start a DERIVE_CONTEXT_HASH stream (declare 10 bytes of context, send none).
-    # This sets G_hkdf_stream.active = true and leaves the stream incomplete.
-    initial = bytes([len(app_name)]) + app_name + (10).to_bytes(2, "big")
-    client.transport_client.exchange(
-        cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-        p1=P1_INITIAL, p2=P2_UNUSED, data=initial,
-    )
-
-    # Send APPROVE_VAULT_INTENT P1=0x00 — must clear G_hkdf_stream.
-    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    _raw_exchange(client, P1_SCALARS, scalars)
-
-    # DERIVE_CONTEXT_HASH P1=0x01 must now be rejected because active == false.
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(
-            cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-            p1=P1_CONTINUE, p2=P2_UNUSED, data=b"A" * 10,
-        )
-    assert exc.value.status == SW_BAD_STATE
-
-
-def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_network: str):
+def test_derive_initial_clears_scalars_loaded(client: RaggerClient, navigator: Navigator,
+                                               device: Device, bitcoin_network: str):
     """DERIVE_CONTEXT_HASH P1=0x00 must clear G_approve_intent_state even when state is IDLE.
 
     Before the fix, handle_initial_chunk only called vault_context_invalidate() when
@@ -568,7 +549,7 @@ def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_netw
     _raw_exchange(client, P1_SCALARS, scalars)
 
     # Inject DERIVE_CONTEXT_HASH P1=0x00 — must clear G_approve_intent_state.
-    derive_context_hash(client, app_name=b"BabylonVault", context=b"")
+    derive_for_intent(client, navigator, device, bitcoin_network)
 
     # APPROVE_VAULT_INTENT P1=0x01 must now fail because scalars_loaded == false.
     with pytest.raises(ExceptionRAPDU) as exc:

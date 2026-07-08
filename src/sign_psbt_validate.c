@@ -256,13 +256,42 @@ static bool _validate_display_prepegin(
         return false;
     }
 
-    /* 11. All outputs other than htlc_vout must be BIP-86 change (internal) */
+    /* 11. Every non-HTLC output must be either BIP-86 change (internal) or the single
+     * shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>". The OP_RETURN
+     * carries the auth-anchor commitment (derive-vault-secrets); the device binds it to
+     * the value expanded from the derived root so a host cannot substitute it.
+     *
+     * The expected OP_RETURN scriptPubKey is 0x6A 0x20 || auth_anchor_hash (34 bytes),
+     * which is exactly VAULT_P2TR_SCRIPTPUBKEY_LEN — so _read_output reads it directly. */
+    uint8_t expected_anchor_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    expected_anchor_spk[0] = 0x6A;  // OP_RETURN
+    expected_anchor_spk[1] = 0x20;  // OP_PUSHBYTES_32
+    memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
+
+    bool anchor_found = false;
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         if (i == intent->htlc_vout) continue;
-        if (!bitvector_get(internal_outputs, i)) {
+        if (bitvector_get(internal_outputs, i)) continue;  // BIP-86 change
+
+        /* Non-internal output: the only one allowed is the auth-anchor OP_RETURN, and it
+         * MUST carry zero value. The OP_RETURN is provably unspendable, so any value
+         * assigned to it is burned; since neither the OP_RETURN nor the change is shown
+         * on the approval screen, a non-zero value would let a malicious host silently
+         * burn the depositor's own change (WYSIWYS violation). Require value == 0. */
+        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t out_value;
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, i, out_spk, &out_value) ||
+            anchor_found || out_value != 0 ||
+            memcmp(out_spk, expected_anchor_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        anchor_found = true;
+    }
+    if (!anchor_found) {
+        /* The shared auth-anchor OP_RETURN is mandatory on the Pre-PegIn. */
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
     }
 
     /* 12. Fee */
@@ -871,7 +900,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     uint64_t amount;
     uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
 
-    if (!_read_output(dc, st->outputs_root, 2, 0, spk, &amount)) {
+    if (!_read_output(dc, st->outputs_root, 3, 0, spk, &amount)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -883,7 +912,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     }
 
     /* 2. Output 1: Depositor Claim scriptPubKey and amount */
-    if (!_read_output(dc, st->outputs_root, 2, 1, spk, &amount)) {
+    if (!_read_output(dc, st->outputs_root, 3, 1, spk, &amount)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -894,8 +923,46 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
         return false;
     }
 
-    /* 3. Fee: htlc_value >= vault_amount + depositor_claim_value, remainder <= pegin_max_fee */
-    uint64_t outputs_sum = intent->vault_amount + intent->depositor_claim_value;
+    /* 3. Output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, PEGIN_P2A_ANCHOR_VALUE sats)
+     * P2A script is 4 bytes — _read_output enforces 34-byte P2TR scripts, so read inline. */
+    {
+        merkleized_map_commitment_t anchor_map;
+        if (call_get_merkleized_map(dc, st->outputs_root, 3, 2, &anchor_map) < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t raw_amount[8];
+        if (8 != call_get_merkleized_map_value(dc,
+                                               &anchor_map,
+                                               (uint8_t[]) {PSBT_OUT_AMOUNT},
+                                               1,
+                                               raw_amount,
+                                               8)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (read_u64_le(raw_amount, 0) != PEGIN_P2A_ANCHOR_VALUE) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        static const uint8_t P2A_SCRIPT[] = {0x51u, 0x02u, 0x4Eu, 0x73u};
+        uint8_t p2a_buf[sizeof(P2A_SCRIPT)];
+        if ((int) sizeof(P2A_SCRIPT) != call_get_merkleized_map_value(dc,
+                                                                      &anchor_map,
+                                                                      (uint8_t[]) {PSBT_OUT_SCRIPT},
+                                                                      1,
+                                                                      p2a_buf,
+                                                                      sizeof(P2A_SCRIPT)) ||
+            memcmp(p2a_buf, P2A_SCRIPT, sizeof(P2A_SCRIPT)) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <=
+     * pegin_max_fee */
+    uint64_t outputs_sum =
+        intent->vault_amount + intent->depositor_claim_value + PEGIN_P2A_ANCHOR_VALUE;
     if (outputs_sum < intent->vault_amount || htlc_value < outputs_sum ||
         (htlc_value - outputs_sum) > intent->pegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -920,8 +987,8 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
-    /* 2. Exactly 1 input, 2 outputs */
-    if (st->n_inputs != 1 || st->n_outputs != 2) {
+    /* 2. Exactly 1 input, 3 outputs (Vault UTXO + Depositor Claim + P2A anchor) */
+    if (st->n_inputs != 1 || st->n_outputs != 3) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1346,9 +1413,11 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * enforced via claimer_idx == payout_index above; the matching signature is
      * produced afterwards in sign_custom_inputs.  A signing failure there calls
      * vault_context_invalidate(), so advancing here cannot leave a half-signed
-     * session releasable.  After the last claimer (index == keeper_count) the
+     * session behind.  After the last claimer (index == keeper_count) the
      * session moves to SESSION2_COMPLETE; the final payout's signing runs in
-     * that state, which is expected and gates RELEASE_CONTEXT_SECRET. */
+     * that state, which is expected.  SESSION2_COMPLETE is terminal — under the
+     * realigned spec the host already holds the derived root, so there is no
+     * on-device secret-release step. */
     G_vault_context.payout_index++;
     if (G_vault_context.payout_index > intent->keeper_count) {
         if (!vault_context_transition(&G_vault_context,

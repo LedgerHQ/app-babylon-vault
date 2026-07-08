@@ -8,34 +8,33 @@
 /**
  * @brief Session state machine states.
  *
- * Transition table:
+ * Transition table (DERIVE_CONTEXT_HASH is mandatory before APPROVE_VAULT_INTENT):
  *
  *   IDLE
- *     ├─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED  [Session 1: no preimage]
- *     │         │
- *     │         └─(Session 1: Pre-PegIn signed)──► SESSION1_PREPEGIN_EXPECTED
- *     │                                                  │
- *     │                                                  └─(Pre-PegIn SIGN_PSBT)──► INTENT_LOADED
- *     │
- *     └─(DERIVE_CONTEXT_HASH complete)──► HASH_DERIVED
+ *     └─(DERIVE_CONTEXT_HASH complete)──► HASH_DERIVED   [root held, no intent yet]
  *           │
- *           └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED  [preimage preserved → Session 2]
+ *           └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED   [root zeroed after
+ *                 │                                htlc_hashlock + auth_anchor_hash computed]
+ *                 ├─(Session 1: prepegin_txid == 0)─► INTENT_LOADED
+ *                 │         └─(Pre-PegIn SIGN_PSBT)──► SESSION1_PREPEGIN_EXPECTED ──► INTENT_LOADED
  *                 │
- *                 └─► SESSION2_PEGIN_EXPECTED
+ *                 └─(Session 2: prepegin_txid != 0)─► SESSION2_PEGIN_EXPECTED
  *                           │
  *                           └─(PegIn SIGN_PSBT)──► SESSION2_PAYOUT_EXPECTED
- *                                                         │  (payout_index 0..N)
- *                                                         └─(last Payout signed)──►
- * SESSION2_COMPLETE │ └─(RELEASE_CONTEXT_SECRET)──► IDLE
+ *                                                    │  (payout_index 0..N)
+ *                                                    └─(last Payout signed)──► SESSION2_COMPLETE
  *
- * Invalidation triggers (any of these → explicit_bzero(htlc_preimage) + IDLE):
+ * The host receives the root from DERIVE_CONTEXT_HASH and expands the per-vault
+ * secrets itself; there is no on-device secret-release step.
+ *
+ * Invalidation triggers (any of these → explicit_bzero(root) + IDLE):
  *   - Signing error in any hook
  *   - APPROVE_VAULT_INTENT while intent already loaded (state != IDLE and state != HASH_DERIVED)
  *   - DERIVE_CONTEXT_HASH while intent is loaded
  */
 typedef enum {
     VAULT_STATE_IDLE = 0,
-    VAULT_STATE_HASH_DERIVED,  // DERIVE_CONTEXT_HASH complete; preimage held, no intent yet
+    VAULT_STATE_HASH_DERIVED,  // DERIVE_CONTEXT_HASH complete; root held, no intent yet
     VAULT_STATE_INTENT_LOADED,
     VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
     VAULT_STATE_SESSION2_PEGIN_EXPECTED,
@@ -44,17 +43,33 @@ typedef enum {
 } vault_state_t;
 
 /**
- * @brief Session context — secret, hash, and state machine.
+ * @brief Session context — derived root, on-chain commitments, and state machine.
  *
- * The htlc_preimage field MUST be zeroed via explicit_bzero() on every invalidation.
+ * The root field MUST be zeroed via explicit_bzero() on every invalidation.
  * The state MUST be reset to VAULT_STATE_IDLE after zeroing.
  */
 typedef struct {
-    /** HTLC preimage (secret s). Zeroed on any invalidation. */
-    uint8_t htlc_preimage[VAULT_HASH256_LEN];
+    /**
+     * DERIVE_CONTEXT_HASH root (the 32-byte HKDF output returned to the host).
+     * Set by DERIVE_CONTEXT_HASH, preserved across the APPROVE_VAULT_INTENT reset.
+     * Zeroed immediately after APPROVE_VAULT_INTENT derives both on-chain commitments
+     * (htlc_hashlock, auth_anchor_hash) from it — the raw root is not needed after that.
+     * Also zeroed on any invalidation.
+     */
+    uint8_t root[VAULT_HASH256_LEN];
 
-    /** HTLC hashlock h = SHA256(htlc_preimage), returned by DERIVE_CONTEXT_HASH. */
+    /**
+     * HTLC hashlock h = SHA256(Expand(root, "hashlock" || I2OSP(htlc_vout, 4))).
+     * Computed at APPROVE_VAULT_INTENT once htlc_vout is known; bound into the
+     * Pre-PegIn HTLC scriptPubKey and the PegIn Leaf 0 during validation.
+     */
     uint8_t htlc_hashlock[VAULT_HASH256_LEN];
+
+    /**
+     * Auth-anchor commitment SHA256(Expand(root, "auth-anchor")). Computed at
+     * APPROVE_VAULT_INTENT; bound into the Pre-PegIn OP_RETURN output.
+     */
+    uint8_t auth_anchor_hash[VAULT_HASH256_LEN];
 
     /** Current session state. */
     vault_state_t state;

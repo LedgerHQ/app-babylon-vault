@@ -3,7 +3,7 @@
  *
  * Covers:
  *   - vault_context_init: zeroes struct, sets IDLE
- *   - vault_context_invalidate: explicit_bzero on s, resets to IDLE, wipes intent, G_hkdf_stream, G_scratch
+ *   - vault_context_invalidate: explicit_bzero on root, resets to IDLE, wipes intent + G_scratch
  *   - vault_context_transition: all valid edges in the state diagram
  *   - vault_context_transition: invalid transitions → invalidate + return false
  *   - Idempotent invalidation (IDLE → invalidate → still IDLE)
@@ -31,8 +31,8 @@ static void _fill(vault_context_t *ctx) {
 }
 
 static bool _secret_is_zero(const vault_context_t *ctx) {
-    for (size_t i = 0; i < sizeof(ctx->htlc_preimage); i++) {
-        if (ctx->htlc_preimage[i] != 0) return false;
+    for (size_t i = 0; i < sizeof(ctx->root); i++) {
+        if (ctx->root[i] != 0) return false;
     }
     return true;
 }
@@ -70,9 +70,10 @@ static void test_invalidate_zeroes_secret_and_intent(void **state) {
     vault_context_t ctx;
     vault_context_init(&ctx);
 
-    /* Set a fake secret and advance state */
-    memset(ctx.htlc_preimage, 0xFF, sizeof(ctx.htlc_preimage));
+    /* Set a fake root + commitments and advance state */
+    memset(ctx.root, 0xFF, sizeof(ctx.root));
     memset(ctx.htlc_hashlock, 0xEE, sizeof(ctx.htlc_hashlock));
+    memset(ctx.auth_anchor_hash, 0xDD, sizeof(ctx.auth_anchor_hash));
     ctx.state = VAULT_STATE_INTENT_LOADED;
 
     /* Fill intent with non-zero data */
@@ -90,24 +91,15 @@ static void test_invalidate_zeroes_secret_and_intent(void **state) {
     }
 }
 
-static void test_invalidate_clears_hkdf_stream_and_scratch(void **state) {
+static void test_invalidate_clears_scratch(void **state) {
     (void) state;
     vault_context_t ctx;
     vault_context_init(&ctx);
-
-    /* Simulate an in-flight HKDF stream. */
-    G_hkdf_stream.active = true;
-    G_hkdf_stream.context_total_len    = 100;
-    G_hkdf_stream.context_received_len = 42;
 
     /* Simulate residual script data in the scratch union. */
     memset(&G_scratch, 0xAC, sizeof(G_scratch));
 
     vault_context_invalidate(&ctx);
-
-    assert_false(G_hkdf_stream.active);
-    assert_int_equal(G_hkdf_stream.context_total_len,    0);
-    assert_int_equal(G_hkdf_stream.context_received_len, 0);
 
     uint8_t *sp = (uint8_t *) &G_scratch;
     for (size_t i = 0; i < sizeof(G_scratch); i++) {
@@ -119,14 +111,16 @@ static void test_invalidate_clears_hkdf_stream_and_scratch(void **state) {
 // vault_context_transition — valid edges
 // ---------------------------------------------------------------------------
 
-static void test_transition_idle_to_intent_loaded(void **state) {
+static void test_transition_idle_to_intent_loaded_illegal(void **state) {
     (void) state;
+    /* IDLE → INTENT_LOADED is now blocked: DERIVE_CONTEXT_HASH (→ HASH_DERIVED) is
+     * mandatory before APPROVE_VAULT_INTENT (HASH_DERIVED → INTENT_LOADED). */
     vault_context_t ctx;
     vault_context_init(&ctx);
 
     bool ok = vault_context_transition(&ctx, VAULT_STATE_IDLE, VAULT_STATE_INTENT_LOADED);
-    assert_true(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_INTENT_LOADED);
+    assert_false(ok);
+    assert_int_equal(ctx.state, VAULT_STATE_IDLE);
 }
 
 static void test_transition_idle_to_hash_derived(void **state) {
@@ -229,8 +223,8 @@ static void _assert_illegal(vault_state_t current_state,
     vault_context_init(&ctx);
     ctx.state = current_state;
 
-    /* Place non-zero secret so we can verify it gets wiped */
-    memset(ctx.htlc_preimage, 0x42, sizeof(ctx.htlc_preimage));
+    /* Place non-zero root so we can verify it gets wiped */
+    memset(ctx.root, 0x42, sizeof(ctx.root));
 
     bool ok = vault_context_transition(&ctx, from, to);
 
@@ -281,17 +275,20 @@ static void test_transition_double_approve(void **state) {
                     VAULT_STATE_INTENT_LOADED);
 }
 
-static void test_transition_hash_derived_direct_to_intent_loaded_illegal(void **state) {
+static void test_transition_hash_derived_to_intent_loaded(void **state) {
     (void) state;
     /*
-     * HASH_DERIVED → INTENT_LOADED directly via vault_context_transition must
-     * be rejected.  APPROVE_VAULT_INTENT handles this state by save/invalidate/
-     * restore; no code should ever call vault_context_transition with
-     * HASH_DERIVED as `from`.
+     * HASH_DERIVED → INTENT_LOADED is the only legal path to INTENT_LOADED.
+     * APPROVE_VAULT_INTENT saves/restores root across vault_context_invalidate,
+     * then calls vault_context_transition(HASH_DERIVED, INTENT_LOADED).
      */
-    _assert_illegal(VAULT_STATE_HASH_DERIVED,
-                    VAULT_STATE_HASH_DERIVED,
-                    VAULT_STATE_INTENT_LOADED);
+    vault_context_t ctx;
+    vault_context_init(&ctx);
+    ctx.state = VAULT_STATE_HASH_DERIVED;
+
+    bool ok = vault_context_transition(&ctx, VAULT_STATE_HASH_DERIVED, VAULT_STATE_INTENT_LOADED);
+    assert_true(ok);
+    assert_int_equal(ctx.state, VAULT_STATE_INTENT_LOADED);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,11 +303,11 @@ int main(void) {
         /* invalidate */
         cmocka_unit_test(test_invalidate_from_idle),
         cmocka_unit_test(test_invalidate_zeroes_secret_and_intent),
-        cmocka_unit_test(test_invalidate_clears_hkdf_stream_and_scratch),
+        cmocka_unit_test(test_invalidate_clears_scratch),
 
         /* valid transitions */
-        cmocka_unit_test(test_transition_idle_to_intent_loaded),
         cmocka_unit_test(test_transition_idle_to_hash_derived),
+        cmocka_unit_test(test_transition_hash_derived_to_intent_loaded),
         cmocka_unit_test(test_transition_intent_loaded_to_session1),
         cmocka_unit_test(test_transition_session1_back_to_intent_loaded),
         cmocka_unit_test(test_transition_intent_loaded_to_session2_pegin),
@@ -319,11 +316,11 @@ int main(void) {
         cmocka_unit_test(test_transition_session2_complete_to_idle),
 
         /* invalid transitions */
+        cmocka_unit_test(test_transition_idle_to_intent_loaded_illegal),
         cmocka_unit_test(test_transition_wrong_from_state),
         cmocka_unit_test(test_transition_illegal_to_state),
         cmocka_unit_test(test_transition_backwards_without_valid_edge),
         cmocka_unit_test(test_transition_double_approve),
-        cmocka_unit_test(test_transition_hash_derived_direct_to_intent_loaded_illegal),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -598,12 +598,12 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     assert_true(vault_build_vault_utxo_scriptpubkey(&intent, vault_spk));
     assert_true(vault_build_depositor_claim_scriptpubkey(&intent, claim_spk));
 
-    /* Manually assemble the 137-byte non-witness transaction */
-    uint8_t tx[137];
+    /* Manually assemble the 150-byte non-witness transaction */
+    uint8_t tx[150];
     int off = 0;
 
-    /* version: 2 LE */
-    tx[off++] = 0x02u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
+    /* version: 3 LE (TRUC, BIP-431) */
+    tx[off++] = 0x03u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
     /* input count: 1 */
     tx[off++] = 0x01u;
     /* prevout txid (as stored in intent — LE) */
@@ -614,8 +614,8 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     tx[off++] = 0x00u;
     /* sequence: 0xFFFFFFFE LE */
     tx[off++] = 0xFEu; tx[off++] = 0xFFu; tx[off++] = 0xFFu; tx[off++] = 0xFFu;
-    /* output count: 2 */
-    tx[off++] = 0x02u;
+    /* output count: 3 */
+    tx[off++] = 0x03u;
     /* output 0: Vault UTXO */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.vault_amount >> (i * 8));
     tx[off++] = (uint8_t) VAULT_P2TR_SCRIPTPUBKEY_LEN;
@@ -624,16 +624,19 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.depositor_claim_value >> (i * 8));
     tx[off++] = (uint8_t) VAULT_P2TR_SCRIPTPUBKEY_LEN;
     memcpy(tx + off, claim_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN); off += VAULT_P2TR_SCRIPTPUBKEY_LEN;
+    /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, 240 sat = PEGIN_P2A_ANCHOR_VALUE) */
+    { uint64_t v = 240u; for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(v >> (i * 8)); }
+    tx[off++] = 0x04u; tx[off++] = 0x51u; tx[off++] = 0x02u; tx[off++] = 0x4Eu; tx[off++] = 0x73u;
     /* locktime: 0 */
     tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
 
-    assert_int_equal(off, 137);
+    assert_int_equal(off, 150);
 
     /* double-SHA256 */
     cx_sha256_t ctx;
     uint8_t mid[32], expected[32];
     cx_sha256_init(&ctx);
-    cx_hash_no_throw(&ctx.header, 0, tx, 137u, NULL, 0u);
+    cx_hash_no_throw(&ctx.header, 0, tx, 150u, NULL, 0u);
     cx_hash_no_throw(&ctx.header, (int) CX_LAST, NULL, 0u, mid, 32u);
     cx_sha256_init(&ctx);
     cx_hash_no_throw(&ctx.header, 0, mid, 32u, NULL, 0u);

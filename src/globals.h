@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "vault_constants.h"
 #include "vault_intent.h"
 #include "vault_context.h"
 #include "vault_script.h"
@@ -14,27 +15,6 @@ extern vault_intent_t G_vault_intent;
 
 /** Active session context. Always valid; state == VAULT_STATE_IDLE when no session is running. */
 extern vault_context_t G_vault_context;
-
-/**
- * @brief In-flight state for a streaming HKDF-SHA-256 derivation (DERIVE_CONTEXT_HASH).
- *
- * Lives for the duration of one chunked APDU exchange (P1=0x00 through the
- * final P1=0x01).  Zeroed at the start of every P1=0x00 call.
- * Never written to NVM — s is re-derivable on demand.
- */
-typedef struct {
-    /** True after a valid P1=0x00 chunk; gates acceptance of P1=0x01 chunks. */
-    bool active;
-    /** Total context byte count declared in P1=0x00. */
-    uint16_t context_total_len;
-    /** Context bytes fed so far via P1=0x01 chunks. */
-    uint16_t context_received_len;
-    /**
-     * Running HMAC-SHA256 context for HKDF-Expand.
-     * Keyed with PRK; fed SHA256(app_name) then context chunks then 0x01.
-     */
-    cx_hmac_sha256_t hmac;
-} hkdf_stream_t;
 
 /**
  * @brief In-flight state for a two-phase APPROVE_VAULT_INTENT exchange.
@@ -126,12 +106,40 @@ typedef struct {
 } tap_leaf_script_state_t;
 
 /**
+ * Scratch for handler_derive_context_hash.
+ *
+ * display_tx must be first: display_derive_context_hash writes to its fields
+ * (offsets 0–227) while reading app_name_buf/context_buf via passed pointers.
+ * The copy buffers therefore sit above the display_tx footprint and are never
+ * clobbered during the blocking display call.  After display returns,
+ * hkdf_derive_root reads context_buf which display_tx never touches.
+ *
+ * Max context size is 255 (single-APDU Lc bound).
+ */
+typedef struct {
+    display_tx_scratch_t display_tx;
+    uint8_t app_name_buf[VAULT_APP_NAME_MAX_LEN];
+    uint8_t context_buf[255];
+    // path[] and connected_pubkey live here (not on the handler stack) so that the
+    // combined stack depth during the blocking display call stays within budget.
+    uint32_t path[VAULT_MAX_PATH_DEPTH];
+    uint8_t connected_pubkey[VAULT_COMPRESSED_PUBKEY_LEN];
+    // Pre-formatted display strings written by the handler before the display call.
+    // path_str: BIP-32 path as "m/86'/1'/0'/0/0" (NUL-terminated, ≤VAULT_PATH_STR_SIZE bytes).
+    // ctx_hash_str: SHA-256(context) as 64 lowercase hex chars + NUL.
+    uint8_t path_len;
+    char path_str[VAULT_PATH_STR_SIZE];
+    char ctx_hash_str[65];
+} derive_context_hash_scratch_t;
+
+/**
  * Mutually-exclusive scratch union.
  *
  * Each member is live in exactly one handler and is zeroed before use:
  *   - script_scratch  vault_build_* signing hooks
  *   - display         display_vault_intent only (blocks on io_ui_process)
  *   - display_tx      display_transaction / display_prepegin / display_refund
+ *   - derive_ctx      handler_derive_context_hash
  *   - leaf_check      _validate_display_refund leaf-script comparison
  *   - tls             _tap_leaf_script_callback state during refund validation
  *
@@ -141,26 +149,22 @@ typedef struct {
  * display_tx is written (addr_str) and then read (io_ui_process) only after
  * tls and leaf_check are fully consumed.
  *
- * hkdf_stream_t and approve_intent_state_t are intentionally NOT in this
- * union.  Both have a boolean guard at their first byte (hkdf.active /
- * scalars_loaded).  If either were a union member, stale non-zero bytes
- * left by script_scratch or display (e.g. an opcode or ASCII hex char at
- * offset 0) would alias that guard and cause handle_context_chunk() or
- * handle_key_batch() to treat spurious data as an in-progress stream.
+ * approve_intent_state_t is intentionally NOT in this union.  Its boolean guard
+ * at the first byte (scalars_loaded) would, if it were a union member, be aliased
+ * by stale non-zero bytes left by script_scratch or display (e.g. an opcode or
+ * ASCII hex char at offset 0) and cause handle_key_batch() to treat spurious data
+ * as an in-progress exchange.
  */
 typedef union {
     uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
     display_vault_intent_scratch_t display;
     display_tx_scratch_t display_tx;
+    derive_context_hash_scratch_t derive_ctx;
     refund_leaf_check_t leaf_check;
     tap_leaf_script_state_t tls;
 } vault_scratch_t;
 
 extern vault_scratch_t G_scratch;
-
-/** In-flight state for a streaming HKDF derivation — kept outside the
- *  scratch union to prevent offset-0 aliasing with script_scratch/display. */
-extern hkdf_stream_t G_hkdf_stream;
 
 /** In-flight state for APPROVE_VAULT_INTENT multi-step exchange. */
 extern approve_intent_state_t G_approve_intent_state;

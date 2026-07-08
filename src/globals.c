@@ -22,15 +22,13 @@
 //                                          1168 B vault_pairs_raw + 4160 B key_strs + 896 B
 //                                          key_labels)
 //                                         tap_leaf_script_state_t tls: 2636 B — in union, no growth
-//   G_hkdf_stream               ≤  512 B  (outside union — see globals.h for why)
-//   G_approve_intent_state      ≤    8 B  (outside union — same reason)
+//   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
 //                                        ≤ 9944 B  (well within remaining SRAM after min stack)
 // ---------------------------------------------------------------------------
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
 _Static_assert(sizeof(vault_context_t) <= 128, "vault_context_t exceeds expected size");
-_Static_assert(sizeof(hkdf_stream_t) <= 512, "hkdf_stream_t exceeds expected size");
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(display_vault_intent_scratch_t),
                "vault_scratch_t size != display_vault_intent_scratch_t; check union definition");
@@ -46,5 +44,4 @@ _Static_assert(sizeof(refund_leaf_check_t) - VAULT_SCRIPT_MAX_LEN >= _VAULT_MAX_
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
 vault_scratch_t G_scratch;
-hkdf_stream_t G_hkdf_stream;
 approve_intent_state_t G_approve_intent_state;

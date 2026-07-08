@@ -1,5 +1,6 @@
 #include "approve_vault_intent.h"
 #include "approve_vault_intent_core.h"
+#include "derive_vault_secrets_core.h"
 
 #include "../display.h"
 #include "../globals.h"
@@ -37,24 +38,25 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    /* If DERIVE_CONTEXT_HASH completed (Session 2), preserve preimage/hashlock across the reset. */
-    uint8_t saved_preimage[VAULT_HASH256_LEN];
-    uint8_t saved_hashlock[VAULT_HASH256_LEN];
-    bool preserve_htlc = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
-    if (preserve_htlc) {
-        memcpy(saved_preimage, G_vault_context.htlc_preimage, VAULT_HASH256_LEN);
-        memcpy(saved_hashlock, G_vault_context.htlc_hashlock, VAULT_HASH256_LEN);
+    /* If DERIVE_CONTEXT_HASH completed, preserve the root across the reset. The
+     * per-vault commitments (htlc_hashlock, auth_anchor_hash) are recomputed from it
+     * once htlc_vout is known (see handle_key_batch). */
+    uint8_t saved_root[VAULT_HASH256_LEN];
+    bool preserve_root = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
+    if (preserve_root) {
+        memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
     }
 
     vault_context_invalidate(&G_vault_context);
     explicit_bzero(&G_scratch, sizeof(G_scratch));
-    explicit_bzero(&G_hkdf_stream, sizeof(G_hkdf_stream));
 
-    if (preserve_htlc) {
-        memcpy(G_vault_context.htlc_preimage, saved_preimage, VAULT_HASH256_LEN);
-        memcpy(G_vault_context.htlc_hashlock, saved_hashlock, VAULT_HASH256_LEN);
-        explicit_bzero(saved_preimage, sizeof(saved_preimage));
-        explicit_bzero(saved_hashlock, sizeof(saved_hashlock));
+    if (preserve_root) {
+        memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
+        explicit_bzero(saved_root, sizeof(saved_root));
+        // Restore state to HASH_DERIVED so handle_key_batch can transition
+        // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
+        // because vault_context_invalidate() left state at IDLE.
+        vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED);
     }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);
@@ -94,6 +96,16 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     if (cmd->lc == 0 || cmd->lc % VAULT_XONLY_PUBKEY_LEN != 0) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_WRONG_DATA_LENGTH);
+        return;
+    }
+
+    /* Enforce DERIVE_CONTEXT_HASH ordering on every batch, not just the last.
+     * Without this check, a host in the wrong state would receive SW_OK for all
+     * intermediate batches, getting implicit per-batch confirmation before the
+     * final batch rejects.  Placing the check here short-circuits that. */
+    if (G_vault_context.state != VAULT_STATE_HASH_DERIVED) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
         return;
     }
 
@@ -155,13 +167,34 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     /* Store the x-only depositor key so vault_build_* script builders can embed it. */
     memcpy(G_vault_intent.depositor_pk, depositor_compressed + 1, VAULT_XONLY_PUBKEY_LEN);
 
+    /* Compute the on-chain commitments from the HKDF root now that htlc_vout is known.
+     * DERIVE_CONTEXT_HASH is required before this point (enforced by the state machine),
+     * so the root is always non-zero here. The defense-in-depth zero-check is retained. */
+    const uint8_t zeros32[VAULT_HASH256_LEN] = {0};
+    if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) != 0) {
+        if (!vault_derive_hashlock_commitment(G_vault_context.root,
+                                              (uint8_t) G_vault_intent.htlc_vout,
+                                              G_vault_context.htlc_hashlock) ||
+            !vault_derive_auth_anchor_commitment(G_vault_context.root,
+                                                 G_vault_context.auth_anchor_hash)) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_BAD_STATE);
+            return;
+        }
+        // Root is no longer needed — both commitments are stored in G_vault_context.
+        // Zero it now rather than waiting for session end to minimise exposure window.
+        explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
+    }
+
     /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
     if (!display_vault_intent(dc)) {
         vault_context_invalidate(&G_vault_context);
         return;
     }
-    if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_INTENT_LOADED)) {
+    if (!vault_context_transition(&G_vault_context,
+                                  VAULT_STATE_HASH_DERIVED,
+                                  VAULT_STATE_INTENT_LOADED)) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }

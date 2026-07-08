@@ -5,7 +5,50 @@ It covers the full APDU command sequence for each flow, the PSBT shape required 
 signing step, and the device session state at every point.
 
 **CLA:** `0xE1` for all commands.  
-**Full wire formats:** see [`apdu.md`](apdu.md).
+**Full wire formats:** see [`apdu.md`](apdu.md).  
+**Upstream derivation specs:** [`specs/derive-context-hash.md`](specs/derive-context-hash.md) (rev 2.1)
+and [`specs/derive-vault-secrets.md`](specs/derive-vault-secrets.md) (rev 0.1).
+
+---
+
+## Derivation model (read first)
+
+`DERIVE_CONTEXT_HASH` returns a **32-byte root**, not a hashlock. The device does **not**
+retain any secret and has **no secret-release step**. The host is responsible for expanding
+the root into the per-vault secrets it needs — the device only recomputes the on-chain
+*commitments* (hashlock, auth-anchor) so it can bind them during signing.
+
+```
+root          = HKDF-SHA256(ikm = privkey(m/73681862'),
+                            salt = "derive-context-hash",
+                            info = SHA256(app_name) || SHA256(canonicalNetworkName)
+                                   || connectedPubkey[33] || context,
+                            L = 32)                              # returned to the host
+```
+
+The host then expands the root locally (HKDF-**Expand-only**, `PRK = root`, domain tag
+`"babylonbtcvault"`, per `derive-vault-secrets`):
+
+```
+hashlockSecret[vout] = Expand(root, info("hashlock", I2OSP(vout, 4)), 32)   # per HTLC output
+authAnchor           = Expand(root, info("auth-anchor", []),        32)     # shared per Pre-PegIn
+wotsSeed[vout]       = Expand(root, info("wots-seed",  I2OSP(vout, 4)), 64) # host-only
+```
+
+The on-chain commitments (what the device recomputes and enforces):
+
+```
+htlc_hashlock   = SHA256(hashlockSecret[htlc_vout])   # embedded in the HTLC taproot leaf
+auth_anchor_cmt = SHA256(authAnchor)                  # committed in the Pre-PegIn OP_RETURN
+```
+
+> **Note:** the hashlock is `SHA256(Expand(root, "hashlock" ‖ vout))`, **not** `SHA256(root)`.
+> Because the secret is keyed per output index, one root can serve several HTLC outputs — but
+> **this app supports a single HTLC output per Pre-PegIn (one `htlc_vout`)**; batched deposits
+> are defined by the protocol but not implemented on-device in this version.
+
+To **claim** the Depositor Claim UTXO later, the host uses `hashlockSecret[htlc_vout]` (which it
+derived itself from the root) as the HTLC preimage — there is no device round-trip.
 
 ---
 
@@ -15,52 +58,62 @@ The device tracks a single global session through these states (from `vault_cont
 
 ```
 IDLE
- ├─ 0x81 DERIVE_CONTEXT_HASH ──────────────► HASH_DERIVED
- │          └─ 0x80 APPROVE_VAULT_INTENT ──► INTENT_LOADED
- │                       └─────────────────► SESSION2_PEGIN_EXPECTED  (if preimage present)
- └─ 0x80 APPROVE_VAULT_INTENT ─────────────► INTENT_LOADED
+ └─ 0x81 DERIVE_CONTEXT_HASH ──────────────► HASH_DERIVED        (returns the 32-byte root)
+        └─ 0x80 APPROVE_VAULT_INTENT ──────► INTENT_LOADED       (root preserved; commitments
+             │                                                    recomputed from it)
+             ├─ (prepegin_txid == 0) ──────► INTENT_LOADED               (Session 1)
+             └─ (prepegin_txid != 0) ──────► SESSION2_PEGIN_EXPECTED     (Session 2)
 
-INTENT_LOADED
+INTENT_LOADED  (Session 1)
   └─ 0x04 SIGN_PSBT (Pre-PegIn) ──────────► SESSION1_PREPEGIN_EXPECTED
 
 SESSION2_PEGIN_EXPECTED
   └─ 0x04 SIGN_PSBT (PegIn) ─────────────► SESSION2_PAYOUT_EXPECTED
 
 SESSION2_PAYOUT_EXPECTED
-  └─ 0x04 SIGN_PSBT (Payout ×N) ─────────► SESSION2_COMPLETE  (after last)
-
-SESSION2_COMPLETE
-  └─ 0x82 RELEASE_CONTEXT_SECRET ────────► IDLE
+  └─ 0x04 SIGN_PSBT (Payout ×N) ─────────► SESSION2_COMPLETE     (after last — terminal)
 ```
+
+`SESSION2_COMPLETE` is **terminal** — there is no `RELEASE_CONTEXT_SECRET`. The host already
+holds the root and expands the secrets itself.
+
+`APPROVE_VAULT_INTENT` is technically accepted from `IDLE` too (intent replacement), but a
+`root` is only preserved when it is called from `HASH_DERIVED`. Without a root the device
+leaves `htlc_hashlock`/`auth_anchor_hash` zero and **rejects Pre-PegIn/PegIn signing** — so a
+`DERIVE_CONTEXT_HASH` must precede any signing flow.
 
 **Refund** (`0x04 SIGN_PSBT` with a 1-in/1-out PSBT and no wallet policy) is accepted
 in `IDLE`, `HASH_DERIVED`, `INTENT_LOADED`, and `SESSION1_PREPEGIN_EXPECTED`. It does not
 change state.
 
-**Invalidation** — a **Payout signing** failure wipes `htlc_preimage` via `explicit_bzero`
-and resets to `IDLE`; the host must then restart the full sequence from `DERIVE_CONTEXT_HASH`.
-PSBT **validation** failures (and PegIn/Pre-PegIn/Refund signing failures) do **not**
-invalidate — the session state is left unchanged so the host can fix the PSBT and retry.
-See [Error recovery](#error-recovery) for the per-flow retry rules.
+**Invalidation** — a **Payout signing** failure wipes the `root` (and all derived commitments)
+via `explicit_bzero` and resets to `IDLE`; the host must then restart the full sequence from
+`DERIVE_CONTEXT_HASH`. PSBT **validation** failures (and PegIn/Pre-PegIn/Refund signing
+failures) do **not** invalidate — the session state is left unchanged so the host can fix the
+PSBT and retry. See [Error recovery](#error-recovery) for the per-flow retry rules.
 
 ---
 
 ## Flow A — Full deposit (Session 1 + Session 2)
 
-### Step 1 — Derive the HTLC secret: `0x81 DERIVE_CONTEXT_HASH`
+### Step 1 — Derive the root: `0x81 DERIVE_CONTEXT_HASH`
 
-Required state: `IDLE`.
+Required state: `IDLE` (calling from any other state resets the session first).
 
-The device derives a deterministic HTLC preimage `s` using HKDF-SHA-256:
+Single APDU (P1=`0x00`), no user display. Payload:
 
 ```
-PRK         = HMAC-SHA256(salt="derive-context-hash", IKM=privkey(m/73681862'))
-htlc_preimage = HMAC-SHA256(PRK, SHA256(app_name) || context || 0x01)
-htlc_hashlock = SHA256(htlc_preimage)
+[ app_name_len: 1B ][ app_name: L B ][ path_len: 1B ][ path: path_len×4B BE ][ context: rest ]
 ```
 
-The device returns only `htlc_hashlock` (32 bytes). `htlc_preimage` stays in device RAM
-until `RELEASE_CONTEXT_SECRET` is called.
+- `app_name` — host sends `"babylon-btc-vault"`.
+- `path` — the BIP-32 path of the **connectedPubkey** (host-supplied; the device derives the
+  33-byte compressed key and mixes it into `info`).
+- `context` — the `vaultContext` bytes (must be non-empty).
+
+The device computes the root as in [Derivation model](#derivation-model-read-first) and returns
+it (32 bytes). It retains the root in the session context only to recompute on-chain
+commitments at approve-time; no preimage is stored, and nothing is released later.
 
 **State after:** `IDLE → HASH_DERIVED`
 
@@ -68,21 +121,26 @@ until `RELEASE_CONTEXT_SECRET` is called.
 
 ### Step 2 — Load the vault intent: `0x80 APPROVE_VAULT_INTENT`
 
-Required state: `HASH_DERIVED` (for Session 2) or `IDLE` (Session 1 standalone).
+Required state: `HASH_DERIVED` (a prior `DERIVE_CONTEXT_HASH` is required for any signing flow).
 
-Send all 17 scalar TLV fields (P1=`0x00`), then stream all keeper + challenger x-only
-public keys (P1=`0x01`). The device displays the vault parameters for user approval.
+Send all scalar TLV fields (P1=`0x00`), then stream all keeper + challenger x-only public keys
+(P1=`0x01`). The device displays the vault parameters for user approval.
 
-**If called from `HASH_DERIVED`:** the device saves `htlc_preimage` and `htlc_hashlock`
-across the internal session reset, then restores them. After the user approves, if
-`prepegin_txid` (tag `0x0C`) is non-zero, the device immediately transitions:
+**On approval:** the device saves the `root` across the internal session reset, then — once
+`htlc_vout` is known (after the key batch) — recomputes and stores the on-chain commitments:
+
+```
+htlc_hashlock    = SHA256(Expand(root, "hashlock" || I2OSP(htlc_vout, 4)))
+auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))
+```
+
+If `prepegin_txid` (tag `0x0C`) is non-zero, the device transitions straight to Session 2:
 
 ```
 HASH_DERIVED → INTENT_LOADED → SESSION2_PEGIN_EXPECTED
 ```
 
-**If called from `IDLE`:** transitions `IDLE → INTENT_LOADED` only. Session 2 path
-requires calling `DERIVE_CONTEXT_HASH` first.
+Otherwise it stays in `INTENT_LOADED` (Session 1).
 
 **State after (Session 2):** `SESSION2_PEGIN_EXPECTED`  
 **State after (Session 1):** `INTENT_LOADED`
@@ -104,7 +162,12 @@ Required wallet policy: **BIP-86 wallet policy provided** (host passes the polic
 | Sighash | `SIGHASH_DEFAULT` (absent) or `SIGHASH_ALL` (1) per input |
 | Output at `htlc_vout` | P2TR scriptPubKey matching `vault_build_htlc_scriptpubkey(intent, htlc_hashlock)` |
 | Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value, vault_amount + depositor_claim_value + pegin_max_fee]` |
+| **Auth-anchor output** | Exactly one `OP_RETURN` output with scriptPubKey `6A 20 ‖ auth_anchor_hash` (34 bytes) and **value 0** |
 | All other outputs | Must be BIP-86 internal change |
+
+The single auth-anchor `OP_RETURN` is **mandatory** and its 32-byte payload is bound to
+`SHA256(authAnchor)` recomputed on-device from the root — the host cannot substitute it. Its
+value must be **0** (it is provably unspendable; a non-zero value would silently burn change).
 
 The device displays: vault amount, depositor claim value, fee, HTLC address. User must approve.
 
@@ -137,15 +200,22 @@ Required wallet policy: **none** (host must not provide a wallet policy).
 | Input 0 `PSBT_IN_SIGHASH_TYPE` | `SIGHASH_DEFAULT` (absent or 0) or `SIGHASH_ALL` (1) |
 | Input 0 `PSBT_IN_TAP_INTERNAL_KEY` | Must be `VAULT_NUMS_XONLY` (no key-path spend) |
 | Input 0 `PSBT_IN_TAP_MERKLE_ROOT` | Must equal `vault_build_htlc_merkle_root(intent, htlc_hashlock)` |
-| Input 0 `PSBT_IN_TAP_LEAF_SCRIPT` | Must include HTLC Leaf 0 (hashlock script) |
+| Input 0 `PSBT_IN_TAP_LEAF_SCRIPT` | Must include HTLC Leaf 0 (hashlock script bound to `htlc_hashlock`) |
 | Output 0 scriptPubKey | Must match `vault_build_vault_utxo_scriptpubkey(intent)` |
 | Output 0 value | Must equal `intent.vault_amount` |
 | Output 1 scriptPubKey | Must match `vault_build_depositor_claim_scriptpubkey(intent)` |
 | Output 1 value | Must equal `intent.depositor_claim_value` |
 | Fee (`htlc_value - vault_amount - depositor_claim_value`) | Must be ≤ `intent.pegin_max_fee` |
 
+Here `htlc_hashlock` is the value the device recomputed from the root at approve-time
+(`SHA256(Expand(root, "hashlock" ‖ I2OSP(htlc_vout, 4)))`), so the host must build the HTLC
+leaf with the matching `hashlockSecret[htlc_vout]`.
+
+> A future change (NAPPS-1421, PegIn v3/TRUC + P2A anchor) will make the PegIn a v3 transaction
+> with a third P2A anchor output; until that lands the device requires exactly 2 outputs.
+
 PegIn validation is **silent** — no display shown to the user. The device signs HTLC Leaf 0
-(hashlock tapscript) with the depositor key at `intent.depositor_path`.
+(hashlock tapscript) with the depositor key at `intent.depositor_path` (SIGHASH_DEFAULT).
 
 State advances only after signing succeeds, so the host can retry on communication failure
 without losing session state.
@@ -215,21 +285,17 @@ depositor key. If signing fails at any point during payout the session is **inva
 (`SW_INCORRECT_DATA` or `SW_BAD_STATE` returned, session reset to `IDLE`).
 
 **State after last payout's validation:** `SESSION2_PAYOUT_EXPECTED → SESSION2_COMPLETE`  
-The final payout's signing runs in state `SESSION2_COMPLETE` — this is expected.
+The final payout's signing runs in state `SESSION2_COMPLETE` — this is expected. This is the
+terminal state; the flow is complete and there is no secret-release step.
 
 ---
 
-### Step 5 — Release the HTLC secret: `0x82 RELEASE_CONTEXT_SECRET`
+### Claiming the Depositor Claim UTXO (host-side, no device call)
 
-Required state: `SESSION2_COMPLETE`.  
-No payload (P1=0, P2=0, Lc=0).
-
-Returns the 32-byte `htlc_preimage`. The device zeroes it in RAM before sending the
-response, then resets to `IDLE`.
-
-**State after:** `SESSION2_COMPLETE → IDLE`
-
-Use the returned preimage to claim the Depositor Claim UTXO on-chain.
+To spend the Depositor Claim UTXO on-chain, the host reveals the HTLC preimage. That preimage
+is `hashlockSecret[htlc_vout] = Expand(root, "hashlock" ‖ I2OSP(htlc_vout, 4))`, which the host
+already derived from the root returned by `DERIVE_CONTEXT_HASH` (Step 1). No further APDU is
+needed — the device never returns the secret.
 
 ---
 
@@ -275,8 +341,9 @@ The device **displays** amount reclaimed, fee, and destination address. User mus
 |----|---------|-----------------|
 | `0x9000` | Success | Continue to next step |
 | `0x6985` | User rejected on device | Offer retry — device state is unchanged on rejection (no invalidation) |
-| `0x6A80` | PSBT validation failure | Fix the PSBT; resend. State unchanged if before signing; **invalidated** if during Payout signing |
-| `0xB007` | Wrong session state, or BIP-32 derivation failure during `DERIVE_CONTEXT_HASH` (session invalidated) | Check current state; restart from `DERIVE_CONTEXT_HASH` if invalidated |
+| `0x6A80` | PSBT/TLV validation failure (bad field, wrong output policy, missing auth-anchor, …) | Fix the PSBT; resend. State unchanged if before signing; **invalidated** if during Payout signing |
+| `0x6F00` | BIP-32 derivation failure (connected-pubkey in `DERIVE_CONTEXT_HASH`, or depositor key) | Check the derivation path; session is reset |
+| `0xB007` | Wrong session state (`SW_BAD_STATE`), or HMAC/HKDF failure during `DERIVE_CONTEXT_HASH` | Check current state; run `DERIVE_CONTEXT_HASH` first if a signing step was rejected for a missing root |
 
 **Retry rules:**
 - **Pre-PegIn, PegIn, Refund:** PSBT can be resent after any non-signing failure; state is unchanged.
@@ -316,4 +383,5 @@ to sign is `1 + keeper_count`:
 | Last | `keeper_count` | Keeper N-1 | 2 (VK claim, VK dust) |
 
 After the last payout is **validated** the device transitions to `SESSION2_COMPLETE`.
-The final signing runs in that state — this is expected and handled correctly.
+The final signing runs in that state — this is expected and handled correctly. `SESSION2_COMPLETE`
+is terminal; there is no release step.

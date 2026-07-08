@@ -30,6 +30,21 @@
 #define VAULT_PROTOCOL_VERSION ((uint8_t) 0x01)
 
 /**
+ * Canonical network name fed (as SHA-256) into the DERIVE_CONTEXT_HASH HKDF `info`,
+ * per babylon-toolkit derive-context-hash spec v2.x §2.2. Selected at build time from
+ * the coin type: mainnet (SLIP-44 0) → "bitcoin-mainnet"; the testnet build targets
+ * Bitcoin signet (see Makefile) → "bitcoin-signet".
+ */
+#if BIP44_COIN_TYPE == 0
+#define VAULT_CANONICAL_NETWORK_NAME "bitcoin-mainnet"
+#elif BIP44_COIN_TYPE == 1
+#define VAULT_CANONICAL_NETWORK_NAME "bitcoin-signet"
+#else
+#error \
+    "BIP44_COIN_TYPE has no mapped canonicalNetworkName — add an explicit entry or use 0 (mainnet) or 1 (signet)."
+#endif
+
+/**
  * P2TR CPFP anchor value in satoshis (546 sat; chosen >= the 330-sat P2TR relay
  * dust limit so every anchor output stays above dust).
  *
@@ -40,6 +55,34 @@
  * guaranteeing all payout outputs are above the relay dust limit.
  */
 #define VAULT_DUST_LIMIT ((uint64_t) 546u)
+
+/**
+ * P2A anchor output value (sats) used by the v3 (TRUC) PegIn transaction.
+ * Standard Bitcoin Core P2A dust threshold (OP_1 OP_PUSHBYTES_2 0x4e73,
+ * 4-byte scriptPubKey at 3 sat/vB relay fee = 240 sat).
+ * Must match the vault provider's exact on-chain value byte-for-byte so
+ * vault_compute_pegin_txid produces the correct txid.
+ */
+#define PEGIN_P2A_ANCHOR_VALUE ((uint64_t) 240u)
+
+/* DERIVE_CONTEXT_HASH input limits (spec §2.1). */
+
+/** Maximum byte length of the appName field. */
+#define VAULT_APP_NAME_MAX_LEN 64u
+
+/** Maximum depth of a BIP-32 derivation path (number of levels). */
+#define VAULT_MAX_PATH_DEPTH 10u
+
+/** Compressed SEC1 public key length: 1-byte parity prefix + 32-byte x-coordinate. */
+#define VAULT_COMPRESSED_PUBKEY_LEN 33u
+
+/**
+ * Maximum byte length of a BIP-32 path string including NUL terminator.
+ * Worst case: "m/" + VAULT_MAX_PATH_DEPTH components of up to 11 chars
+ * ("2147483647'") separated by "/" + NUL = 2 + 10×11 + 9 + 1 = 122 bytes.
+ * Rounded up to 128 for alignment.
+ */
+#define VAULT_PATH_STR_SIZE 128u
 
 /* Timelock range bounds (block counts). */
 
