@@ -62,6 +62,8 @@
  * 4-byte scriptPubKey at 3 sat/vB relay fee = 240 sat).
  * Must match the vault provider's exact on-chain value byte-for-byte so
  * vault_compute_pegin_txid produces the correct txid.
+ *
+ * TODO(NAPPS-1421): confirm 240 sat with vault provider before merging.
  */
 #define PEGIN_P2A_ANCHOR_VALUE ((uint64_t) 240u)
 

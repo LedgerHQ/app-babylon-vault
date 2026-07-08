@@ -56,7 +56,13 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         // Restore state to HASH_DERIVED so handle_key_batch can transition
         // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
         // because vault_context_invalidate() left state at IDLE.
-        vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED);
+        if (!vault_context_transition(&G_vault_context,
+                                      VAULT_STATE_IDLE,
+                                      VAULT_STATE_HASH_DERIVED)) {
+            explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
+            SEND_SW(dc, SW_BAD_STATE);
+            return;
+        }
     }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);

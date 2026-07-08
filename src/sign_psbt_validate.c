@@ -30,6 +30,13 @@
 /* Maximum WITNESS_UTXO size: 8B value + 1B script_len varint + 34B P2TR script */
 #define MAX_WITNESS_UTXO_LEN (8 + 1 + 34)
 
+/* auth-anchor OP_RETURN scriptPubKey: OP_RETURN(0x6A) OP_PUSHBYTES_32(0x20) <32B hash>.
+ * Happens to be the same byte length as a P2TR scriptPubKey; the static assert makes
+ * this coincidence explicit so _read_output can read both with the same buffer size. */
+#define AUTH_ANCHOR_SPK_LEN 34u
+_Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
+               "AUTH_ANCHOR_SPK_LEN must equal VAULT_P2TR_SCRIPTPUBKEY_LEN for _read_output reuse");
+
 /* Payout fee bound constants (NAPPS-1376) */
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
@@ -261,9 +268,8 @@ static bool _validate_display_prepegin(
      * carries the auth-anchor commitment (derive-vault-secrets); the device binds it to
      * the value expanded from the derived root so a host cannot substitute it.
      *
-     * The expected OP_RETURN scriptPubKey is 0x6A 0x20 || auth_anchor_hash (34 bytes),
-     * which is exactly VAULT_P2TR_SCRIPTPUBKEY_LEN — so _read_output reads it directly. */
-    uint8_t expected_anchor_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+     * Expected scriptPubKey: 0x6A 0x20 || auth_anchor_hash (AUTH_ANCHOR_SPK_LEN bytes). */
+    uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
     expected_anchor_spk[0] = 0x6A;  // OP_RETURN
     expected_anchor_spk[1] = 0x20;  // OP_PUSHBYTES_32
     memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
@@ -278,11 +284,11 @@ static bool _validate_display_prepegin(
          * assigned to it is burned; since neither the OP_RETURN nor the change is shown
          * on the approval screen, a non-zero value would let a malicious host silently
          * burn the depositor's own change (WYSIWYS violation). Require value == 0. */
-        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint8_t out_spk[AUTH_ANCHOR_SPK_LEN];
         uint64_t out_value;
         if (!_read_output(dc, st->outputs_root, st->n_outputs, i, out_spk, &out_value) ||
             anchor_found || out_value != 0 ||
-            memcmp(out_spk, expected_anchor_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+            memcmp(out_spk, expected_anchor_spk, AUTH_ANCHOR_SPK_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
