@@ -22,12 +22,17 @@ static void format_bip32_path(const uint32_t *path, uint8_t len, char *out, size
         bool hd = (path[i] >> 31) != 0u;
         char tmp[11];
         uint8_t tlen = 0;
-        do { tmp[tlen++] = (char)('0' + idx % 10u); idx /= 10u; } while (idx > 0u);
+        do {
+            tmp[tlen++] = (char) ('0' + idx % 10u);
+            idx /= 10u;
+        } while (idx > 0u);
         for (uint8_t j = tlen; j > 0u && pos < out_size - 1u; j--) out[pos++] = tmp[j - 1u];
         if (hd && pos < out_size - 1u) out[pos++] = '\'';
     }
-    if (pos < out_size) out[pos] = '\0';
-    else out[out_size - 1u] = '\0';
+    if (pos < out_size)
+        out[pos] = '\0';
+    else
+        out[out_size - 1u] = '\0';
 }
 
 /* SW for BIP-32 / connected-pubkey derivation failure (mirrors approve handler). */
@@ -122,7 +127,8 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
 
     // Pre-format the display strings the approval screen will show.
     G_scratch.derive_ctx.path_len = path_len;
-    format_bip32_path(path, path_len,
+    format_bip32_path(path,
+                      path_len,
                       G_scratch.derive_ctx.path_str,
                       sizeof(G_scratch.derive_ctx.path_str));
 
@@ -153,8 +159,7 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
                                G_vault_context.root);
     explicit_bzero(connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN);
     // context_buf is no longer needed after derivation; zero it promptly.
-    explicit_bzero(G_scratch.derive_ctx.context_buf,
-                   sizeof(G_scratch.derive_ctx.context_buf));
+    explicit_bzero(G_scratch.derive_ctx.context_buf, sizeof(G_scratch.derive_ctx.context_buf));
     if (!ok) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);

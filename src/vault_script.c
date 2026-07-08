@@ -27,7 +27,7 @@
 #define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
 #define PEGIN_TX_LOCKTIME 0u
 /* 4(ver) + 1(in_cnt) + 41(input) + 1(out_cnt) + 43(vault) + 43(claim) + 13(P2A) + 4(lock) */
-#define PEGIN_TX_SIZE     150u /* exact non-witness serialization length */
+#define PEGIN_TX_SIZE 150u /* exact non-witness serialization length */
 
 /* Forward-declare the three btcext taproot functions vault_script.c uses.
  * On device these are implemented in bitcoin_app_base/src/crypto.c and
@@ -672,7 +672,10 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (PEGIN_P2A_ANCHOR_VALUE >> (i * 8));
     tx[off++] = 4u; /* script length */
-    tx[off++] = 0x51u; tx[off++] = 0x02u; tx[off++] = 0x4Eu; tx[off++] = 0x73u;
+    tx[off++] = 0x51u;
+    tx[off++] = 0x02u;
+    tx[off++] = 0x4Eu;
+    tx[off++] = 0x73u;
 
     /* locktime (LE) */
     tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME);

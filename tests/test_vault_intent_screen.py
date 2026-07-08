@@ -35,8 +35,10 @@ from .vault_client import (
     SW_DENY,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
+    VAULT_APP_NAME,
     build_intent_tlv,
     approve_vault_intent_with_nav,
+    derive_context_hash,
 )
 from .instructions import (
     vault_intent_reject_instructions,
@@ -84,6 +86,14 @@ def _send_scalars(client: "RaggerClient", bitcoin_network: str) -> None:
     )
 
 
+def _derive(client: "RaggerClient", navigator: Navigator, device: Device,
+            bitcoin_network: str) -> None:
+    """Run DERIVE_CONTEXT_HASH to reach HASH_DERIVED before APPROVE_VAULT_INTENT."""
+    ct = 0 if bitcoin_network == "main" else 1
+    path = [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0]
+    derive_context_hash(client, VAULT_APP_NAME, path, b"\xde\xad\xbe\xef", navigator, device)
+
+
 # ---------------------------------------------------------------------------
 # Approval flow
 # ---------------------------------------------------------------------------
@@ -94,6 +104,7 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
 
     Captures every page as a snapshot — run with --golden_run to create goldens.
     """
+    _derive(client, navigator, device, bitcoin_network)
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv=_scalars(bitcoin_network),
@@ -115,6 +126,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
 
     Captures every page up to and including the rejection status screen.
     """
+    _derive(client, navigator, device, bitcoin_network)
     _send_scalars(client, bitcoin_network)
 
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -181,6 +193,7 @@ def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
     if device.is_nano:
         pytest.skip("skip affordance is touch-only; nano uses the full review")
 
+    _derive(client, navigator, device, bitcoin_network)
     client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,

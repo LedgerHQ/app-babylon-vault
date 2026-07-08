@@ -191,7 +191,9 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         vault_context_invalidate(&G_vault_context);
         return;
     }
-    if (!vault_context_transition(&G_vault_context, VAULT_STATE_HASH_DERIVED, VAULT_STATE_INTENT_LOADED)) {
+    if (!vault_context_transition(&G_vault_context,
+                                  VAULT_STATE_HASH_DERIVED,
+                                  VAULT_STATE_INTENT_LOADED)) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }

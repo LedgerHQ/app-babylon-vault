@@ -932,9 +932,12 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
             return false;
         }
         uint8_t raw_amount[8];
-        if (8 != call_get_merkleized_map_value(dc, &anchor_map,
-                                               (uint8_t[]) {PSBT_OUT_AMOUNT}, 1,
-                                               raw_amount, 8)) {
+        if (8 != call_get_merkleized_map_value(dc,
+                                               &anchor_map,
+                                               (uint8_t[]) {PSBT_OUT_AMOUNT},
+                                               1,
+                                               raw_amount,
+                                               8)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -944,17 +947,22 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
         }
         static const uint8_t P2A_SCRIPT[] = {0x51u, 0x02u, 0x4Eu, 0x73u};
         uint8_t p2a_buf[sizeof(P2A_SCRIPT)];
-        if ((int) sizeof(P2A_SCRIPT) != call_get_merkleized_map_value(
-                dc, &anchor_map, (uint8_t[]) {PSBT_OUT_SCRIPT}, 1,
-                p2a_buf, sizeof(P2A_SCRIPT)) ||
+        if ((int) sizeof(P2A_SCRIPT) != call_get_merkleized_map_value(dc,
+                                                                      &anchor_map,
+                                                                      (uint8_t[]) {PSBT_OUT_SCRIPT},
+                                                                      1,
+                                                                      p2a_buf,
+                                                                      sizeof(P2A_SCRIPT)) ||
             memcmp(p2a_buf, P2A_SCRIPT, sizeof(P2A_SCRIPT)) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
     }
 
-    /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <= pegin_max_fee */
-    uint64_t outputs_sum = intent->vault_amount + intent->depositor_claim_value + PEGIN_P2A_ANCHOR_VALUE;
+    /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <=
+     * pegin_max_fee */
+    uint64_t outputs_sum =
+        intent->vault_amount + intent->depositor_claim_value + PEGIN_P2A_ANCHOR_VALUE;
     if (outputs_sum < intent->vault_amount || htlc_value < outputs_sum ||
         (htlc_value - outputs_sum) > intent->pegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);

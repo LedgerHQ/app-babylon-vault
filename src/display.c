@@ -57,8 +57,8 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
     for (size_t i = 0; i < VAULT_HASH256_LEN; i++) {
         uint8_t hi = (ctx_hash[i] >> 4) & 0x0fu;
         uint8_t lo = ctx_hash[i] & 0x0fu;
-        *p++ = (char)(hi < 10u ? '0' + hi : 'a' + hi - 10u);
-        *p++ = (char)(lo < 10u ? '0' + lo : 'a' + lo - 10u);
+        *p++ = (char) (hi < 10u ? '0' + hi : 'a' + hi - 10u);
+        *p++ = (char) (lo < 10u ? '0' + lo : 'a' + lo - 10u);
     }
     *p = '\0';
     explicit_bzero(ctx_hash, sizeof(ctx_hash));
@@ -67,8 +67,9 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
     // and SHA-256 of the full context (TX_DISPLAY_MAX_PAIRS = 4 ≥ 3).
     nbgl_layoutTagValue_t *const pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     pairs[0] = (nbgl_layoutTagValue_t) {.item = "App name", .value = name_str};
-    pairs[1] = (nbgl_layoutTagValue_t) {.item = "Path",     .value = G_scratch.derive_ctx.path_str};
-    pairs[2] = (nbgl_layoutTagValue_t) {.item = "Context",  .value = G_scratch.derive_ctx.ctx_hash_str};
+    pairs[1] = (nbgl_layoutTagValue_t) {.item = "Path", .value = G_scratch.derive_ctx.path_str};
+    pairs[2] =
+        (nbgl_layoutTagValue_t) {.item = "Context", .value = G_scratch.derive_ctx.ctx_hash_str};
 
     nbgl_layoutTagValueList_t pair_list = {
         .nbMaxLinesForValue = 0,
