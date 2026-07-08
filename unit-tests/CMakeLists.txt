@@ -47,7 +47,7 @@ add_executable(test_vault_context
   ${SRC_DIR}/globals.c
 )
 
-target_compile_definitions(test_vault_context PRIVATE TEST)
+target_compile_definitions(test_vault_context PRIVATE TEST BIP44_COIN_TYPE=1)
 target_link_libraries(test_vault_context cmocka)
 
 add_test(NAME test_vault_context COMMAND test_vault_context)
