@@ -53,14 +53,9 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
     // regardless of its length, with no truncation risk (WYSIWYS).
     uint8_t ctx_hash[VAULT_HASH256_LEN];
     cx_hash_sha256(context, context_len, ctx_hash, VAULT_HASH256_LEN);
-    char *p = G_scratch.derive_ctx.ctx_hash_str;
-    for (size_t i = 0; i < VAULT_HASH256_LEN; i++) {
-        uint8_t hi = (ctx_hash[i] >> 4) & 0x0fu;
-        uint8_t lo = ctx_hash[i] & 0x0fu;
-        *p++ = (char) (hi < 10u ? '0' + hi : 'a' + hi - 10u);
-        *p++ = (char) (lo < 10u ? '0' + lo : 'a' + lo - 10u);
-    }
-    *p = '\0';
+    format_hex(ctx_hash, VAULT_HASH256_LEN,
+               G_scratch.derive_ctx.ctx_hash_str,
+               sizeof(G_scratch.derive_ctx.ctx_hash_str));
     explicit_bzero(ctx_hash, sizeof(ctx_hash));
 
     // Three fields: app name, BIP-32 path (so user can verify which key is bound),

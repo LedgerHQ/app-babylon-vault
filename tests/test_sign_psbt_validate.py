@@ -48,6 +48,7 @@ from .vault_client import (
     VAULT_APP_NAME,
     vault_hashlock,
     vault_auth_anchor,
+    depositor_path,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     TEST_DEPOSITOR_XONLY_MAINNET,
@@ -438,7 +439,7 @@ def _build_intent_tlv_for_test(
         prepegin_txid=prepegin_txid,
         htlc_vout=_HTLC_VOUT,
         htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
-        depositor_path=[HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0],
+        depositor_path=depositor_path(coin_type),
         keeper_count=len(keeper_pks),
         challenger_count=len(challenger_pks),
     )
@@ -451,9 +452,6 @@ def _build_intent_tlv_for_test(
 _DERIVE_CONTEXT = bytes(range(72))  # fixed non-empty vaultContext-shaped blob
 
 
-def _connected_path(coin_type: int) -> List[int]:
-    return [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]
-
 
 # Root returned by the most recent _setup_sN call — used to bind the Pre-PegIn
 # OP_RETURN auth-anchor in _build_prepegin_psbt.
@@ -463,7 +461,7 @@ _DERIVED_ROOT: bytes = b""
 def _derive_root_and_hashlock(client: "RaggerClient", navigator: "Navigator", device, coin_type: int) -> bytes:
     """Run DERIVE_CONTEXT_HASH, stash the root, and return the per-vault hashlock h."""
     global _DERIVED_ROOT
-    _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME, _connected_path(coin_type),
+    _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME, depositor_path(coin_type),
                                         _DERIVE_CONTEXT, navigator, device)
     return vault_hashlock(_DERIVED_ROOT, _HTLC_VOUT)
 
@@ -1719,7 +1717,7 @@ def _setup_signet_payout_state(
         prepegin_txid=_PREPEGIN_TXID,
         htlc_vout=_HTLC_VOUT,
         htlc_refund_timelock=_SIGNET_TIMELOCK,
-        depositor_path=[HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0],
+        depositor_path=depositor_path(coin_type),
         keeper_count=len(_SIGNET_KEEPER_PKS),
         challenger_count=len(_SIGNET_CHALLENGER_PKS),
     )

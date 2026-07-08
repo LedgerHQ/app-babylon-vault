@@ -29,6 +29,7 @@ from ragger.navigator import Navigator
 
 from .vault_client import (
     derive_context_hash,
+    depositor_path,
     CLA_VAULT,
     INS_DERIVE_CONTEXT_HASH,
     P1_INITIAL,
@@ -59,10 +60,6 @@ def _network_name(bitcoin_network: str) -> bytes:
     return b"bitcoin-mainnet" if bitcoin_network == "main" else b"bitcoin-signet"
 
 
-def _connected_path(ct: int) -> List[int]:
-    """connectedPubkey path used by these tests (depositor BIP-86 receive leaf)."""
-    return [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0]
-
 
 def _expected_root(app_name: bytes, path: List[int], context: bytes, bitcoin_network: str) -> bytes:
     ikm = _bip32_derive(_HKDF_PATH).PrivateKey().Raw().ToBytes()
@@ -82,7 +79,7 @@ def _expected_root(app_name: bytes, path: List[int], context: bytes, bitcoin_net
 def test_root_matches_reference(client: "RaggerClient", navigator: Navigator,
                                 device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
-    path, ctx = _connected_path(ct), b"\xde\xad\xbe\xef"
+    path, ctx = depositor_path(ct), b"\xde\xad\xbe\xef"
     root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx,
                                navigator=navigator, device=device)
     assert len(root) == 32
@@ -92,7 +89,7 @@ def test_root_matches_reference(client: "RaggerClient", navigator: Navigator,
 def test_deterministic(client: "RaggerClient", navigator: Navigator,
                        device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
-    path = _connected_path(ct)
+    path = depositor_path(ct)
     a = derive_context_hash(client, APP_NAME, path, b"\x01\x02", navigator, device)
     b = derive_context_hash(client, APP_NAME, path, b"\x01\x02", navigator, device)
     assert a == b
@@ -101,7 +98,7 @@ def test_deterministic(client: "RaggerClient", navigator: Navigator,
 def test_different_app_name_diverges(client: "RaggerClient", navigator: Navigator,
                                      device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
-    path, ctx = _connected_path(ct), b"\xaa\xbb"
+    path, ctx = depositor_path(ct), b"\xaa\xbb"
     base = derive_context_hash(client, APP_NAME, path, ctx, navigator, device)
     other = derive_context_hash(client, b"other-app", path, ctx, navigator, device)
     assert other != base
@@ -111,7 +108,7 @@ def test_different_app_name_diverges(client: "RaggerClient", navigator: Navigato
 def test_different_context_diverges(client: "RaggerClient", navigator: Navigator,
                                     device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
-    path = _connected_path(ct)
+    path = depositor_path(ct)
     a = derive_context_hash(client, APP_NAME, path, b"\x11\x11", navigator, device)
     b = derive_context_hash(client, APP_NAME, path, b"\x22\x22", navigator, device)
     assert a != b
@@ -121,7 +118,7 @@ def test_different_path_diverges(client: "RaggerClient", navigator: Navigator,
                                  device: Device, bitcoin_network: str):
     ct = 0 if bitcoin_network == "main" else 1
     ctx = b"\xab\xcd"
-    a = derive_context_hash(client, APP_NAME, _connected_path(ct), ctx, navigator, device)
+    a = derive_context_hash(client, APP_NAME, depositor_path(ct), ctx, navigator, device)
     other_path = [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 1]  # different receive leaf
     b = derive_context_hash(client, APP_NAME, other_path, ctx, navigator, device)
     assert a != b
@@ -152,7 +149,7 @@ def test_app_name_too_long_raises(client: "RaggerClient"):
 def test_empty_context_raises(client: "RaggerClient", bitcoin_network: str):
     """app_name + path but no context → SW_INCORRECT_DATA (0x6A80)."""
     ct = 0 if bitcoin_network == "main" else 1
-    path = _connected_path(ct)
+    path = depositor_path(ct)
     payload = (bytes([len(APP_NAME)]) + APP_NAME
                + bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path))
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -193,17 +190,17 @@ def test_invalidates_loaded_intent(client: "RaggerClient", navigator: Navigator,
         depositor_claim_value=10_000, base_fee_rate=10, pegin_max_fee=50_000,
         pegin_csv_timelock=100, payout_timelock=200,
         prepegin_txid=bytes(range(32)), htlc_vout=0, htlc_refund_timelock=144,
-        depositor_path=[HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0],
+        depositor_path=depositor_path(ct),
         keeper_count=1, challenger_count=1,
     )
     # Must derive first — state machine requires HASH_DERIVED before APPROVE_VAULT_INTENT.
-    derive_context_hash(client, APP_NAME, _connected_path(ct), b"\xde\xad\xbe\xef",
+    derive_context_hash(client, APP_NAME, depositor_path(ct), b"\xde\xad\xbe\xef",
                         navigator, device)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[TEST_VALID_KEYS[0]],
                                   challenger_pks=[TEST_VALID_KEYS[1]])
 
-    path, ctx = _connected_path(ct), b"\xde\xad\xbe\xef"
+    path, ctx = depositor_path(ct), b"\xde\xad\xbe\xef"
     root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx,
                                navigator=navigator, device=device)
     assert len(root) == 32

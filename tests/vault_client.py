@@ -65,6 +65,8 @@ TAG_DEPOSITOR_DERIVATION_PATH = 0x0F
 TAG_KEEPER_COUNT              = 0x10
 TAG_CHALLENGER_COUNT          = 0x11
 
+HARDENED = 0x80000000
+
 # Protocol constants — must match src/vault_constants.h
 VAULT_STRUCTURE_TYPE     = 0x01
 VAULT_PROTOCOL_VERSION   = 0x01
@@ -200,6 +202,25 @@ def vault_hashlock(root: bytes, htlc_vout: int) -> bytes:
 def vault_auth_anchor(root: bytes) -> bytes:
     """Pre-PegIn auth-anchor commitment SHA256(Expand(root, "auth-anchor"))."""
     return _vault_expand_commitment(root, b"auth-anchor", b"")
+
+
+def depositor_path(coin_type: int) -> "List[int]":
+    """Standard BIP-86 depositor path m/86'/coin_type'/0'/0/0."""
+    return [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]
+
+
+def derive_for_intent(client: "RaggerClient",
+                      navigator: "Navigator",
+                      device: "Device",
+                      bitcoin_network: str,
+                      context: bytes = b"\xde\xad\xbe\xef") -> bytes:
+    """Run DERIVE_CONTEXT_HASH with the default depositor path and context.
+
+    Convenience wrapper for test suites that need to reach HASH_DERIVED before
+    APPROVE_VAULT_INTENT.  Returns the 32-byte root.
+    """
+    ct = 0 if bitcoin_network == "main" else 1
+    return derive_context_hash(client, VAULT_APP_NAME, depositor_path(ct), context, navigator, device)
 
 
 # ---------------------------------------------------------------------------
