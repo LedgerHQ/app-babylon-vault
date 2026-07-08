@@ -966,11 +966,18 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     }
 
     /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <=
-     * pegin_max_fee */
-    uint64_t outputs_sum =
-        intent->vault_amount + intent->depositor_claim_value + PEGIN_P2A_ANCHOR_VALUE;
-    if (outputs_sum < intent->vault_amount || htlc_value < outputs_sum ||
-        (htlc_value - outputs_sum) > intent->pegin_max_fee) {
+     * pegin_max_fee.  Two-step addition to catch both possible wraps independently. */
+    uint64_t outputs_sum = intent->vault_amount + intent->depositor_claim_value;
+    if (outputs_sum < intent->vault_amount) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    outputs_sum += PEGIN_P2A_ANCHOR_VALUE;
+    if (outputs_sum < PEGIN_P2A_ANCHOR_VALUE) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    if (htlc_value < outputs_sum || (htlc_value - outputs_sum) > intent->pegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
