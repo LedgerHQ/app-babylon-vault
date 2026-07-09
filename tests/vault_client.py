@@ -262,7 +262,7 @@ def build_intent_tlv(
     depositor_path: List[int],
     keeper_count: int,
     challenger_count: int,
-    pegin_anchor_value: int = 240,
+    pegin_anchor_value: int = 546,
 ) -> bytes:
     """Encode all 18 scalar intent fields into a P1=0x00 TLV payload."""
     return (

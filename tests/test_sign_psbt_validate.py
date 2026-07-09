@@ -111,7 +111,7 @@ _PAYOUT_TIMELOCK      = 200
 _HTLC_REFUND_TIMELOCK = 144
 _HTLC_VOUT            = 0
 # P2A anchor value sent in the intent (pegin_anchor_value field, TAG 0x12).
-_PEGIN_ANCHOR_VALUE = 240
+_PEGIN_ANCHOR_VALUE = 546
 
 # htlc_value must be in [vault_amount + depositor_claim_value + anchor,
 #                         vault_amount + depositor_claim_value + anchor + pegin_max_fee]
