@@ -170,6 +170,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_PEGIN_ANCHOR_VALUE:
                 if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (U8BE(v, 0) < VAULT_DUST_LIMIT) return VAULT_TLV_ERR_VALIDATION;
                 out->pegin_anchor_value = U8BE(v, 0);
                 break;
         }

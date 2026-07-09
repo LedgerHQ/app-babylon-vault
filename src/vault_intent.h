@@ -23,7 +23,7 @@
  * @brief Vault intent — all parameters received via APPROVE_VAULT_INTENT (INS 0x80).
  *
  * Populated in two phases:
- *   P1=0x00  TLV scalar parsing  (17 mandatory fields, tag 1B + len 1B)
+ *   P1=0x00  TLV scalar parsing  (18 mandatory fields, tag 1B + len 1B)
  *   P1=0x01  Key batch streaming (keeper_count + challenger_count x-only keys)
  *
  * Valid only while session state != VAULT_STATE_IDLE.
@@ -31,7 +31,7 @@
  */
 typedef struct {
     // -------------------------------------------------------------------------
-    // Scalar fields (17) — parsed from TLV P1=0x00
+    // Scalar fields (18) — parsed from TLV P1=0x00
     // -------------------------------------------------------------------------
 
     /** Protocol structure type — must equal the vault structure type constant. */
