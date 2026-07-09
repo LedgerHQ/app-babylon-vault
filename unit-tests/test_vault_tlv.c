@@ -35,6 +35,7 @@
 #define TEST_PAYOUT_TIMELOCK      200u    /* (90, 4032) ✓ */
 #define TEST_HTLC_REFUND          144u    /* [72, 1008] ✓ */
 #define TEST_HTLC_VOUT              0u
+#define TEST_PEGIN_ANCHOR_VALUE   240ULL
 
 /* m/86'/1'/0'/0/0 — coin type matches BIP44_COIN_TYPE=1 */
 static const uint32_t VALID_PATH[5] = {
@@ -121,6 +122,7 @@ static size_t build_valid_tlv(uint8_t *buf) {
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     p = tlv_u8    (p, TAG_KEEPER_COUNT,             1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,         1);
+    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,       TEST_PEGIN_ANCHOR_VALUE);
     return (size_t)(p - buf);
 }
 
@@ -198,6 +200,7 @@ static void test_tlv_tags_any_order_ok(void **state) {
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     p = tlv_u8    (p, TAG_KEEPER_COUNT,             1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,         1);
+    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,       TEST_PEGIN_ANCHOR_VALUE);
     /* TAG_COIN_TYPE last — intentionally out of spec-table order */
     p = tlv_u32be (p, TAG_COIN_TYPE,                BIP44_COIN_TYPE);
     assert_int_equal(vault_tlv_parse(buf, (size_t)(p - buf), &out), VAULT_TLV_OK);

@@ -79,6 +79,9 @@ typedef struct {
     /** Maximum acceptable PegIn transaction fee in satoshis. */
     uint64_t pegin_max_fee;
 
+    /** P2A anchor output value in satoshis for the PegIn transaction (Output 2). */
+    uint64_t pegin_anchor_value;
+
     /**
      * Vault provider x-only public key.
      *

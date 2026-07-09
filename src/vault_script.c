@@ -615,7 +615,7 @@ bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
  *
  *   version=3  |  1 input: prepegin_txid:htlc_vout seq=0xFFFFFFFE
  *   3 outputs: Vault UTXO (vault_amount) + Depositor Claim (depositor_claim_value)
- *              + P2A anchor (PEGIN_P2A_ANCHOR_VALUE, script 0x51024e73)
+ *              + P2A anchor (pegin_anchor_value, script 0x51024e73)
  *   locktime=0
  *
  * The first two scriptPubKeys are P2TR (34 bytes) reconstructed from the intent.
@@ -670,7 +670,7 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     memcpy(tx + off, claim_spk, sizeof(claim_spk));
     off += sizeof(claim_spk);
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (PEGIN_P2A_ANCHOR_VALUE >> (i * 8));
+    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->pegin_anchor_value >> (i * 8));
     tx[off++] = 4u; /* script length */
     tx[off++] = 0x51u;
     tx[off++] = 0x02u;

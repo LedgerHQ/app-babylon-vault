@@ -66,17 +66,6 @@
  */
 #define VAULT_DUST_LIMIT ((uint64_t) 546u)
 
-/**
- * P2A anchor output value (sats) used by the v3 (TRUC) PegIn transaction.
- * Standard Bitcoin Core P2A dust threshold (OP_1 OP_PUSHBYTES_2 0x4e73,
- * 4-byte scriptPubKey at 3 sat/vB relay fee = 240 sat).
- * Must match the vault provider's exact on-chain value byte-for-byte so
- * vault_compute_pegin_txid produces the correct txid.
- *
- * TODO(NAPPS-1421): confirm 240 sat with vault provider before merging.
- */
-#define PEGIN_P2A_ANCHOR_VALUE ((uint64_t) 240u)
-
 /* DERIVE_CONTEXT_HASH input limits (spec §2.1). */
 
 /** Maximum byte length of the appName field. */

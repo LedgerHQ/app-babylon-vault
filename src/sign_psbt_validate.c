@@ -929,7 +929,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
         return false;
     }
 
-    /* 3. Output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, PEGIN_P2A_ANCHOR_VALUE sats)
+    /* 3. Output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, intent->pegin_anchor_value sats)
      * P2A script is 4 bytes — _read_output enforces 34-byte P2TR scripts, so read inline. */
     {
         merkleized_map_commitment_t anchor_map;
@@ -947,7 +947,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (read_u64_le(raw_amount, 0) != PEGIN_P2A_ANCHOR_VALUE) {
+        if (read_u64_le(raw_amount, 0) != intent->pegin_anchor_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -972,8 +972,8 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    outputs_sum += PEGIN_P2A_ANCHOR_VALUE;
-    if (outputs_sum < PEGIN_P2A_ANCHOR_VALUE) {
+    outputs_sum += intent->pegin_anchor_value;
+    if (outputs_sum < intent->pegin_anchor_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }

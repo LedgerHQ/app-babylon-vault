@@ -3,13 +3,13 @@
 /**
  * TLV tag byte assignments for APPROVE_VAULT_INTENT (INS 0x80).
  *
- * P1=0x00 payload — 17 scalar fields encoded as: tag (1 B) | length (1 B) | value (length B).
+ * P1=0x00 payload — 18 scalar fields encoded as: tag (1 B) | length (1 B) | value (length B).
  * Tags are assigned sequentially in spec-table order.
  * Duplicate tags, unknown tags, and non-canonical encodings are all rejected.
  *
  * P1=0x01 payload — raw packed 32-byte x-only keys (no TLV wrapper):
  *   keeper_count × 32 bytes, then challenger_count × 32 bytes.
- * Tags 0x12/0x13 below are defined for documentation purposes only;
+ * Tags 0x13/0x14 below are defined for documentation purposes only;
  * they do not appear on the wire in P1=0x01.
  *
  * Wire size vs struct notes (parser handles conversion):
@@ -21,7 +21,7 @@
  *     wire = 4n B (variable, n uint32_t BE), struct = uint32_t[5] (validated n == 5)
  */
 
-/* --- P1=0x00 scalar tags (17) ------------------------------------------- */
+/* --- P1=0x00 scalar tags (18) ------------------------------------------- */
 
 #define TAG_STRUCTURE_TYPE 0x01 /**< u8    — protocol structure type constant          (1 B)  */
 #define TAG_VERSION        0x02 /**< u8    — protocol version constant                 (1 B)  */
@@ -49,26 +49,28 @@
     0x0F /**< u32[] — BIP-86 derivation path, exactly 5 levels  (20 B BE) */
 #define TAG_KEEPER_COUNT     0x10 /**< u8    — number of keeper keys [1, 32]              (1 B)  */
 #define TAG_CHALLENGER_COUNT 0x11 /**< u8    — number of challenger keys [1, 32]          (1 B) */
+#define TAG_PEGIN_ANCHOR_VALUE \
+    0x12 /**< u64   — P2A anchor output value in satoshis         (8 B BE) */
 
 /* --- P1=0x01 documentation tags (not on wire) ---------------------------- */
 
-#define TAG_KEEPER_PKS     0x12 /**< (doc) keeper x-only keys, 32 B each, lex-sorted   */
-#define TAG_CHALLENGER_PKS 0x13 /**< (doc) challenger x-only keys, 32 B each, lex-sorted */
+#define TAG_KEEPER_PKS     0x13 /**< (doc) keeper x-only keys, 32 B each, lex-sorted   */
+#define TAG_CHALLENGER_PKS 0x14 /**< (doc) challenger x-only keys, 32 B each, lex-sorted */
 
 /* --- Helpers for the P1=0x00 parser -------------------------------------- */
 
 /** Highest tag value used in P1=0x00 scalar payload. */
-#define VAULT_INTENT_TAG_MAX TAG_CHALLENGER_COUNT /* 0x11 */
+#define VAULT_INTENT_TAG_MAX TAG_PEGIN_ANCHOR_VALUE /* 0x12 */
 
 /** Number of mandatory scalar tags. */
-#define VAULT_INTENT_TAG_COUNT 17
+#define VAULT_INTENT_TAG_COUNT 18
 
 /**
  * Bitmask over all valid scalar tags.
  * Bit i corresponds to tag (i + 1), i.e. TAG_STRUCTURE_TYPE sets bit 0.
- * All 17 bits must be set after a complete P1=0x00 parse.
+ * All 18 bits must be set after a complete P1=0x00 parse.
  */
 #define VAULT_INTENT_ALL_TAGS_MASK ((1u << VAULT_INTENT_TAG_COUNT) - 1u)
 
-/** Convert a tag byte to its bitmask bit (tag must be in [0x01, 0x11]). */
+/** Convert a tag byte to its bitmask bit (tag must be in [0x01, 0x12]). */
 #define VAULT_TAG_BIT(tag) (1u << ((tag) - 1u))

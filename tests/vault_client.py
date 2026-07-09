@@ -64,6 +64,7 @@ TAG_HTLC_REFUND_TIMELOCK      = 0x0E
 TAG_DEPOSITOR_DERIVATION_PATH = 0x0F
 TAG_KEEPER_COUNT              = 0x10
 TAG_CHALLENGER_COUNT          = 0x11
+TAG_PEGIN_ANCHOR_VALUE        = 0x12
 
 HARDENED = 0x80000000
 
@@ -261,8 +262,9 @@ def build_intent_tlv(
     depositor_path: List[int],
     keeper_count: int,
     challenger_count: int,
+    pegin_anchor_value: int = 240,
 ) -> bytes:
-    """Encode all 17 scalar intent fields into a P1=0x00 TLV payload."""
+    """Encode all 18 scalar intent fields into a P1=0x00 TLV payload."""
     return (
         _tlv_u8   (TAG_STRUCTURE_TYPE,            VAULT_STRUCTURE_TYPE)    +
         _tlv_u8   (TAG_VERSION,                   VAULT_PROTOCOL_VERSION)  +
@@ -280,7 +282,8 @@ def build_intent_tlv(
         _tlv_u32be(TAG_HTLC_REFUND_TIMELOCK,      htlc_refund_timelock)    +
         _tlv_path (TAG_DEPOSITOR_DERIVATION_PATH, depositor_path)          +
         _tlv_u8   (TAG_KEEPER_COUNT,              keeper_count)            +
-        _tlv_u8   (TAG_CHALLENGER_COUNT,          challenger_count)
+        _tlv_u8   (TAG_CHALLENGER_COUNT,          challenger_count)        +
+        _tlv_u64be(TAG_PEGIN_ANCHOR_VALUE,        pegin_anchor_value)
     )
 
 

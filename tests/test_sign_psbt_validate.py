@@ -110,12 +110,12 @@ _PEGIN_CSV_TIMELOCK   = 144
 _PAYOUT_TIMELOCK      = 200
 _HTLC_REFUND_TIMELOCK = 144
 _HTLC_VOUT            = 0
-# P2A anchor value in the v3 PegIn — must match PEGIN_P2A_ANCHOR_VALUE in vault_constants.h
-_PEGIN_P2A_ANCHOR_VALUE = 240
+# P2A anchor value sent in the intent (pegin_anchor_value field, TAG 0x12).
+_PEGIN_ANCHOR_VALUE = 240
 
 # htlc_value must be in [vault_amount + depositor_claim_value + anchor,
 #                         vault_amount + depositor_claim_value + anchor + pegin_max_fee]
-_HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_P2A_ANCHOR_VALUE + 234_567
+_HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_ANCHOR_VALUE + 234_567
 
 # Single keeper and challenger for all tests (sorted ascending — key[0] < key[1])
 _TEST_KEEPER_PKS     = [TEST_VALID_KEYS[0]]
@@ -355,7 +355,7 @@ def _build_pegin_psbt(
     tx.vout = [
         CTxOut(vault_amount, vault_spk),
         CTxOut(depositor_claim_value, claim_spk),
-        CTxOut(_PEGIN_P2A_ANCHOR_VALUE, p2a_spk),
+        CTxOut(_PEGIN_ANCHOR_VALUE, p2a_spk),
     ]
     tx.wit = CTxWitness()
 
@@ -898,7 +898,7 @@ def test_sign_psbt_pegin_fee_too_high(
 
     hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
 
-    excessive_htlc = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_P2A_ANCHOR_VALUE + _PEGIN_MAX_FEE + 1
+    excessive_htlc = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_ANCHOR_VALUE + _PEGIN_MAX_FEE + 1
     psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID, htlc_value=excessive_htlc)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
@@ -1240,7 +1240,7 @@ def _compute_pegin_txid(prepegin_txid: bytes,
     buf += bytes([len(vault_utxo_spk)]) + vault_utxo_spk
     buf += struct.pack('<Q', depositor_claim_value)
     buf += bytes([len(claim_spk)]) + claim_spk
-    buf += struct.pack('<Q', _PEGIN_P2A_ANCHOR_VALUE) + b'\x04\x51\x02\x4e\x73'  # P2A anchor
+    buf += struct.pack('<Q', _PEGIN_ANCHOR_VALUE) + b'\x04\x51\x02\x4e\x73'  # P2A anchor
     buf += struct.pack('<I', 0)     # locktime
     return hashlib.sha256(hashlib.sha256(buf).digest()).digest()
 
@@ -1737,7 +1737,7 @@ def _setup_signet_payout_state(
     claim_spk = _p2tr_from_single_leaf(_depositor_claim_leaf(dep_pk))
     lh1 = _tapleaf_hash(leaf1)
     control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY + lh1
-    htlc_value = _SIGNET_VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_P2A_ANCHOR_VALUE + 1_000
+    htlc_value = _SIGNET_VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_ANCHOR_VALUE + 1_000
     p2a_spk = bytes([0x51, 0x02, 0x4e, 0x73])
 
     tx = CTransaction()
@@ -1749,7 +1749,7 @@ def _setup_signet_payout_state(
     tx.vout = [
         CTxOut(_SIGNET_VAULT_AMOUNT, vault_spk),
         CTxOut(_DEPOSITOR_CLAIM_VALUE, claim_spk),
-        CTxOut(_PEGIN_P2A_ANCHOR_VALUE, p2a_spk),
+        CTxOut(_PEGIN_ANCHOR_VALUE, p2a_spk),
     ]
     tx.wit = CTxWitness()
 
