@@ -38,6 +38,16 @@
 #if BIP44_COIN_TYPE == 0
 #define VAULT_CANONICAL_NETWORK_NAME "bitcoin-mainnet"
 #elif BIP44_COIN_TYPE == 1
+/* coin_type 1 covers both Bitcoin signet and testnet3/testnet4, which the spec maps to
+ * distinct canonicalNetworkNames ("bitcoin-signet" vs "bitcoin-testnet").  Require an
+ * explicit -DVAULT_TARGET_SIGNET sentinel so a testnet3/4 build fails loudly rather than
+ * silently producing the wrong network name and an incompatible HKDF root. */
+#ifndef VAULT_TARGET_SIGNET
+#error \
+    "BIP44_COIN_TYPE=1 covers both signet and testnet3/4. " \
+    "Define VAULT_TARGET_SIGNET to confirm this build targets Bitcoin signet. " \
+    "Add a separate #elif guarded by VAULT_TARGET_TESTNET for a testnet3/4 build."
+#endif
 #define VAULT_CANONICAL_NETWORK_NAME "bitcoin-signet"
 #else
 #error \
@@ -55,15 +65,6 @@
  * guaranteeing all payout outputs are above the relay dust limit.
  */
 #define VAULT_DUST_LIMIT ((uint64_t) 546u)
-
-/**
- * P2A anchor output value (sats) used by the v3 (TRUC) PegIn transaction.
- * Standard Bitcoin Core P2A dust threshold (OP_1 OP_PUSHBYTES_2 0x4e73,
- * 4-byte scriptPubKey at 3 sat/vB relay fee = 240 sat).
- * Must match the vault provider's exact on-chain value byte-for-byte so
- * vault_compute_pegin_txid produces the correct txid.
- */
-#define PEGIN_P2A_ANCHOR_VALUE ((uint64_t) 240u)
 
 /* DERIVE_CONTEXT_HASH input limits (spec §2.1). */
 

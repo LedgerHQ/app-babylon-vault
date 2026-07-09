@@ -123,7 +123,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_HTLC_VOUT:
                 if (field_len != 1) return VAULT_TLV_ERR_WRONG_LENGTH;
-                out->htlc_vout = (uint32_t) v[0];
+                out->htlc_vout = v[0];
                 break;
 
             case TAG_HTLC_REFUND_TIMELOCK: {
@@ -167,13 +167,19 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 if (v[0] < 1 || v[0] > VAULT_MAX_CHALLENGERS) return VAULT_TLV_ERR_VALIDATION;
                 out->challenger_count = v[0];
                 break;
+
+            case TAG_PEGIN_ANCHOR_VALUE:
+                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (U8BE(v, 0) < VAULT_DUST_LIMIT) return VAULT_TLV_ERR_VALIDATION;
+                out->pegin_anchor_value = U8BE(v, 0);
+                break;
         }
 
         seen_mask |= bit;
         pos += field_len;
     }
 
-    /* All 17 mandatory fields must be present. */
+    /* All 18 mandatory fields must be present. */
     if (seen_mask != VAULT_INTENT_ALL_TAGS_MASK) return VAULT_TLV_ERR_MISSING_FIELD;
 
     /* Cross-field: depositor_path[1] must equal coin_type | HARDENED. */

@@ -23,7 +23,7 @@
  * @brief Vault intent — all parameters received via APPROVE_VAULT_INTENT (INS 0x80).
  *
  * Populated in two phases:
- *   P1=0x00  TLV scalar parsing  (17 mandatory fields, tag 1B + len 1B)
+ *   P1=0x00  TLV scalar parsing  (18 mandatory fields, tag 1B + len 1B)
  *   P1=0x01  Key batch streaming (keeper_count + challenger_count x-only keys)
  *
  * Valid only while session state != VAULT_STATE_IDLE.
@@ -31,7 +31,7 @@
  */
 typedef struct {
     // -------------------------------------------------------------------------
-    // Scalar fields (17) — parsed from TLV P1=0x00
+    // Scalar fields (18) — parsed from TLV P1=0x00
     // -------------------------------------------------------------------------
 
     /** Protocol structure type — must equal the vault structure type constant. */
@@ -79,6 +79,9 @@ typedef struct {
     /** Maximum acceptable PegIn transaction fee in satoshis. */
     uint64_t pegin_max_fee;
 
+    /** P2A anchor output value in satoshis for the PegIn transaction (Output 2). */
+    uint64_t pegin_anchor_value;
+
     /**
      * Vault provider x-only public key.
      *
@@ -90,8 +93,8 @@ typedef struct {
      */
     uint8_t vault_provider_pk[VAULT_XONLY_PUBKEY_LEN];
 
-    /** Output index of the HTLC in the Pre-PegIn transaction. */
-    uint32_t htlc_vout;
+    /** Output index of the HTLC in the Pre-PegIn transaction. Protocol u8. */
+    uint8_t htlc_vout;
 
     /** Pre-PegIn transaction ID (little-endian). */
     uint8_t prepegin_txid[VAULT_HASH256_LEN];

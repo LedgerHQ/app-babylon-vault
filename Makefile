@@ -49,8 +49,10 @@ else ifeq ($(COIN),babylon_vault_testnet)
 # device (same tb prefix, BIP-32 version bytes, coin type 1; no network stack), so this
 # build targets signet. The official app name stays "Babylon Vault Testnet" (the guideline
 # enforcer pins it), but the amount ticker is overridden to "sBTC" below the include.
+# VAULT_TARGET_SIGNET disambiguates BIP44_COIN_TYPE=1 (signet vs testnet3/4) in vault_constants.h.
 APPNAME = "Babylon Vault Testnet"
 BITCOIN_NETWORK = testnet
+DEFINES += VAULT_TARGET_SIGNET
 
 else ifeq ($(filter clean,$(MAKECMDGOALS)),)
 $(error Unsupported COIN - use $(VARIANT_VALUES))

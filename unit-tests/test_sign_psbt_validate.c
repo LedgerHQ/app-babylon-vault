@@ -478,6 +478,42 @@ static void test_refund_reject_missing_csv_opcode(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
+ * _pegin_validate_outputs fee arithmetic — overflow guards
+ *
+ * The two-step overflow-safe addition in _pegin_validate_outputs is a private
+ * static function and cannot be called directly.  The helper below mirrors the
+ * exact same pattern so the logic — including the second (anchor) overflow
+ * branch — is exercised under unit-test conditions.
+ * ------------------------------------------------------------------------- */
+
+static bool _test_outputs_sum(uint64_t vault, uint64_t claim, uint64_t anchor,
+                              uint64_t *out) {
+    uint64_t s = vault + claim;
+    if (s < vault) return false;
+    s += anchor;
+    if (s < anchor) return false;
+    *out = s;
+    return true;
+}
+
+static void test_pegin_fee_sum_overflow_guards(void **state) {
+    (void) state;
+    uint64_t sum;
+
+    assert_true(_test_outputs_sum(1000, 2000, 3000, &sum));
+    assert_int_equal(sum, 6000);
+
+    /* First guard: vault_amount + depositor_claim wraps */
+    assert_false(_test_outputs_sum(UINT64_MAX, 1, 0, &sum));
+
+    /* Second guard: vault + claim == UINT64_MAX (no first wrap),
+     * then anchor = 1 pushes it over — second branch fires. */
+    assert_false(_test_outputs_sum((uint64_t)1u << 63,
+                                   ((uint64_t)1u << 63) - 1u,
+                                   1, &sum));
+}
+
+/* ---------------------------------------------------------------------------
  * Test runner
  * ------------------------------------------------------------------------- */
 
@@ -507,6 +543,9 @@ int main(void) {
         cmocka_unit_test(test_deriv_reject_hash_truncated),
         cmocka_unit_test(test_deriv_reject_path_not_divisible_by_4),
         cmocka_unit_test(test_deriv_reject_too_many_steps),
+
+        /* _pegin_validate_outputs fee arithmetic */
+        cmocka_unit_test(test_pegin_fee_sum_overflow_guards),
 
         /* parse_refund_leaf_script */
         cmocka_unit_test(test_refund_valid_op1),

@@ -35,6 +35,7 @@
 #define TEST_PAYOUT_TIMELOCK      200u    /* (90, 4032) ✓ */
 #define TEST_HTLC_REFUND          144u    /* [72, 1008] ✓ */
 #define TEST_HTLC_VOUT              0u
+#define TEST_PEGIN_ANCHOR_VALUE   VAULT_DUST_LIMIT
 
 /* m/86'/1'/0'/0/0 — coin type matches BIP44_COIN_TYPE=1 */
 static const uint32_t VALID_PATH[5] = {
@@ -121,6 +122,7 @@ static size_t build_valid_tlv(uint8_t *buf) {
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     p = tlv_u8    (p, TAG_KEEPER_COUNT,             1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,         1);
+    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,       TEST_PEGIN_ANCHOR_VALUE);
     return (size_t)(p - buf);
 }
 
@@ -198,6 +200,7 @@ static void test_tlv_tags_any_order_ok(void **state) {
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     p = tlv_u8    (p, TAG_KEEPER_COUNT,             1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,         1);
+    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,       TEST_PEGIN_ANCHOR_VALUE);
     /* TAG_COIN_TYPE last — intentionally out of spec-table order */
     p = tlv_u32be (p, TAG_COIN_TYPE,                BIP44_COIN_TYPE);
     assert_int_equal(vault_tlv_parse(buf, (size_t)(p - buf), &out), VAULT_TLV_OK);
@@ -395,6 +398,18 @@ static void test_tlv_vault_amount_just_above_boundary(void **state) {
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     patch_tlv_u64be(buf, len, TAG_VAULT_AMOUNT, TEST_COMMISSION_FEE + 2 * VAULT_DUST_LIMIT + 1);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
+}
+
+static void test_tlv_pegin_anchor_dust_boundary(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+
+    patch_tlv_u64be(buf, len, TAG_PEGIN_ANCHOR_VALUE, VAULT_DUST_LIMIT - 1);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+
+    patch_tlv_u64be(buf, len, TAG_PEGIN_ANCHOR_VALUE, VAULT_DUST_LIMIT);
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
 }
 
@@ -692,6 +707,9 @@ int main(void) {
         cmocka_unit_test(test_tlv_commission_fee_below_dust),
         cmocka_unit_test(test_tlv_vault_amount_exactly_at_boundary),
         cmocka_unit_test(test_tlv_vault_amount_just_above_boundary),
+
+        /* vault_tlv_parse — pegin anchor value validation */
+        cmocka_unit_test(test_tlv_pegin_anchor_dust_boundary),
 
         /* vault_tlv_parse — derivation path validation */
         cmocka_unit_test(test_tlv_depositor_path_wrong_purpose),

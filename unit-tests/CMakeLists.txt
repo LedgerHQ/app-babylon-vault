@@ -47,7 +47,7 @@ add_executable(test_vault_context
   ${SRC_DIR}/globals.c
 )
 
-target_compile_definitions(test_vault_context PRIVATE TEST BIP44_COIN_TYPE=1)
+target_compile_definitions(test_vault_context PRIVATE TEST BIP44_COIN_TYPE=1 VAULT_TARGET_SIGNET)
 target_link_libraries(test_vault_context cmocka)
 
 add_test(NAME test_vault_context COMMAND test_vault_context)
@@ -96,6 +96,7 @@ add_executable(test_vault_tlv
 target_compile_definitions(test_vault_tlv PRIVATE
   TEST
   BIP44_COIN_TYPE=1
+  VAULT_TARGET_SIGNET
 )
 target_link_libraries(test_vault_tlv cmocka)
 
@@ -118,6 +119,7 @@ add_executable(test_vault_script
 target_compile_definitions(test_vault_script PRIVATE
   TEST
   BIP44_COIN_TYPE=1
+  VAULT_TARGET_SIGNET
 )
 target_link_libraries(test_vault_script cmocka)
 
@@ -139,6 +141,7 @@ add_executable(test_sign_psbt_validate
 target_compile_definitions(test_sign_psbt_validate PRIVATE
   TEST
   BIP44_COIN_TYPE=1
+  VAULT_TARGET_SIGNET
 )
 target_link_libraries(test_sign_psbt_validate cmocka)
 
