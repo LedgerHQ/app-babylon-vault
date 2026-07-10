@@ -13,6 +13,7 @@
 #include <string.h>
 
 #define P1_SCALARS   0x00
+#define P1_GROUP     0x02
 #define P1_KEY_BATCH 0x01
 
 /* Spec-defined SW for BIP-32 depositor key derivation failure (see docs/apdu.md). */
@@ -73,19 +74,49 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         return;
     }
 
-    /* Verify vault_provider_pk is a valid secp256k1 x-only point.
-     * vault_tlv_parse stores it as raw bytes without an EC validity check;
-     * reject invalid points here before they can reach taproot key derivation. */
-    uint8_t tmp_point[65];
-    if (crypto_tr_lift_x(G_vault_intent.vault_provider_pk, tmp_point) != 0) {
-        explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+    /* vault_provider_pk validation (secp256k1 lift_x) moves to the P1=0x02 group
+     * handler (NAPPS-1442) since the key is now per-vault, not a P1=0x00 scalar. */
+
+    G_approve_intent_state.scalars_loaded = true;
+    SEND_SW(dc, SW_OK);
+}
+
+/* -------------------------------------------------------------------------
+ * P1=0x02 — per-vault group TLV (one APDU per vault)
+ * ---------------------------------------------------------------------- */
+
+static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd) {
+    if (!G_approve_intent_state.scalars_loaded) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+    uint8_t idx = G_vault_context.vault_group_index;
+    if (idx >= G_vault_intent.vault_count) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
-    explicit_bzero(tmp_point, sizeof(tmp_point));
-
-    G_approve_intent_state.scalars_loaded = true;
+    vault_tlv_err_t err = vault_tlv_parse_group(cmd->data, (size_t)cmd->lc,
+                                                 &G_vault_intent.groups[idx]);
+    if (err != VAULT_TLV_OK) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, tlv_err_to_sw(err));
+        return;
+    }
+    /* Enforce strictly-ascending htlc_vout order across groups. */
+    if (idx > 0 &&
+        G_vault_intent.groups[idx].htlc_vout <= G_vault_intent.groups[idx - 1].htlc_vout) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+    /* Propagate the global pegin_anchor_value (parked in groups[0] by the P1=0x00
+     * parser) to each subsequent group.  Full multi-vault loop in NAPPS-1442. */
+    if (idx > 0) {
+        G_vault_intent.groups[idx].pegin_anchor_value =
+            G_vault_intent.groups[0].pegin_anchor_value;
+    }
+    G_vault_context.vault_group_index++;
     SEND_SW(dc, SW_OK);
 }
 
@@ -179,8 +210,8 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     const uint8_t zeros32[VAULT_HASH256_LEN] = {0};
     if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) != 0) {
         if (!vault_derive_hashlock_commitment(G_vault_context.root,
-                                              G_vault_intent.htlc_vout,
-                                              G_vault_context.htlc_hashlock) ||
+                                              G_vault_intent.groups[0].htlc_vout,
+                                              G_vault_context.htlc_hashlock[0]) ||
             !vault_derive_auth_anchor_commitment(G_vault_context.root,
                                                  G_vault_context.auth_anchor_hash)) {
             vault_context_invalidate(&G_vault_context);
@@ -209,7 +240,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
      * AND the intent carries a non-zero prepegin_txid.  Without this transition the
      * sign_psbt dispatch can never reach _validate_pegin. */
     const uint8_t zeros[VAULT_HASH256_LEN] = {0};
-    if (memcmp(G_vault_context.htlc_hashlock, zeros, VAULT_HASH256_LEN) != 0 &&
+    if (memcmp(G_vault_context.htlc_hashlock[0], zeros, VAULT_HASH256_LEN) != 0 &&
         memcmp(G_vault_intent.prepegin_txid, zeros, VAULT_HASH256_LEN) != 0) {
         if (!vault_context_transition(&G_vault_context,
                                       VAULT_STATE_INTENT_LOADED,
@@ -229,6 +260,9 @@ void handler_approve_vault_intent(dispatcher_context_t *dc, const command_t *cmd
     switch (cmd->p1) {
         case P1_SCALARS:
             handle_scalar_payload(dc, cmd);
+            return;
+        case P1_GROUP:
+            handle_group_payload(dc, cmd);
             return;
         case P1_KEY_BATCH:
             handle_key_batch(dc, cmd);

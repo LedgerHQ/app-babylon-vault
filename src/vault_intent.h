@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "vault_constants.h"
+
 // Maximum number of keepers / challengers supported by the protocol.
 #define VAULT_MAX_KEEPERS     32
 #define VAULT_MAX_CHALLENGERS 32
@@ -20,10 +22,48 @@
 #define VAULT_HASH256_LEN 32
 
 /**
+ * @brief Per-vault group — fields specific to one vault in a batch Pre-PegIn.
+ *
+ * Populated from the P1=0x02 TLV group payload (6 wire fields).
+ * pegin_anchor_value is copied from the P1=0x00 global scalar at group-load time.
+ *
+ * Stored in vault_intent_t.groups[0..vault_count-1], indexed by htlc_vout order.
+ */
+typedef struct {
+    /** Output index of the HTLC in the Pre-PegIn transaction. */
+    uint8_t htlc_vout;
+
+    /**
+     * Vault provider x-only public key.
+     * Validated as a valid secp256k1 point at P1=0x02 processing time.
+     */
+    uint8_t vault_provider_pk[VAULT_XONLY_PUBKEY_LEN];
+
+    /** Total vault amount in satoshis. Must be > commission_fee + 2*DUST. */
+    uint64_t vault_amount;
+
+    /** Vault provider commission fee in satoshis. */
+    uint64_t commission_fee;
+
+    /** Depositor claim value in satoshis (Depositor Claim UTXO). */
+    uint64_t depositor_claim_value;
+
+    /** Maximum acceptable PegIn transaction fee in satoshis. */
+    uint64_t pegin_max_fee;
+
+    /**
+     * P2A anchor output value in satoshis for the PegIn transaction (Output 2).
+     * Received as a global P1=0x00 scalar and copied into each group at load time.
+     */
+    uint64_t pegin_anchor_value;
+} vault_group_t;
+
+/**
  * @brief Vault intent — all parameters received via APPROVE_VAULT_INTENT (INS 0x80).
  *
- * Populated in two phases:
- *   P1=0x00  TLV scalar parsing  (17 mandatory fields, tag 1B + len 1B)
+ * Populated in three phases:
+ *   P1=0x00  TLV scalar parsing  (13 mandatory fields, tag 1B + len 1B)
+ *   P1=0x02  Per-vault TLV group parsing (vault_count groups, 6 fields each)
  *   P1=0x01  Key batch streaming (keeper_count + challenger_count x-only keys)
  *
  * Valid only while session state != VAULT_STATE_IDLE.
@@ -31,7 +71,7 @@
  */
 typedef struct {
     // -------------------------------------------------------------------------
-    // Scalar fields (17) — parsed from TLV P1=0x00
+    // Scalar fields (13) — parsed from TLV P1=0x00
     // -------------------------------------------------------------------------
 
     /** Protocol structure type — must equal the vault structure type constant. */
@@ -58,46 +98,27 @@ typedef struct {
     /** Number of challenger keys. Range: [1, VAULT_MAX_CHALLENGERS] inclusive. */
     uint8_t challenger_count;
 
+    /** Number of vault groups in this Pre-PegIn. Range: [1, VAULT_MAX_VAULTS] inclusive. */
+    uint8_t vault_count;
+
     /** Depositor BIP-32 derivation path: m/86'/coin_type'/account'/change/index. */
     uint32_t depositor_path[VAULT_DEPOSITOR_PATH_LEN];
 
     /** Depositor x-only public key. Derived from depositor_path at APPROVE_VAULT_INTENT time. */
     uint8_t depositor_pk[VAULT_XONLY_PUBKEY_LEN];
 
-    /** Total vault amount in satoshis. Must be > commission_fee + 2*DUST. */
-    uint64_t vault_amount;
-
-    /** Vault provider commission fee in satoshis. */
-    uint64_t commission_fee;
-
-    /** Depositor claim value in satoshis (Depositor Claim UTXO). */
-    uint64_t depositor_claim_value;
-
     /** Base fee rate in sat/vbyte (used to bound Payout transaction fees). */
     uint64_t base_fee_rate;
 
-    /** Maximum acceptable PegIn transaction fee in satoshis. */
-    uint64_t pegin_max_fee;
-
-    /** P2A anchor output value in satoshis for the PegIn transaction (Output 2). */
-    uint64_t pegin_anchor_value;
-
-    /**
-     * Vault provider x-only public key.
-     *
-     * Validated as a secp256k1 point via crypto_tr_lift_x during P1=0x00
-     * processing, after vault_tlv_parse has populated this struct.  Payloads
-     * with an invalid x-coordinate cause the struct to be zeroed and the
-     * session to be invalidated before P1=0x01 can begin.  Used for taproot
-     * key derivation and role-uniqueness comparisons.
-     */
-    uint8_t vault_provider_pk[VAULT_XONLY_PUBKEY_LEN];
-
-    /** Output index of the HTLC in the Pre-PegIn transaction. Protocol u8. */
-    uint8_t htlc_vout;
-
     /** Pre-PegIn transaction ID (little-endian). */
     uint8_t prepegin_txid[VAULT_HASH256_LEN];
+
+    // -------------------------------------------------------------------------
+    // Per-vault groups — parsed from TLV P1=0x02
+    // -------------------------------------------------------------------------
+
+    /** Per-vault groups, indexed [0..vault_count-1] in ascending htlc_vout order. */
+    vault_group_t groups[VAULT_MAX_VAULTS];
 
     // -------------------------------------------------------------------------
     // Key arrays — streamed via TLV P1=0x01

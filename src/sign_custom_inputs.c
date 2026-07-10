@@ -88,7 +88,7 @@ bool sign_custom_inputs(
         }
 
         int leaf_len = vault_build_htlc_leaf0(intent,
-                                              G_vault_context.htlc_hashlock,
+                                              G_vault_context.htlc_hashlock[0],
                                               G_scratch.script_scratch,
                                               VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
@@ -102,7 +102,9 @@ bool sign_custom_inputs(
         /* Bind the witness-UTXO scriptPubKey to the HTLC P2TR reconstructed from
          * the approved intent, so the sighash commits to a device-known script. */
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!vault_build_htlc_scriptpubkey(intent, G_vault_context.htlc_hashlock, expected_spk)) {
+        if (!vault_build_htlc_scriptpubkey(intent,
+                                           G_vault_context.htlc_hashlock[0],
+                                           expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }

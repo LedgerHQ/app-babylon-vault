@@ -59,15 +59,15 @@ typedef struct {
     uint8_t root[VAULT_HASH256_LEN];
 
     /**
-     * HTLC hashlock h = SHA256(Expand(root, "hashlock" || I2OSP(htlc_vout, 4))).
-     * Computed at APPROVE_VAULT_INTENT once htlc_vout is known; bound into the
-     * Pre-PegIn HTLC scriptPubKey and the PegIn Leaf 0 during validation.
+     * Per-vault HTLC hashlocks h_i = SHA256(Expand(root, "hashlock" || I2OSP(htlc_vout_i, 4))).
+     * Computed at APPROVE_VAULT_INTENT for each vault group once the group's htlc_vout is known.
+     * htlc_hashlock[i] is bound into vault group i's Pre-PegIn HTLC scriptPubKey and PegIn Leaf 0.
      */
-    uint8_t htlc_hashlock[VAULT_HASH256_LEN];
+    uint8_t htlc_hashlock[VAULT_MAX_VAULTS][VAULT_HASH256_LEN];
 
     /**
      * Auth-anchor commitment SHA256(Expand(root, "auth-anchor")). Computed at
-     * APPROVE_VAULT_INTENT; bound into the Pre-PegIn OP_RETURN output.
+     * APPROVE_VAULT_INTENT; bound into the Pre-PegIn OP_RETURN output (global, not per-vault).
      */
     uint8_t auth_anchor_hash[VAULT_HASH256_LEN];
 
@@ -75,11 +75,28 @@ typedef struct {
     vault_state_t state;
 
     /**
-     * Payout iteration index.
+     * Payout iteration index within the active vault group.
      * 0 = VP claimer, 1..keeper_count = VK claimers in ascending key order.
      * Only meaningful in VAULT_STATE_SESSION2_PAYOUT_EXPECTED.
      */
     uint8_t payout_index;
+
+    /**
+     * Index of the vault group currently being processed in Session 2.
+     * Advances after the last payout of each group (0..vault_count-1).
+     * Only meaningful when state >= VAULT_STATE_SESSION2_PEGIN_EXPECTED.
+     */
+    uint8_t vault_group_index;
+
+    /**
+     * BIP-32 derivation path stored from DERIVE_CONTEXT_HASH.
+     * Compared against depositor_derivation_path from the intent at
+     * APPROVE_VAULT_INTENT time to enforce path alignment.
+     */
+    uint32_t derivation_path[VAULT_MAX_PATH_DEPTH];
+
+    /** Number of levels in derivation_path. */
+    uint8_t derivation_path_len;
 } vault_context_t;
 
 // ---------------------------------------------------------------------------

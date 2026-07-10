@@ -30,7 +30,7 @@ static vault_intent_t make_n1m1(void) {
     vault_intent_t intent;
     memset(&intent, 0, sizeof(intent));
     memset(intent.depositor_pk,      0x01, 32);
-    memset(intent.vault_provider_pk, 0x02, 32);
+    memset(intent.groups[0].vault_provider_pk, 0x02, 32);
     memset(intent.keeper_pks[0],     0x03, 32);
     memset(intent.challenger_pks[0], 0x04, 32);
     intent.keeper_count          = 1;
@@ -40,9 +40,9 @@ static vault_intent_t make_n1m1(void) {
     intent.pegin_csv_timelock    = 144;
     /* 200 = 0xC8: high bit set → requires sign byte */
     intent.payout_timelock       = 200;
-    intent.vault_amount          = 100000;
-    intent.depositor_claim_value = 1000;
-    intent.pegin_anchor_value    = 240;
+    intent.groups[0].vault_amount          = 100000;
+    intent.groups[0].depositor_claim_value = 1000;
+    intent.groups[0].pegin_anchor_value    = 240;
     return intent;
 }
 
@@ -50,7 +50,7 @@ static vault_intent_t make_n1m1(void) {
 static vault_intent_t make_n2m1(void) {
     vault_intent_t intent = make_n1m1();
     /* VP = 0x04, VK0 = 0x03, VK1 = 0x05 — VP sorts between VK0 and VK1 */
-    memset(intent.vault_provider_pk, 0x04, 32);
+    memset(intent.groups[0].vault_provider_pk, 0x04, 32);
     memset(intent.keeper_pks[0],     0x03, 32);
     memset(intent.keeper_pks[1],     0x05, 32);
     intent.keeper_count = 2;
@@ -357,7 +357,7 @@ static void test_pegin_txid_deterministic(void **state) {
     (void)state;
     vault_intent_t intent = make_n1m1();
     memset(intent.prepegin_txid, 0xCC, 32);
-    intent.htlc_vout = 2;
+    intent.groups[0].htlc_vout = 2;
 
     uint8_t txid1[32], txid2[32];
     assert_true(vault_compute_pegin_txid(&intent, txid1));
@@ -369,7 +369,7 @@ static void test_pegin_txid_not_zero(void **state) {
     (void)state;
     vault_intent_t intent = make_n1m1();
     memset(intent.prepegin_txid, 0xDD, 32);
-    intent.htlc_vout = 0;
+    intent.groups[0].htlc_vout = 0;
 
     uint8_t txid[32];
     assert_true(vault_compute_pegin_txid(&intent, txid));
@@ -592,7 +592,7 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     (void)state;
     vault_intent_t intent = make_n1m1();
     memset(intent.prepegin_txid, 0xDD, 32);
-    intent.htlc_vout = 1;
+    intent.groups[0].htlc_vout = 1;
 
     /* Build both output scriptPubKeys the same way vault_compute_pegin_txid does */
     uint8_t vault_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN], claim_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
@@ -610,7 +610,7 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     /* prevout txid (as stored in intent — LE) */
     memcpy(tx + off, intent.prepegin_txid, 32u); off += 32;
     /* prevout index (htlc_vout=1 LE) */
-    for (int i = 0; i < 4; i++) tx[off++] = (uint8_t)(intent.htlc_vout >> (i * 8));
+    for (int i = 0; i < 4; i++) tx[off++] = (uint8_t)(intent.groups[0].htlc_vout >> (i * 8));
     /* scriptSig: empty */
     tx[off++] = 0x00u;
     /* sequence: 0xFFFFFFFE LE */
@@ -618,15 +618,15 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     /* output count: 3 */
     tx[off++] = 0x03u;
     /* output 0: Vault UTXO */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.vault_amount >> (i * 8));
+    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.groups[0].vault_amount >> (i * 8));
     tx[off++] = (uint8_t) VAULT_P2TR_SCRIPTPUBKEY_LEN;
     memcpy(tx + off, vault_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN); off += VAULT_P2TR_SCRIPTPUBKEY_LEN;
     /* output 1: Depositor Claim */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.depositor_claim_value >> (i * 8));
+    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.groups[0].depositor_claim_value >> (i * 8));
     tx[off++] = (uint8_t) VAULT_P2TR_SCRIPTPUBKEY_LEN;
     memcpy(tx + off, claim_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN); off += VAULT_P2TR_SCRIPTPUBKEY_LEN;
-    /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, intent.pegin_anchor_value sats) */
-    { uint64_t v = intent.pegin_anchor_value; for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(v >> (i * 8)); }
+    /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, intent.groups[0].pegin_anchor_value sats) */
+    { uint64_t v = intent.groups[0].pegin_anchor_value; for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(v >> (i * 8)); }
     tx[off++] = 0x04u; tx[off++] = 0x51u; tx[off++] = 0x02u; tx[off++] = 0x4Eu; tx[off++] = 0x73u;
     /* locktime: 0 */
     tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
@@ -753,7 +753,7 @@ static vault_intent_t make_vault_a(void) {
     vault_intent_t intent;
     memset(&intent, 0, sizeof(intent));
     memcpy(intent.depositor_pk,      s_depositor_pk,      32);
-    memcpy(intent.vault_provider_pk, s_vault_provider_pk, 32);
+    memcpy(intent.groups[0].vault_provider_pk, s_vault_provider_pk, 32);
     memcpy(intent.keeper_pks[0],     s_keeper_pk0,        32);
     memcpy(intent.keeper_pks[1],     s_keeper_pk1,        32);
     memcpy(intent.keeper_pks[2],     s_keeper_pk2,        32);
@@ -764,10 +764,10 @@ static vault_intent_t make_vault_a(void) {
     intent.challenger_count      = 3;
     intent.htlc_refund_timelock  = 432;
     intent.pegin_csv_timelock    = 432;
-    intent.vault_amount          = 1000000u;
-    intent.depositor_claim_value = 26228u;
+    intent.groups[0].vault_amount          = 1000000u;
+    intent.groups[0].depositor_claim_value = 26228u;
     memcpy(intent.prepegin_txid, s_prepegin_txid_raw, 32);
-    intent.htlc_vout = 0;
+    intent.groups[0].htlc_vout = 0;
     return intent;
 }
 

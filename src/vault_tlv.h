@@ -6,23 +6,29 @@
 #include "vault_intent.h"
 
 /**
- * Error codes returned by vault_tlv_parse.
- * Map to APDU status words via vault_tlv_err_to_sw.
+ * Error codes returned by vault_tlv_parse and vault_tlv_parse_group.
+ * Map to APDU status words via the handler's tlv_err_to_sw helper.
  */
 typedef enum {
     VAULT_TLV_OK = 0,
-    VAULT_TLV_ERR_OVERFLOW,      /**< TLV field extends past end of buffer */
-    VAULT_TLV_ERR_UNKNOWN_TAG,   /**< tag not in [0x01, 0x11]              */
-    VAULT_TLV_ERR_DUPLICATE_TAG, /**< same tag appears more than once      */
-    VAULT_TLV_ERR_WRONG_LENGTH,  /**< field_len != expected fixed size      */
-    VAULT_TLV_ERR_MISSING_FIELD, /**< one or more mandatory tags absent     */
+    VAULT_TLV_ERR_OVERFLOW,      /**< TLV field extends past end of buffer                */
+    VAULT_TLV_ERR_UNKNOWN_TAG,   /**< tag not in the valid set for this phase              */
+    VAULT_TLV_ERR_DUPLICATE_TAG, /**< same tag appears more than once                     */
+    VAULT_TLV_ERR_WRONG_LENGTH,  /**< field_len != expected fixed size                    */
+    VAULT_TLV_ERR_MISSING_FIELD, /**< one or more mandatory tags absent                   */
     VAULT_TLV_ERR_VALIDATION,    /**< value out of range or cross-field constraint violated */
 } vault_tlv_err_t;
 
 /**
- * Parse and validate the APPROVE_VAULT_INTENT P1=0x00 TLV payload.
+ * Parse and validate the APPROVE_VAULT_INTENT P1=0x00 TLV scalar payload.
  *
- * On success (VAULT_TLV_OK) all 17 scalar fields of @p out are populated.
+ * Accepts the 13 mandatory scalar tags.  Unknown tags are rejected with
+ * VAULT_TLV_ERR_UNKNOWN_TAG.
+ *
+ * On success (VAULT_TLV_OK) all 13 scalar fields of @p out are populated.
+ * pegin_anchor_value is stored in out->groups[0].pegin_anchor_value for later
+ * propagation to all groups by the P1=0x02 handler.
+ *
  * On any error @p out is left in an indeterminate state; the caller must
  * discard it (vault_context_invalidate zeros G_vault_intent).
  *
@@ -31,3 +37,21 @@ typedef enum {
  * @param out   Destination intent struct to fill.
  */
 vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t *out);
+
+/**
+ * Parse and validate one APPROVE_VAULT_INTENT P1=0x02 per-vault group payload.
+ *
+ * Accepts the 6 mandatory per-vault group tags (TAG_GRP_* namespace).
+ * All 6 fields must be present; unknown tags are rejected.
+ *
+ * On success (VAULT_TLV_OK) all 6 wire fields of @p out are populated.
+ * pegin_anchor_value is NOT set here — the caller copies it from the global
+ * scalar parsed during P1=0x00.
+ *
+ * On any error @p out is left in an indeterminate state.
+ *
+ * @param data  Pointer to the raw TLV bytes for one group (cmd->data).
+ * @param len   Number of bytes in the buffer (cmd->lc).
+ * @param out   Destination group struct to fill.
+ */
+vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_group_t *out);

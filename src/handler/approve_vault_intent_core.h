@@ -69,9 +69,11 @@ static inline vault_key_err_t vault_validate_and_store_key(vault_intent_t *inten
         }
     }
 
-    /* Must not collide with vault_provider_pk. */
-    if (memcmp(key, intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN) == 0) {
-        return VAULT_KEY_ERR_ROLE_COLLISION;
+    /* Must not collide with any group's vault_provider_pk. */
+    for (uint8_t g = 0; g < intent->vault_count; g++) {
+        if (memcmp(key, intent->groups[g].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN) == 0) {
+            return VAULT_KEY_ERR_ROLE_COLLISION;
+        }
     }
 
     /* Must be unique across every key stored so far (O(n²), max n = 64). */
@@ -106,8 +108,11 @@ static inline vault_key_err_t vault_validate_and_store_key(vault_intent_t *inten
  */
 static inline bool vault_check_depositor_uniqueness(const vault_intent_t *intent,
                                                     const uint8_t *depositor_xonly) {
-    if (memcmp(depositor_xonly, intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN) == 0) {
-        return false;
+    for (uint8_t g = 0; g < intent->vault_count; g++) {
+        if (memcmp(depositor_xonly, intent->groups[g].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN) ==
+            0) {
+            return false;
+        }
     }
     for (uint8_t j = 0; j < intent->keeper_count; j++) {
         if (memcmp(depositor_xonly, intent->keeper_pks[j], VAULT_XONLY_PUBKEY_LEN) == 0) {
