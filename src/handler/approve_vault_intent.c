@@ -96,8 +96,8 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
-    vault_tlv_err_t err = vault_tlv_parse_group(cmd->data, (size_t)cmd->lc,
-                                                 &G_vault_intent.groups[idx]);
+    vault_tlv_err_t err =
+        vault_tlv_parse_group(cmd->data, (size_t) cmd->lc, &G_vault_intent.groups[idx]);
     if (err != VAULT_TLV_OK) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, tlv_err_to_sw(err));
@@ -113,8 +113,7 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
     /* Propagate the global pegin_anchor_value (parked in groups[0] by the P1=0x00
      * parser) to each subsequent group.  Full multi-vault loop in NAPPS-1442. */
     if (idx > 0) {
-        G_vault_intent.groups[idx].pegin_anchor_value =
-            G_vault_intent.groups[0].pegin_anchor_value;
+        G_vault_intent.groups[idx].pegin_anchor_value = G_vault_intent.groups[0].pegin_anchor_value;
     }
     G_vault_context.vault_group_index++;
     SEND_SW(dc, SW_OK);
@@ -126,6 +125,13 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
 
 static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     if (!G_approve_intent_state.scalars_loaded) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+
+    /* F1: all P1=0x02 group APDUs must have arrived before key batching starts. */
+    if (G_vault_context.vault_group_index != G_vault_intent.vault_count) {
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
@@ -185,6 +191,19 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     }
 
     /* All keys received — verify depositor key is disjoint from all roles. */
+
+    /* F2: reject if the path supplied to DERIVE_CONTEXT_HASH does not match the
+     * depositor path in the intent.  Prevents a host from pairing a root derived
+     * at one path with an intent that claims a different depositor path. */
+    if (G_vault_context.derivation_path_len != VAULT_DEPOSITOR_PATH_LEN ||
+        memcmp(G_vault_context.derivation_path,
+               G_vault_intent.depositor_path,
+               VAULT_DEPOSITOR_PATH_LEN * sizeof(uint32_t)) != 0) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+
     uint8_t depositor_compressed[33];
     if (crypto_get_compressed_pubkey_at_path(G_vault_intent.depositor_path,
                                              VAULT_DEPOSITOR_PATH_LEN,
@@ -205,23 +224,26 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     memcpy(G_vault_intent.depositor_pk, depositor_compressed + 1, VAULT_XONLY_PUBKEY_LEN);
 
     /* Compute the on-chain commitments from the HKDF root now that htlc_vout is known.
-     * DERIVE_CONTEXT_HASH is required before this point (enforced by the state machine),
-     * so the root is always non-zero here. The defense-in-depth zero-check is retained. */
+     * DERIVE_CONTEXT_HASH is required before this point (enforced by the state machine).
+     * F3: treat an all-zero root as a protocol violation — do not silently skip. */
     const uint8_t zeros32[VAULT_HASH256_LEN] = {0};
-    if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) != 0) {
-        if (!vault_derive_hashlock_commitment(G_vault_context.root,
-                                              G_vault_intent.groups[0].htlc_vout,
-                                              G_vault_context.htlc_hashlock[0]) ||
-            !vault_derive_auth_anchor_commitment(G_vault_context.root,
-                                                 G_vault_context.auth_anchor_hash)) {
-            vault_context_invalidate(&G_vault_context);
-            SEND_SW(dc, SW_BAD_STATE);
-            return;
-        }
-        // Root is no longer needed — both commitments are stored in G_vault_context.
-        // Zero it now rather than waiting for session end to minimise exposure window.
-        explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
+    if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) == 0) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
     }
+    if (!vault_derive_hashlock_commitment(G_vault_context.root,
+                                          G_vault_intent.groups[0].htlc_vout,
+                                          G_vault_context.htlc_hashlock[0]) ||
+        !vault_derive_auth_anchor_commitment(G_vault_context.root,
+                                             G_vault_context.auth_anchor_hash)) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+    // Root is no longer needed — both commitments are stored in G_vault_context.
+    // Zero it now rather than waiting for session end to minimise exposure window.
+    explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
 
     /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));

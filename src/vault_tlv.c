@@ -157,14 +157,14 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 return VAULT_TLV_ERR_UNKNOWN_TAG;
         }
 
-        uint16_t bit = (uint16_t)(1u << field_idx);
+        uint16_t bit = (uint16_t) (1u << field_idx);
         if (seen_mask & bit) return VAULT_TLV_ERR_DUPLICATE_TAG;
         seen_mask |= bit;
         pos += field_len;
     }
 
     /* All 13 mandatory scalar fields must be present. */
-    if (seen_mask != (uint16_t)((1u << VAULT_INTENT_TAG_COUNT) - 1u))
+    if (seen_mask != (uint16_t) ((1u << VAULT_INTENT_TAG_COUNT) - 1u))
         return VAULT_TLV_ERR_MISSING_FIELD;
 
     /* Cross-field: depositor_path[1] must equal coin_type | HARDENED. */
@@ -243,14 +243,14 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_gro
                 return VAULT_TLV_ERR_UNKNOWN_TAG;
         }
 
-        uint8_t bit = (uint8_t)(1u << field_idx);
+        uint8_t bit = (uint8_t) (1u << field_idx);
         if (seen_mask & bit) return VAULT_TLV_ERR_DUPLICATE_TAG;
         seen_mask |= bit;
         pos += field_len;
     }
 
     /* All 6 mandatory group fields must be present. */
-    if (seen_mask != (uint8_t)((1u << VAULT_GROUP_TAG_COUNT) - 1u))
+    if (seen_mask != (uint8_t) ((1u << VAULT_GROUP_TAG_COUNT) - 1u))
         return VAULT_TLV_ERR_MISSING_FIELD;
 
     /* Cross-field: vault_amount > commission_fee + 2*VAULT_DUST_LIMIT (overflow-safe).
