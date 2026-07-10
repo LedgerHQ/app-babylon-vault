@@ -142,6 +142,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 /* Global scalar; propagated to all groups by the P1=0x02 handler.
                  * Temporarily stored in groups[0].pegin_anchor_value during P1=0x00. */
                 if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (U8BE(v, 0) < VAULT_DUST_LIMIT) return VAULT_TLV_ERR_VALIDATION;
                 out->groups[0].pegin_anchor_value = U8BE(v, 0);
                 break;
 
