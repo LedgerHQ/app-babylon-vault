@@ -39,13 +39,20 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    /* If DERIVE_CONTEXT_HASH completed, preserve the root across the reset. The
-     * per-vault commitments (htlc_hashlock, auth_anchor_hash) are recomputed from it
-     * once htlc_vout is known (see handle_key_batch). */
+    /* If DERIVE_CONTEXT_HASH completed, preserve the root and derivation path across
+     * the reset. The per-vault commitments (htlc_hashlock, auth_anchor_hash) are
+     * recomputed from the root once htlc_vout is known (see handle_key_batch).
+     * derivation_path must survive so the F2 check in handle_key_batch can compare
+     * it against the intent's depositor path. */
     uint8_t saved_root[VAULT_HASH256_LEN];
+    uint32_t saved_path[VAULT_MAX_PATH_DEPTH];
+    uint8_t saved_path_len = 0;
     bool preserve_root = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
     if (preserve_root) {
         memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
+        saved_path_len = G_vault_context.derivation_path_len;
+        memcpy(saved_path, G_vault_context.derivation_path,
+               saved_path_len * sizeof(uint32_t));
     }
 
     vault_context_invalidate(&G_vault_context);
@@ -54,6 +61,10 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     if (preserve_root) {
         memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
         explicit_bzero(saved_root, sizeof(saved_root));
+        G_vault_context.derivation_path_len = saved_path_len;
+        memcpy(G_vault_context.derivation_path, saved_path,
+               saved_path_len * sizeof(uint32_t));
+        explicit_bzero(saved_path, sizeof(saved_path));
         // Restore state to HASH_DERIVED so handle_key_batch can transition
         // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
         // because vault_context_invalidate() left state at IDLE.
