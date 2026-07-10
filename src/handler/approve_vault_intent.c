@@ -51,8 +51,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     if (preserve_root) {
         memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
         saved_path_len = G_vault_context.derivation_path_len;
-        memcpy(saved_path, G_vault_context.derivation_path,
-               saved_path_len * sizeof(uint32_t));
+        memcpy(saved_path, G_vault_context.derivation_path, saved_path_len * sizeof(uint32_t));
     }
 
     vault_context_invalidate(&G_vault_context);
@@ -62,8 +61,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
         explicit_bzero(saved_root, sizeof(saved_root));
         G_vault_context.derivation_path_len = saved_path_len;
-        memcpy(G_vault_context.derivation_path, saved_path,
-               saved_path_len * sizeof(uint32_t));
+        memcpy(G_vault_context.derivation_path, saved_path, saved_path_len * sizeof(uint32_t));
         explicit_bzero(saved_path, sizeof(saved_path));
         // Restore state to HASH_DERIVED so handle_key_batch can transition
         // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
