@@ -410,6 +410,7 @@ def test_keys_out_of_order(client: RaggerClient, navigator: Navigator,
     derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=2, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         # KEY_B > KEY_A — send in wrong order (B then A)
         _raw_exchange(client, P1_KEY_BATCH, KEY_B + KEY_A + KEY_C)
@@ -422,6 +423,7 @@ def test_extra_keys_beyond_count(client: RaggerClient, navigator: Navigator,
     derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         # 3 keys declared total = 2, send 3
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B + KEY_C)
@@ -432,6 +434,7 @@ def test_key_batch_not_multiple_of_32(client: RaggerClient, bitcoin_network: str
     """P1=0x01 payload not a multiple of 32 bytes must return SW_WRONG_DATA_LENGTH."""
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_KEY_BATCH, b"\xAA" * 31)   # 31 bytes — not multiple of 32
     assert exc.value.status == SW_WRONG_DATA_LENGTH
@@ -455,6 +458,7 @@ def test_duplicate_key_across_groups(client: RaggerClient, navigator: Navigator,
     derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         # Keeper = KEY_A, Challenger = KEY_A (duplicate)
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_A)
@@ -467,6 +471,7 @@ def test_invalid_ec_point_keeper_rejected(client: RaggerClient, navigator: Navig
     derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         # TEST_INVALID_XONLY_KEY = 0xFF * 32 which is >= secp256k1 prime p.
         _raw_exchange(client, P1_KEY_BATCH, TEST_INVALID_XONLY_KEY + KEY_B)
@@ -479,6 +484,7 @@ def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: N
     derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + TEST_INVALID_XONLY_KEY)
     assert exc.value.status == SW_INCORRECT_DATA
@@ -501,6 +507,7 @@ def test_depositor_key_collision_as_keeper(client: RaggerClient, navigator: Navi
                      else TEST_DEPOSITOR_XONLY_TESTNET)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     # depositor_key as keeper (idx=0, first in group → no lex-order check).
     # KEY_A as challenger: distinct from depositor_key and from VP_KEY.
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -520,6 +527,7 @@ def test_depositor_key_collision_as_challenger(client: RaggerClient, navigator: 
                      else TEST_DEPOSITOR_XONLY_TESTNET)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
     # KEY_A as keeper, depositor_key as challenger (idx=1, first in challenger group
     # → no lex-order check; KEY_A != depositor_key so no duplicate rejection).
     with pytest.raises(ExceptionRAPDU) as exc:

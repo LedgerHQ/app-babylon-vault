@@ -39,13 +39,18 @@ P2_UNUSED    = 0x00
 _CHUNK_SIZE     = 255
 _KEYS_PER_BATCH = 7   # 7 × 32 = 224 bytes ≤ 255
 
+class _HexInt(int):
+    """int subclass that prints as hex — makes pytest assertion diffs readable."""
+    def __repr__(self) -> str:
+        return hex(self)
+
 # APDU status words
-SW_OK                = 0x9000
-SW_DENY              = 0x6985
-SW_INCORRECT_DATA    = 0x6A80
-SW_WRONG_DATA_LENGTH = 0x6A87
-SW_WRONG_P1P2        = 0x6A86
-SW_BAD_STATE         = 0xB007
+SW_OK                = _HexInt(0x9000)
+SW_DENY              = _HexInt(0x6985)
+SW_INCORRECT_DATA    = _HexInt(0x6A80)
+SW_WRONG_DATA_LENGTH = _HexInt(0x6A87)
+SW_WRONG_P1P2        = _HexInt(0x6A86)
+SW_BAD_STATE         = _HexInt(0xB007)
 
 # P1=0x00 scalar tag byte assignments — must match src/vault_intent_tags.h
 # Tags 0x04–0x07, 0x09, 0x0D were per-vault scalars in v18; rejected by firmware whitelist since v19.
