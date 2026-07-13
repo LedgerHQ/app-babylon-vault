@@ -112,6 +112,17 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
         SEND_SW(dc, tlv_err_to_sw(err));
         return;
     }
+
+    /* Reject vault_provider_pk that is not a valid secp256k1 x-only point. */
+    uint8_t tmp_point[65];
+    int lift_rc = crypto_tr_lift_x(G_vault_intent.groups[idx].vault_provider_pk, tmp_point);
+    explicit_bzero(tmp_point, sizeof(tmp_point));
+    if (lift_rc != 0) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+
     /* Enforce strictly-ascending htlc_vout order across groups. */
     if (idx > 0 &&
         G_vault_intent.groups[idx].htlc_vout <= G_vault_intent.groups[idx - 1].htlc_vout) {

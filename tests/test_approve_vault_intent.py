@@ -440,15 +440,26 @@ def test_key_batch_not_multiple_of_32(client: RaggerClient, bitcoin_network: str
     assert exc.value.status == SW_WRONG_DATA_LENGTH
 
 
-@pytest.mark.skip(reason="VP key collision check requires groups[0].vault_provider_pk set via P1=0x02 (NAPPS-1442)")
 def test_key_equals_vault_provider_pk(client: RaggerClient, navigator: Navigator,
                                       device: Device, bitcoin_network: str):
     """A keeper key equal to vault_provider_pk must return SW_INCORRECT_DATA."""
     derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
+    # _make_group() sets vault_provider_pk=VP_KEY by default.
+    _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_KEY_BATCH, VP_KEY + KEY_B)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_invalid_ec_point_vault_provider_pk_rejected(client: RaggerClient, bitcoin_network: str):
+    """vault_provider_pk whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        # TEST_INVALID_XONLY_KEY = 0xFF * 32 which is >= secp256k1 prime p.
+        _raw_exchange(client, P1_GROUP, _make_group(vault_provider_pk=TEST_INVALID_XONLY_KEY))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
