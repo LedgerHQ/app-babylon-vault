@@ -43,7 +43,8 @@ static void _finalize(dispatcher_context_t *dc) {
                                          G_scratch.derive_ctx.app_name_buf,
                                          G_scratch.derive_ctx.app_name_len)) {
             explicit_bzero(connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN);
-            explicit_bzero(G_scratch.derive_ctx.context_buf, sizeof(G_scratch.derive_ctx.context_buf));
+            explicit_bzero(G_scratch.derive_ctx.context_buf,
+                           sizeof(G_scratch.derive_ctx.context_buf));
             return; /* SW_DENY already sent */
         }
     }
