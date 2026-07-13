@@ -180,25 +180,30 @@ def test_invalidates_loaded_intent(client: "RaggerClient", navigator: Navigator,
                                     device: Device, bitcoin_network: str):
     """DERIVE_CONTEXT_HASH after an intent is loaded must reset the session and still work."""
     from .vault_client import (
-        approve_vault_intent_with_nav, build_intent_tlv, TEST_VP_KEY, TEST_VALID_KEYS,
+        approve_vault_intent_with_nav, build_intent_tlv, build_group_tlv,
+        TEST_VP_KEY, TEST_VALID_KEYS,
     )
 
     ct = 0 if bitcoin_network == "main" else 1
     scalars = build_intent_tlv(
-        coin_type=ct, vault_provider_pk=TEST_VP_KEY,
-        vault_amount=100_000, commission_fee=1_000,
-        depositor_claim_value=10_000, base_fee_rate=10, pegin_max_fee=50_000,
+        coin_type=ct, base_fee_rate=10,
         pegin_csv_timelock=100, payout_timelock=200,
-        prepegin_txid=bytes(range(32)), htlc_vout=0, htlc_refund_timelock=144,
+        prepegin_txid=bytes(range(32)), htlc_refund_timelock=144,
         depositor_path=depositor_path(ct),
-        keeper_count=1, challenger_count=1,
+        keeper_count=1, challenger_count=1, vault_count=1,
+    )
+    group = build_group_tlv(
+        htlc_vout=0, vault_provider_pk=TEST_VP_KEY,
+        vault_amount=100_000, commission_fee=1_000,
+        depositor_claim_value=10_000, pegin_max_fee=50_000,
     )
     # Must derive first — state machine requires HASH_DERIVED before APPROVE_VAULT_INTENT.
     derive_context_hash(client, APP_NAME, depositor_path(ct), b"\xde\xad\xbe\xef",
                         navigator, device)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[TEST_VALID_KEYS[0]],
-                                  challenger_pks=[TEST_VALID_KEYS[1]])
+                                  challenger_pks=[TEST_VALID_KEYS[1]],
+                                  groups=[group])
 
     path, ctx = depositor_path(ct), b"\xde\xad\xbe\xef"
     root = derive_context_hash(client, app_name=APP_NAME, path=path, context=ctx,

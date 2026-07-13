@@ -31,6 +31,7 @@ INS_APPROVE_VAULT_INTENT     = 0x80
 P1_INITIAL   = 0x00
 P1_CONTINUE  = 0x01
 P1_SCALARS   = 0x00
+P1_GROUP     = 0x02  # per-vault group phase (NAPPS-1442)
 P1_KEY_BATCH = 0x01
 P2_UNUSED    = 0x00
 
@@ -38,33 +39,42 @@ P2_UNUSED    = 0x00
 _CHUNK_SIZE     = 255
 _KEYS_PER_BATCH = 7   # 7 × 32 = 224 bytes ≤ 255
 
-# APDU status words
-SW_OK                = 0x9000
-SW_DENY              = 0x6985
-SW_INCORRECT_DATA    = 0x6A80
-SW_WRONG_DATA_LENGTH = 0x6A87
-SW_WRONG_P1P2        = 0x6A86
-SW_BAD_STATE         = 0xB007
+class _HexInt(int):
+    """int subclass that prints as hex — makes pytest assertion diffs readable."""
+    def __repr__(self) -> str:
+        return hex(self)
 
-# Tag byte assignments — must match src/vault_intent_tags.h
+# APDU status words
+SW_OK                = _HexInt(0x9000)
+SW_DENY              = _HexInt(0x6985)
+SW_INCORRECT_DATA    = _HexInt(0x6A80)
+SW_WRONG_DATA_LENGTH = _HexInt(0x6A87)
+SW_WRONG_P1P2        = _HexInt(0x6A86)
+SW_BAD_STATE         = _HexInt(0xB007)
+
+# P1=0x00 scalar tag byte assignments — must match src/vault_intent_tags.h
+# Tags 0x04–0x07, 0x09, 0x0D were per-vault scalars in v18; rejected by firmware whitelist since v19.
 TAG_STRUCTURE_TYPE            = 0x01
 TAG_VERSION                   = 0x02
 TAG_COIN_TYPE                 = 0x03
-TAG_VAULT_PROVIDER_PK         = 0x04
-TAG_VAULT_AMOUNT              = 0x05
-TAG_COMMISSION_FEE            = 0x06
-TAG_DEPOSITOR_CLAIM_VALUE     = 0x07
 TAG_BASE_FEE_RATE             = 0x08
-TAG_PEGIN_MAX_FEE             = 0x09
 TAG_PEGIN_CSV_TIMELOCK        = 0x0A
 TAG_PAYOUT_TIMELOCK           = 0x0B
 TAG_PREPEGIN_TXID             = 0x0C
-TAG_HTLC_VOUT                 = 0x0D
 TAG_HTLC_REFUND_TIMELOCK      = 0x0E
 TAG_DEPOSITOR_DERIVATION_PATH = 0x0F
 TAG_KEEPER_COUNT              = 0x10
 TAG_CHALLENGER_COUNT          = 0x11
 TAG_PEGIN_ANCHOR_VALUE        = 0x12
+TAG_VAULT_COUNT               = 0x13
+
+# P1=0x02 per-vault group tag byte assignments — must match src/vault_intent_tags.h
+TAG_GRP_HTLC_VOUT             = 0x01
+TAG_GRP_VAULT_PROVIDER_PK     = 0x02
+TAG_GRP_VAULT_AMOUNT          = 0x03
+TAG_GRP_COMMISSION_FEE        = 0x04
+TAG_GRP_DEPOSITOR_CLAIM_VALUE = 0x05
+TAG_GRP_PEGIN_MAX_FEE         = 0x06
 
 HARDENED = 0x80000000
 
@@ -248,42 +258,57 @@ def _tlv_path(tag: int, path: List[int]) -> bytes:
 
 def build_intent_tlv(
     coin_type: int,
-    vault_provider_pk: bytes,
-    vault_amount: int,
-    commission_fee: int,
-    depositor_claim_value: int,
     base_fee_rate: int,
-    pegin_max_fee: int,
     pegin_csv_timelock: int,
     payout_timelock: int,
     prepegin_txid: bytes,
-    htlc_vout: int,
     htlc_refund_timelock: int,
     depositor_path: List[int],
     keeper_count: int,
     challenger_count: int,
+    vault_count: int = 1,
     pegin_anchor_value: int = 546,
 ) -> bytes:
-    """Encode all 18 scalar intent fields into a P1=0x00 TLV payload."""
+    """Encode the 13 P1=0x00 scalar intent fields into a TLV payload (v19 format).
+
+    Per-vault fields (vault_provider_pk, vault_amount, commission_fee,
+    depositor_claim_value, pegin_max_fee, htlc_vout) are now sent in the P1=0x02
+    group phase via build_group_tlv().
+    """
     return (
         _tlv_u8   (TAG_STRUCTURE_TYPE,            VAULT_STRUCTURE_TYPE)    +
         _tlv_u8   (TAG_VERSION,                   VAULT_PROTOCOL_VERSION)  +
         _tlv_u32be(TAG_COIN_TYPE,                 coin_type)               +
-        _tlv_bytes(TAG_VAULT_PROVIDER_PK,         vault_provider_pk)       +
-        _tlv_u64be(TAG_VAULT_AMOUNT,              vault_amount)            +
-        _tlv_u64be(TAG_COMMISSION_FEE,            commission_fee)          +
-        _tlv_u64be(TAG_DEPOSITOR_CLAIM_VALUE,     depositor_claim_value)   +
         _tlv_u64be(TAG_BASE_FEE_RATE,             base_fee_rate)           +
-        _tlv_u64be(TAG_PEGIN_MAX_FEE,             pegin_max_fee)           +
         _tlv_u32be(TAG_PEGIN_CSV_TIMELOCK,        pegin_csv_timelock)      +
         _tlv_u32be(TAG_PAYOUT_TIMELOCK,           payout_timelock)         +
         _tlv_bytes(TAG_PREPEGIN_TXID,             prepegin_txid)           +
-        _tlv_u8   (TAG_HTLC_VOUT,                htlc_vout)               +
         _tlv_u32be(TAG_HTLC_REFUND_TIMELOCK,      htlc_refund_timelock)    +
         _tlv_path (TAG_DEPOSITOR_DERIVATION_PATH, depositor_path)          +
         _tlv_u8   (TAG_KEEPER_COUNT,              keeper_count)            +
         _tlv_u8   (TAG_CHALLENGER_COUNT,          challenger_count)        +
-        _tlv_u64be(TAG_PEGIN_ANCHOR_VALUE,        pegin_anchor_value)
+        _tlv_u64be(TAG_PEGIN_ANCHOR_VALUE,        pegin_anchor_value)      +
+        _tlv_u8   (TAG_VAULT_COUNT,               vault_count)
+    )
+
+
+def build_group_tlv(
+    htlc_vout: int,
+    vault_provider_pk: bytes,
+    vault_amount: int,
+    commission_fee: int,
+    depositor_claim_value: int,
+    pegin_max_fee: int,
+) -> bytes:
+    """Encode one vault group into a P1=0x02 TLV payload (v19 format, NAPPS-1442)."""
+    assert len(vault_provider_pk) == 32, f"vault_provider_pk must be 32-byte x-only key, got {len(vault_provider_pk)}"
+    return (
+        _tlv_u8   (TAG_GRP_HTLC_VOUT,             htlc_vout)              +
+        _tlv_bytes(TAG_GRP_VAULT_PROVIDER_PK,      vault_provider_pk)      +
+        _tlv_u64be(TAG_GRP_VAULT_AMOUNT,           vault_amount)           +
+        _tlv_u64be(TAG_GRP_COMMISSION_FEE,         commission_fee)         +
+        _tlv_u64be(TAG_GRP_DEPOSITOR_CLAIM_VALUE,  depositor_claim_value)  +
+        _tlv_u64be(TAG_GRP_PEGIN_MAX_FEE,          pegin_max_fee)
     )
 
 
@@ -305,6 +330,7 @@ def approve_vault_intent_with_nav(
     scalars_tlv: bytes,
     keeper_pks: List[bytes],
     challenger_pks: List[bytes],
+    groups: Optional[List[bytes]] = None,
     path: Optional[Path] = None,
     test_case_name: Optional[Union[Path, str]] = None,
     n_swipes: Optional[int] = None,
@@ -314,6 +340,9 @@ def approve_vault_intent_with_nav(
     All batches except the last are sent synchronously (they respond SW_OK immediately).
     The final batch triggers the display; it is sent asynchronously while the navigator
     confirms the review screen.
+
+    groups: list of pre-built P1=0x02 group TLV payloads (one per vault).  When
+    provided they are sent between the P1=0x00 scalars and the P1=0x01 key batches.
 
     When path and test_case_name are provided, snapshot comparison is performed:
       - If n_swipes is given, navigate_and_compare is used with an explicit instruction
@@ -325,6 +354,9 @@ def approve_vault_intent_with_nav(
     from .instructions import vault_intent_approve_nav, vault_intent_approve_instructions
 
     _approve_exchange(client, P1_SCALARS, scalars_tlv)
+
+    for grp_tlv in (groups or []):
+        _approve_exchange(client, P1_GROUP, grp_tlv)
 
     all_keys = keeper_pks + challenger_pks
     assert len(all_keys) > 0, "keeper_pks + challenger_pks must not be empty"
@@ -373,15 +405,20 @@ def approve_vault_intent(
     scalars_tlv: bytes,
     keeper_pks: List[bytes],
     challenger_pks: List[bytes],
+    groups: Optional[List[bytes]] = None,
 ) -> None:
-    """Send APPROVE_VAULT_INTENT APDUs (both phases).
+    """Send APPROVE_VAULT_INTENT APDUs (scalars + optional groups + keys).
 
-    Sends one P1=0x00 APDU with the scalar TLV, then streams all keys
-    in P1=0x01 batches of up to 7 keys each (224 bytes per APDU).
+    Sends one P1=0x00 APDU with the scalar TLV, then one P1=0x02 APDU per group
+    (when groups is provided), then streams all keys in P1=0x01 batches of up to
+    7 keys each (224 bytes per APDU).
 
     Raises ExceptionRAPDU on any non-OK SW.
     """
     _approve_exchange(client, P1_SCALARS, scalars_tlv)
+
+    for grp_tlv in (groups or []):
+        _approve_exchange(client, P1_GROUP, grp_tlv)
 
     all_keys = keeper_pks + challenger_pks
     for i in range(0, len(all_keys), _KEYS_PER_BATCH):

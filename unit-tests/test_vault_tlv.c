@@ -1,6 +1,7 @@
 /**
  * Unit tests for:
  *   - vault_tlv_parse          (src/vault_tlv.c)
+ *   - vault_tlv_parse_group    (src/vault_tlv.c)
  *   - vault_validate_and_store_key   (src/handler/approve_vault_intent_core.h)
  *   - vault_check_depositor_uniqueness (src/handler/approve_vault_intent_core.h)
  *
@@ -36,6 +37,9 @@
 #define TEST_HTLC_REFUND          144u    /* [72, 1008] ✓ */
 #define TEST_HTLC_VOUT              0u
 #define TEST_PEGIN_ANCHOR_VALUE   VAULT_DUST_LIMIT
+
+/* Old v18 per-vault scalar tag byte — rejected in P1=0x00 since v19. */
+#define TAG_OLD_VAULT_PROVIDER_PK 0x04u
 
 /* m/86'/1'/0'/0/0 — coin type matches BIP44_COIN_TYPE=1 */
 static const uint32_t VALID_PATH[5] = {
@@ -102,27 +106,37 @@ static uint8_t *tlv_path(uint8_t *p, uint8_t tag, const uint32_t *path, int leve
     return p;
 }
 
-/** Build a complete, valid TLV payload into @p buf. Returns byte length. */
+/**
+ * Build a complete, valid P1=0x00 TLV payload (13 scalar tags) into @p buf.
+ * Returns byte length.
+ */
 static size_t build_valid_tlv(uint8_t *buf) {
     uint8_t *p = buf;
-    p = tlv_u8    (p, TAG_STRUCTURE_TYPE,           VAULT_STRUCTURE_TYPE);
-    p = tlv_u8    (p, TAG_VERSION,                  VAULT_PROTOCOL_VERSION);
-    p = tlv_u32be (p, TAG_COIN_TYPE,                BIP44_COIN_TYPE);
-    p = tlv_bytes (p, TAG_VAULT_PROVIDER_PK,        VALID_VP_PK, 32);
-    p = tlv_u64be (p, TAG_VAULT_AMOUNT,             TEST_VAULT_AMOUNT);
-    p = tlv_u64be (p, TAG_COMMISSION_FEE,           TEST_COMMISSION_FEE);
-    p = tlv_u64be (p, TAG_DEPOSITOR_CLAIM_VALUE,    TEST_DEPOSITOR_CLAIM);
-    p = tlv_u64be (p, TAG_BASE_FEE_RATE,            TEST_BASE_FEE_RATE);
-    p = tlv_u64be (p, TAG_PEGIN_MAX_FEE,            TEST_PEGIN_MAX_FEE);
-    p = tlv_u32be (p, TAG_PEGIN_CSV_TIMELOCK,       TEST_PEGIN_CSV);
-    p = tlv_u32be (p, TAG_PAYOUT_TIMELOCK,          TEST_PAYOUT_TIMELOCK);
-    p = tlv_bytes (p, TAG_PREPEGIN_TXID,            VALID_TXID, 32);
-    p = tlv_u8    (p, TAG_HTLC_VOUT,                TEST_HTLC_VOUT);
-    p = tlv_u32be (p, TAG_HTLC_REFUND_TIMELOCK,     TEST_HTLC_REFUND);
+    p = tlv_u8    (p, TAG_STRUCTURE_TYPE,            VAULT_STRUCTURE_TYPE);
+    p = tlv_u8    (p, TAG_VERSION,                   VAULT_PROTOCOL_VERSION);
+    p = tlv_u32be (p, TAG_COIN_TYPE,                 BIP44_COIN_TYPE);
+    p = tlv_u64be (p, TAG_BASE_FEE_RATE,             TEST_BASE_FEE_RATE);
+    p = tlv_u32be (p, TAG_PEGIN_CSV_TIMELOCK,        TEST_PEGIN_CSV);
+    p = tlv_u32be (p, TAG_PAYOUT_TIMELOCK,           TEST_PAYOUT_TIMELOCK);
+    p = tlv_bytes (p, TAG_PREPEGIN_TXID,             VALID_TXID, 32);
+    p = tlv_u32be (p, TAG_HTLC_REFUND_TIMELOCK,      TEST_HTLC_REFUND);
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
-    p = tlv_u8    (p, TAG_KEEPER_COUNT,             1);
-    p = tlv_u8    (p, TAG_CHALLENGER_COUNT,         1);
-    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,       TEST_PEGIN_ANCHOR_VALUE);
+    p = tlv_u8    (p, TAG_KEEPER_COUNT,              1);
+    p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
+    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,        TEST_PEGIN_ANCHOR_VALUE);
+    p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
+    return (size_t)(p - buf);
+}
+
+/** Build a complete, valid P1=0x02 group TLV payload (6 group tags) into @p buf. */
+static size_t build_valid_group(uint8_t *buf) {
+    uint8_t *p = buf;
+    p = tlv_u8    (p, TAG_GRP_HTLC_VOUT,             TEST_HTLC_VOUT);
+    p = tlv_bytes (p, TAG_GRP_VAULT_PROVIDER_PK,     VALID_VP_PK, 32);
+    p = tlv_u64be (p, TAG_GRP_VAULT_AMOUNT,          TEST_VAULT_AMOUNT);
+    p = tlv_u64be (p, TAG_GRP_COMMISSION_FEE,        TEST_COMMISSION_FEE);
+    p = tlv_u64be (p, TAG_GRP_DEPOSITOR_CLAIM_VALUE, TEST_DEPOSITOR_CLAIM);
+    p = tlv_u64be (p, TAG_GRP_PEGIN_MAX_FEE,         TEST_PEGIN_MAX_FEE);
     return (size_t)(p - buf);
 }
 
@@ -172,9 +186,10 @@ static void test_tlv_valid_minimal(void **state) {
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
     assert_int_equal(out.keeper_count, 1);
     assert_int_equal(out.challenger_count, 1);
+    assert_int_equal(out.vault_count, 1);
     assert_int_equal(out.pegin_csv_timelock, TEST_PEGIN_CSV);
     assert_int_equal(out.payout_timelock, TEST_PAYOUT_TIMELOCK);
-    assert_memory_equal(out.vault_provider_pk, VALID_VP_PK, 32);
+    assert_int_equal(out.groups[0].pegin_anchor_value, TEST_PEGIN_ANCHOR_VALUE);
 }
 
 static void test_tlv_tags_any_order_ok(void **state) {
@@ -184,25 +199,20 @@ static void test_tlv_tags_any_order_ok(void **state) {
      * still pass even when coin_type tag arrives after the path tag. */
     uint8_t buf[256]; vault_intent_t out;
     uint8_t *p = buf;
-    p = tlv_u8    (p, TAG_STRUCTURE_TYPE,           VAULT_STRUCTURE_TYPE);
-    p = tlv_u8    (p, TAG_VERSION,                  VAULT_PROTOCOL_VERSION);
-    p = tlv_bytes (p, TAG_VAULT_PROVIDER_PK,        VALID_VP_PK, 32);
-    p = tlv_u64be (p, TAG_VAULT_AMOUNT,             TEST_VAULT_AMOUNT);
-    p = tlv_u64be (p, TAG_COMMISSION_FEE,           TEST_COMMISSION_FEE);
-    p = tlv_u64be (p, TAG_DEPOSITOR_CLAIM_VALUE,    TEST_DEPOSITOR_CLAIM);
-    p = tlv_u64be (p, TAG_BASE_FEE_RATE,            TEST_BASE_FEE_RATE);
-    p = tlv_u64be (p, TAG_PEGIN_MAX_FEE,            TEST_PEGIN_MAX_FEE);
-    p = tlv_u32be (p, TAG_PEGIN_CSV_TIMELOCK,       TEST_PEGIN_CSV);
-    p = tlv_u32be (p, TAG_PAYOUT_TIMELOCK,          TEST_PAYOUT_TIMELOCK);
-    p = tlv_bytes (p, TAG_PREPEGIN_TXID,            VALID_TXID, 32);
-    p = tlv_u8    (p, TAG_HTLC_VOUT,                TEST_HTLC_VOUT);
-    p = tlv_u32be (p, TAG_HTLC_REFUND_TIMELOCK,     TEST_HTLC_REFUND);
+    p = tlv_u8    (p, TAG_STRUCTURE_TYPE,            VAULT_STRUCTURE_TYPE);
+    p = tlv_u8    (p, TAG_VERSION,                   VAULT_PROTOCOL_VERSION);
+    p = tlv_u64be (p, TAG_BASE_FEE_RATE,             TEST_BASE_FEE_RATE);
+    p = tlv_u32be (p, TAG_PEGIN_CSV_TIMELOCK,        TEST_PEGIN_CSV);
+    p = tlv_u32be (p, TAG_PAYOUT_TIMELOCK,           TEST_PAYOUT_TIMELOCK);
+    p = tlv_bytes (p, TAG_PREPEGIN_TXID,             VALID_TXID, 32);
+    p = tlv_u32be (p, TAG_HTLC_REFUND_TIMELOCK,      TEST_HTLC_REFUND);
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
-    p = tlv_u8    (p, TAG_KEEPER_COUNT,             1);
-    p = tlv_u8    (p, TAG_CHALLENGER_COUNT,         1);
-    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,       TEST_PEGIN_ANCHOR_VALUE);
+    p = tlv_u8    (p, TAG_KEEPER_COUNT,              1);
+    p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
+    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,        TEST_PEGIN_ANCHOR_VALUE);
+    p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
     /* TAG_COIN_TYPE last — intentionally out of spec-table order */
-    p = tlv_u32be (p, TAG_COIN_TYPE,                BIP44_COIN_TYPE);
+    p = tlv_u32be (p, TAG_COIN_TYPE,                 BIP44_COIN_TYPE);
     assert_int_equal(vault_tlv_parse(buf, (size_t)(p - buf), &out), VAULT_TLV_OK);
     assert_int_equal(out.coin_type, (uint32_t) BIP44_COIN_TYPE);
 }
@@ -327,6 +337,22 @@ static void test_tlv_challenger_count_too_large(void **state) {
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
 }
 
+static void test_tlv_vault_count_zero(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    patch_tlv_u8(buf, len, TAG_VAULT_COUNT, 0);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+}
+
+static void test_tlv_vault_count_too_large(void **state) {
+    (void) state;
+    uint8_t buf[256]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    patch_tlv_u8(buf, len, TAG_VAULT_COUNT, VAULT_MAX_VAULTS + 1);
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
+}
+
 static void test_tlv_htlc_refund_below_min(void **state) {
     (void) state;
     uint8_t buf[256]; vault_intent_t out;
@@ -363,42 +389,6 @@ static void test_tlv_empty_payload(void **state) {
     (void) state;
     vault_intent_t out;
     assert_int_equal(vault_tlv_parse(NULL, 0, &out), VAULT_TLV_ERR_MISSING_FIELD);
-}
-
-static void test_tlv_commission_fee_below_dust(void **state) {
-    (void) state;
-    uint8_t buf[256]; vault_intent_t out;
-    size_t len = build_valid_tlv(buf);
-
-    /* commission_fee == 0 → the VP commission output would be empty → fail */
-    patch_tlv_u64be(buf, len, TAG_COMMISSION_FEE, 0);
-    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
-
-    /* commission_fee just below the relay dust limit → fail */
-    patch_tlv_u64be(buf, len, TAG_COMMISSION_FEE, VAULT_DUST_LIMIT - 1);
-    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
-
-    /* commission_fee exactly at the relay dust limit → OK */
-    patch_tlv_u64be(buf, len, TAG_COMMISSION_FEE, VAULT_DUST_LIMIT);
-    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
-}
-
-static void test_tlv_vault_amount_exactly_at_boundary(void **state) {
-    (void) state;
-    /* vault_amount == commission_fee + 2*DUST is not strictly greater → fail */
-    uint8_t buf[256]; vault_intent_t out;
-    size_t len = build_valid_tlv(buf);
-    patch_tlv_u64be(buf, len, TAG_VAULT_AMOUNT, TEST_COMMISSION_FEE + 2 * VAULT_DUST_LIMIT);
-    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
-}
-
-static void test_tlv_vault_amount_just_above_boundary(void **state) {
-    (void) state;
-    /* vault_amount == commission_fee + 2*DUST + 1 → OK */
-    uint8_t buf[256]; vault_intent_t out;
-    size_t len = build_valid_tlv(buf);
-    patch_tlv_u64be(buf, len, TAG_VAULT_AMOUNT, TEST_COMMISSION_FEE + 2 * VAULT_DUST_LIMIT + 1);
-    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
 }
 
 static void test_tlv_pegin_anchor_dust_boundary(void **state) {
@@ -490,28 +480,35 @@ static void test_tlv_unknown_tag(void **state) {
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_UNKNOWN_TAG);
 }
 
+/* Old v18 per-vault scalar tags (0x04–0x07, 0x09, 0x0D) must be rejected in P1=0x00. */
+static void test_tlv_rejected_per_vault_tag_in_scalar(void **state) {
+    (void) state;
+    uint8_t buf[300]; vault_intent_t out;
+    size_t len = build_valid_tlv(buf);
+    /* Append old vault_provider_pk tag (0x04) — rejected by whitelist mask */
+    buf[len++] = TAG_OLD_VAULT_PROVIDER_PK; buf[len++] = 32;
+    memcpy(buf + len, VALID_VP_PK, 32); len += 32;
+    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_UNKNOWN_TAG);
+}
+
 static void test_tlv_missing_field(void **state) {
     (void) state;
     /* Build without TAG_KEEPER_COUNT */
     uint8_t buf[256]; vault_intent_t out;
     uint8_t *p = buf;
-    p = tlv_u8    (p, TAG_STRUCTURE_TYPE,           VAULT_STRUCTURE_TYPE);
-    p = tlv_u8    (p, TAG_VERSION,                  VAULT_PROTOCOL_VERSION);
-    p = tlv_u32be (p, TAG_COIN_TYPE,                BIP44_COIN_TYPE);
-    p = tlv_bytes (p, TAG_VAULT_PROVIDER_PK,        VALID_VP_PK, 32);
-    p = tlv_u64be (p, TAG_VAULT_AMOUNT,             TEST_VAULT_AMOUNT);
-    p = tlv_u64be (p, TAG_COMMISSION_FEE,           TEST_COMMISSION_FEE);
-    p = tlv_u64be (p, TAG_DEPOSITOR_CLAIM_VALUE,    TEST_DEPOSITOR_CLAIM);
-    p = tlv_u64be (p, TAG_BASE_FEE_RATE,            TEST_BASE_FEE_RATE);
-    p = tlv_u64be (p, TAG_PEGIN_MAX_FEE,            TEST_PEGIN_MAX_FEE);
-    p = tlv_u32be (p, TAG_PEGIN_CSV_TIMELOCK,       TEST_PEGIN_CSV);
-    p = tlv_u32be (p, TAG_PAYOUT_TIMELOCK,          TEST_PAYOUT_TIMELOCK);
-    p = tlv_bytes (p, TAG_PREPEGIN_TXID,            VALID_TXID, 32);
-    p = tlv_u8    (p, TAG_HTLC_VOUT,                TEST_HTLC_VOUT);
-    p = tlv_u32be (p, TAG_HTLC_REFUND_TIMELOCK,     TEST_HTLC_REFUND);
+    p = tlv_u8    (p, TAG_STRUCTURE_TYPE,            VAULT_STRUCTURE_TYPE);
+    p = tlv_u8    (p, TAG_VERSION,                   VAULT_PROTOCOL_VERSION);
+    p = tlv_u32be (p, TAG_COIN_TYPE,                 BIP44_COIN_TYPE);
+    p = tlv_u64be (p, TAG_BASE_FEE_RATE,             TEST_BASE_FEE_RATE);
+    p = tlv_u32be (p, TAG_PEGIN_CSV_TIMELOCK,        TEST_PEGIN_CSV);
+    p = tlv_u32be (p, TAG_PAYOUT_TIMELOCK,           TEST_PAYOUT_TIMELOCK);
+    p = tlv_bytes (p, TAG_PREPEGIN_TXID,             VALID_TXID, 32);
+    p = tlv_u32be (p, TAG_HTLC_REFUND_TIMELOCK,      TEST_HTLC_REFUND);
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     /* TAG_KEEPER_COUNT omitted */
-    p = tlv_u8    (p, TAG_CHALLENGER_COUNT,         1);
+    p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
+    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,        TEST_PEGIN_ANCHOR_VALUE);
+    p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
     assert_int_equal(vault_tlv_parse(buf, (size_t)(p - buf), &out), VAULT_TLV_ERR_MISSING_FIELD);
 }
 
@@ -531,12 +528,80 @@ static void test_tlv_overflow(void **state) {
     (void) state;
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
-    /* Corrupt vault_provider_pk length to extend past buffer end */
+    /* Corrupt prepegin_txid length to extend past buffer end */
     for (size_t i = 0; i + 1 < len; ) {
-        if (buf[i] == TAG_VAULT_PROVIDER_PK) { buf[i + 1] = 0xFF; break; }
+        if (buf[i] == TAG_PREPEGIN_TXID) { buf[i + 1] = 0xFF; break; }
         i += 2 + buf[i+1];
     }
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_OVERFLOW);
+}
+
+/* =========================================================================
+ * Group 1b: vault_tlv_parse_group
+ * ====================================================================== */
+
+static void test_tlv_parse_group_valid(void **state) {
+    (void) state;
+    uint8_t buf[128]; vault_group_t grp;
+    size_t len = build_valid_group(buf);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_OK);
+    assert_int_equal(grp.htlc_vout, TEST_HTLC_VOUT);
+    assert_memory_equal(grp.vault_provider_pk, VALID_VP_PK, 32);
+    assert_int_equal(grp.vault_amount, TEST_VAULT_AMOUNT);
+    assert_int_equal(grp.commission_fee, TEST_COMMISSION_FEE);
+}
+
+static void test_tlv_parse_group_missing_field(void **state) {
+    (void) state;
+    /* Build without TAG_GRP_VAULT_AMOUNT */
+    uint8_t buf[128]; vault_group_t grp;
+    uint8_t *p = buf;
+    p = tlv_u8    (p, TAG_GRP_HTLC_VOUT,             TEST_HTLC_VOUT);
+    p = tlv_bytes (p, TAG_GRP_VAULT_PROVIDER_PK,     VALID_VP_PK, 32);
+    /* TAG_GRP_VAULT_AMOUNT omitted */
+    p = tlv_u64be (p, TAG_GRP_COMMISSION_FEE,        TEST_COMMISSION_FEE);
+    p = tlv_u64be (p, TAG_GRP_DEPOSITOR_CLAIM_VALUE, TEST_DEPOSITOR_CLAIM);
+    p = tlv_u64be (p, TAG_GRP_PEGIN_MAX_FEE,         TEST_PEGIN_MAX_FEE);
+    assert_int_equal(vault_tlv_parse_group(buf, (size_t)(p - buf), &grp),
+                     VAULT_TLV_ERR_MISSING_FIELD);
+}
+
+static void test_tlv_parse_group_commission_below_dust(void **state) {
+    (void) state;
+    uint8_t buf[128]; vault_group_t grp;
+    size_t len = build_valid_group(buf);
+
+    /* commission_fee == 0 → the VP commission output would be empty → fail */
+    patch_tlv_u64be(buf, len, TAG_GRP_COMMISSION_FEE, 0);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_ERR_VALIDATION);
+
+    /* commission_fee just below the relay dust limit → fail */
+    patch_tlv_u64be(buf, len, TAG_GRP_COMMISSION_FEE, VAULT_DUST_LIMIT - 1);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_ERR_VALIDATION);
+
+    /* commission_fee exactly at the relay dust limit → OK */
+    patch_tlv_u64be(buf, len, TAG_GRP_COMMISSION_FEE, VAULT_DUST_LIMIT);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_OK);
+}
+
+static void test_tlv_parse_group_amount_exactly_at_boundary(void **state) {
+    (void) state;
+    /* vault_amount == commission_fee + 2*DUST is not strictly greater → fail */
+    uint8_t buf[128]; vault_group_t grp;
+    size_t len = build_valid_group(buf);
+    patch_tlv_u64be(buf, len, TAG_GRP_VAULT_AMOUNT,
+                    TEST_COMMISSION_FEE + 2 * VAULT_DUST_LIMIT);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_ERR_VALIDATION);
+}
+
+static void test_tlv_parse_group_amount_just_above_boundary(void **state) {
+    (void) state;
+    /* vault_amount == commission_fee + 2*DUST + 1 → OK */
+    uint8_t buf[128]; vault_group_t grp;
+    size_t len = build_valid_group(buf);
+    patch_tlv_u64be(buf, len, TAG_GRP_VAULT_AMOUNT,
+                    TEST_COMMISSION_FEE + 2 * VAULT_DUST_LIMIT + 1);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_OK);
 }
 
 /* =========================================================================
@@ -549,7 +614,8 @@ static vault_intent_t make_intent(uint8_t keeper_count, uint8_t challenger_count
     memset(&intent, 0, sizeof(intent));
     intent.keeper_count     = keeper_count;
     intent.challenger_count = challenger_count;
-    memcpy(intent.vault_provider_pk, VALID_VP_PK, 32);
+    intent.vault_count      = 1;
+    memcpy(intent.groups[0].vault_provider_pk, VALID_VP_PK, 32);
     return intent;
 }
 
@@ -702,11 +768,8 @@ int main(void) {
         cmocka_unit_test(test_tlv_keeper_count_too_large),
         cmocka_unit_test(test_tlv_challenger_count_zero),
         cmocka_unit_test(test_tlv_challenger_count_too_large),
-
-        /* vault_tlv_parse — amount / fee validation */
-        cmocka_unit_test(test_tlv_commission_fee_below_dust),
-        cmocka_unit_test(test_tlv_vault_amount_exactly_at_boundary),
-        cmocka_unit_test(test_tlv_vault_amount_just_above_boundary),
+        cmocka_unit_test(test_tlv_vault_count_zero),
+        cmocka_unit_test(test_tlv_vault_count_too_large),
 
         /* vault_tlv_parse — pegin anchor value validation */
         cmocka_unit_test(test_tlv_pegin_anchor_dust_boundary),
@@ -720,9 +783,21 @@ int main(void) {
         cmocka_unit_test(test_tlv_empty_payload),
         cmocka_unit_test(test_tlv_duplicate_tag),
         cmocka_unit_test(test_tlv_unknown_tag),
+        cmocka_unit_test(test_tlv_rejected_per_vault_tag_in_scalar),
         cmocka_unit_test(test_tlv_missing_field),
         cmocka_unit_test(test_tlv_wrong_field_length),
         cmocka_unit_test(test_tlv_overflow),
+
+        /* vault_tlv_parse_group — happy path */
+        cmocka_unit_test(test_tlv_parse_group_valid),
+
+        /* vault_tlv_parse_group — field errors */
+        cmocka_unit_test(test_tlv_parse_group_missing_field),
+
+        /* vault_tlv_parse_group — amount / fee validation */
+        cmocka_unit_test(test_tlv_parse_group_commission_below_dust),
+        cmocka_unit_test(test_tlv_parse_group_amount_exactly_at_boundary),
+        cmocka_unit_test(test_tlv_parse_group_amount_just_above_boundary),
 
         /* vault_validate_and_store_key */
         cmocka_unit_test(test_key_first_keeper_ok),

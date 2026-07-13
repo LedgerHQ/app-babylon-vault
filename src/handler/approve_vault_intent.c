@@ -13,6 +13,7 @@
 #include <string.h>
 
 #define P1_SCALARS   0x00
+#define P1_GROUP     0x02
 #define P1_KEY_BATCH 0x01
 
 /* Spec-defined SW for BIP-32 depositor key derivation failure (see docs/apdu.md). */
@@ -38,13 +39,19 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    /* If DERIVE_CONTEXT_HASH completed, preserve the root across the reset. The
-     * per-vault commitments (htlc_hashlock, auth_anchor_hash) are recomputed from it
-     * once htlc_vout is known (see handle_key_batch). */
+    /* If DERIVE_CONTEXT_HASH completed, preserve the root and derivation path across
+     * the reset. The per-vault commitments (htlc_hashlock, auth_anchor_hash) are
+     * recomputed from the root once htlc_vout is known (see handle_key_batch).
+     * derivation_path must survive so the F2 check in handle_key_batch can compare
+     * it against the intent's depositor path. */
     uint8_t saved_root[VAULT_HASH256_LEN];
+    uint32_t saved_path[VAULT_MAX_PATH_DEPTH];
+    uint8_t saved_path_len = 0;
     bool preserve_root = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
     if (preserve_root) {
         memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
+        saved_path_len = G_vault_context.derivation_path_len;
+        memcpy(saved_path, G_vault_context.derivation_path, saved_path_len * sizeof(uint32_t));
     }
 
     vault_context_invalidate(&G_vault_context);
@@ -53,6 +60,9 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     if (preserve_root) {
         memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
         explicit_bzero(saved_root, sizeof(saved_root));
+        G_vault_context.derivation_path_len = saved_path_len;
+        memcpy(G_vault_context.derivation_path, saved_path, saved_path_len * sizeof(uint32_t));
+        explicit_bzero(saved_path, sizeof(saved_path));
         // Restore state to HASH_DERIVED so handle_key_batch can transition
         // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
         // because vault_context_invalidate() left state at IDLE.
@@ -73,19 +83,59 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         return;
     }
 
-    /* Verify vault_provider_pk is a valid secp256k1 x-only point.
-     * vault_tlv_parse stores it as raw bytes without an EC validity check;
-     * reject invalid points here before they can reach taproot key derivation. */
-    uint8_t tmp_point[65];
-    if (crypto_tr_lift_x(G_vault_intent.vault_provider_pk, tmp_point) != 0) {
-        explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
+    /* vault_provider_pk validation (secp256k1 lift_x) moves to the P1=0x02 group
+     * handler (NAPPS-1442) since the key is now per-vault, not a P1=0x00 scalar. */
+
+    G_approve_intent_state.scalars_loaded = true;
+    SEND_SW(dc, SW_OK);
+}
+
+/* -------------------------------------------------------------------------
+ * P1=0x02 — per-vault group TLV (one APDU per vault)
+ * ---------------------------------------------------------------------- */
+
+static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd) {
+    if (!G_approve_intent_state.scalars_loaded) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+    uint8_t idx = G_vault_context.vault_group_index;
+    if (idx >= G_vault_intent.vault_count) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
-    explicit_bzero(tmp_point, sizeof(tmp_point));
+    vault_tlv_err_t err =
+        vault_tlv_parse_group(cmd->data, (size_t) cmd->lc, &G_vault_intent.groups[idx]);
+    if (err != VAULT_TLV_OK) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, tlv_err_to_sw(err));
+        return;
+    }
 
-    G_approve_intent_state.scalars_loaded = true;
+    /* Reject vault_provider_pk that is not a valid secp256k1 x-only point. */
+    uint8_t tmp_point[65];
+    int lift_rc = crypto_tr_lift_x(G_vault_intent.groups[idx].vault_provider_pk, tmp_point);
+    explicit_bzero(tmp_point, sizeof(tmp_point));
+    if (lift_rc != 0) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+
+    /* Enforce strictly-ascending htlc_vout order across groups. */
+    if (idx > 0 &&
+        G_vault_intent.groups[idx].htlc_vout <= G_vault_intent.groups[idx - 1].htlc_vout) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+    /* Propagate the global pegin_anchor_value (parked in groups[0] by the P1=0x00
+     * parser) to each subsequent group.  Full multi-vault loop in NAPPS-1442. */
+    if (idx > 0) {
+        G_vault_intent.groups[idx].pegin_anchor_value = G_vault_intent.groups[0].pegin_anchor_value;
+    }
+    G_vault_context.vault_group_index++;
     SEND_SW(dc, SW_OK);
 }
 
@@ -95,6 +145,13 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
 
 static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     if (!G_approve_intent_state.scalars_loaded) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+
+    /* F1: all P1=0x02 group APDUs must have arrived before key batching starts. */
+    if (G_vault_context.vault_group_index != G_vault_intent.vault_count) {
+        vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
@@ -154,6 +211,19 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     }
 
     /* All keys received — verify depositor key is disjoint from all roles. */
+
+    /* F2: reject if the path supplied to DERIVE_CONTEXT_HASH does not match the
+     * depositor path in the intent.  Prevents a host from pairing a root derived
+     * at one path with an intent that claims a different depositor path. */
+    if (G_vault_context.derivation_path_len != VAULT_DEPOSITOR_PATH_LEN ||
+        memcmp(G_vault_context.derivation_path,
+               G_vault_intent.depositor_path,
+               VAULT_DEPOSITOR_PATH_LEN * sizeof(uint32_t)) != 0) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return;
+    }
+
     uint8_t depositor_compressed[33];
     if (crypto_get_compressed_pubkey_at_path(G_vault_intent.depositor_path,
                                              VAULT_DEPOSITOR_PATH_LEN,
@@ -174,23 +244,26 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     memcpy(G_vault_intent.depositor_pk, depositor_compressed + 1, VAULT_XONLY_PUBKEY_LEN);
 
     /* Compute the on-chain commitments from the HKDF root now that htlc_vout is known.
-     * DERIVE_CONTEXT_HASH is required before this point (enforced by the state machine),
-     * so the root is always non-zero here. The defense-in-depth zero-check is retained. */
+     * DERIVE_CONTEXT_HASH is required before this point (enforced by the state machine).
+     * F3: treat an all-zero root as a protocol violation — do not silently skip. */
     const uint8_t zeros32[VAULT_HASH256_LEN] = {0};
-    if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) != 0) {
-        if (!vault_derive_hashlock_commitment(G_vault_context.root,
-                                              G_vault_intent.htlc_vout,
-                                              G_vault_context.htlc_hashlock) ||
-            !vault_derive_auth_anchor_commitment(G_vault_context.root,
-                                                 G_vault_context.auth_anchor_hash)) {
-            vault_context_invalidate(&G_vault_context);
-            SEND_SW(dc, SW_BAD_STATE);
-            return;
-        }
-        // Root is no longer needed — both commitments are stored in G_vault_context.
-        // Zero it now rather than waiting for session end to minimise exposure window.
-        explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
+    if (memcmp(G_vault_context.root, zeros32, VAULT_HASH256_LEN) == 0) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
     }
+    if (!vault_derive_hashlock_commitment(G_vault_context.root,
+                                          G_vault_intent.groups[0].htlc_vout,
+                                          G_vault_context.htlc_hashlock[0]) ||
+        !vault_derive_auth_anchor_commitment(G_vault_context.root,
+                                             G_vault_context.auth_anchor_hash)) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+    // Root is no longer needed — both commitments are stored in G_vault_context.
+    // Zero it now rather than waiting for session end to minimise exposure window.
+    explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
 
     /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));
@@ -209,7 +282,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
      * AND the intent carries a non-zero prepegin_txid.  Without this transition the
      * sign_psbt dispatch can never reach _validate_pegin. */
     const uint8_t zeros[VAULT_HASH256_LEN] = {0};
-    if (memcmp(G_vault_context.htlc_hashlock, zeros, VAULT_HASH256_LEN) != 0 &&
+    if (memcmp(G_vault_context.htlc_hashlock[0], zeros, VAULT_HASH256_LEN) != 0 &&
         memcmp(G_vault_intent.prepegin_txid, zeros, VAULT_HASH256_LEN) != 0) {
         if (!vault_context_transition(&G_vault_context,
                                       VAULT_STATE_INTENT_LOADED,
@@ -229,6 +302,9 @@ void handler_approve_vault_intent(dispatcher_context_t *dc, const command_t *cmd
     switch (cmd->p1) {
         case P1_SCALARS:
             handle_scalar_payload(dc, cmd);
+            return;
+        case P1_GROUP:
+            handle_group_payload(dc, cmd);
             return;
         case P1_KEY_BATCH:
             handle_key_batch(dc, cmd);

@@ -4,7 +4,7 @@ from ragger.backend.interface import BackendInterface
 from ragger.conftest import configuration
 import os
 from pathlib import Path
-from typing import Literal, Union
+from typing import Literal, List, Optional, Union
 import pytest
 
 # disable reordering of imports for autopep8
@@ -140,6 +140,12 @@ def check_no_extra_snapshots(request, device):
                 f"Test produced {expected_count} screen(s) but {expected_count + len(extra)} golden(s) exist. "
                 f"Run with --golden_run to regenerate."
             )
+
+
+def pytest_assertrepr_compare(op: str, left: object, right: object) -> Optional[List[str]]:
+    """Show APDU status word comparisons in hex instead of decimal."""
+    if op == "==" and isinstance(left, int) and isinstance(right, int) and repr(right).startswith("0x"):
+        return [f"{hex(left)} {op} {hex(right)}"]
 
 
 @pytest.fixture

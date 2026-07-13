@@ -144,6 +144,11 @@ void handler_derive_context_hash(dispatcher_context_t *dc, const command_t *cmd)
         return;
     }
 
+    /* F2: persist the BIP-32 path so APPROVE_VAULT_INTENT can verify it matches
+     * the depositor derivation path in the intent. */
+    memcpy(G_vault_context.derivation_path, path, path_len * sizeof(uint32_t));
+    G_vault_context.derivation_path_len = path_len;
+
     // Return the 32-byte root (the host expands it into the per-vault secrets).
     SEND_RESPONSE(dc, G_vault_context.root, VAULT_HASH256_LEN, SW_OK);
 }

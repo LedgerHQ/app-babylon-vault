@@ -10,8 +10,11 @@ def test_dashboard(navigator: Navigator, device: Device, bitcoin_network: str):
 
     if device.is_nano:
         instructions = [
-            NavInsID.RIGHT_CLICK,
-            NavInsID.RIGHT_CLICK,
+            NavInsID.RIGHT_CLICK,  # home → "App info"
+            NavInsID.BOTH_CLICK,   # enter info sub-page → "Version"
+            NavInsID.RIGHT_CLICK,  # "Version" → "Developer"
+            NavInsID.RIGHT_CLICK,  # "Developer" → "Copyright"
+            NavInsID.RIGHT_CLICK,  # "Copyright" → "Back"
         ]
     else:
         instructions = [

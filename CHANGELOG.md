@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - NAPPS-1440: v19 data model — per-vault group struct, TLV layout, context fields
+
+Introduces the v19 batch Pre-PegIn data model: up to 10 vault groups per intent, three-phase
+`APPROVE_VAULT_INTENT` protocol (P1=0x00 scalars → P1=0x02 per-vault groups → P1=0x01 keys).
+
+### Added
+
+- `vault_group_t` struct in `vault_intent.h` holding the 6 per-vault fields: `htlc_vout`,
+  `vault_provider_pk`, `vault_amount`, `commission_fee`, `depositor_claim_value`,
+  `pegin_max_fee`, `pegin_anchor_value` (propagated from the global P1=0x00 scalar).
+- `vault_intent_t.vault_count` scalar field (`[1, 10]`); `groups[VAULT_MAX_VAULTS]` array
+  replaces the former flat per-vault fields.
+- `VAULT_MAX_VAULTS 10` constant in `vault_constants.h`.
+- P1=0x02 per-vault group TLV parser `vault_tlv_parse_group()` in `vault_tlv.c`/`.h`:
+  6 mandatory group tags (`0x01`–`0x06`), independent tag namespace from P1=0x00; validates
+  `commission_fee ≥ VAULT_DUST_LIMIT` and `vault_amount > commission_fee + 2 × DUST` per group.
+- New P1=0x00 scalar tags: `TAG_PEGIN_ANCHOR_VALUE` (0x12) and `TAG_VAULT_COUNT` (0x13).
+- `vault_context_t` gains `htlc_hashlock[VAULT_MAX_VAULTS][VAULT_HASH256_LEN]`,
+  `vault_group_index`, `derivation_path[VAULT_MAX_PATH_DEPTH]`, and `derivation_path_len`.
+- `docs/apdu.md` updated with the three-phase wire format and both tag tables.
+
+### Changed
+
+- `vault_tlv_parse()` (P1=0x00) now rejects old per-vault scalar tags (`0x04`–`0x07`, `0x09`,
+  `0x0D`) via a whitelist bitmask (`VAULT_INTENT_ALL_TAGS_MASK`); those fields must be sent
+  in P1=0x02 instead.
+- `TAG_PEGIN_ANCHOR_VALUE` (global scalar) is stored temporarily in `groups[0].pegin_anchor_value`
+  by the P1=0x00 parser; the P1=0x02 handler (NAPPS-1442) propagates it to all groups.
+- All callers updated to use `groups[0]` for per-vault fields: `vault_script.c`, `display.c`,
+  `sign_psbt_validate.c`, `sign_custom_inputs.c`, `approve_vault_intent.c`,
+  `approve_vault_intent_core.h`; `htlc_hashlock` references updated to `htlc_hashlock[0]`.
+- `vault_context_t` size budget raised from 128 B to 512 B in `globals.c` (`_Static_assert`)
+  to accommodate `htlc_hashlock[10][32]` (320 B).
+- Unit tests in `test_vault_tlv.c` updated: `build_valid_tlv()` emits the 13 scalar tags;
+  3 stale per-vault-in-scalar tests removed; 8 new tests added (vault_count bounds,
+  old-tag rejection, `vault_tlv_parse_group` valid/missing/dust/amount cases).
+
 ## [Unreleased] - NAPPS-1422: Realign DERIVE_CONTEXT_HASH with the new babylon-toolkit spec
 
 Realigns `DERIVE_CONTEXT_HASH` (INS `0x81`) to babylon-toolkit `derive-context-hash` rev 2.1

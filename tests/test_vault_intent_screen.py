@@ -30,12 +30,14 @@ from .vault_client import (
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
     P1_SCALARS,
+    P1_GROUP,
     P1_KEY_BATCH,
     P2_UNUSED,
     SW_DENY,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     build_intent_tlv,
+    build_group_tlv,
     approve_vault_intent_with_nav,
     depositor_path,
     derive_for_intent,
@@ -57,30 +59,43 @@ def _scalars(bitcoin_network: str) -> bytes:
     ct = 0 if bitcoin_network == "main" else 1
     return build_intent_tlv(
         coin_type=ct,
-        vault_provider_pk=TEST_VP_KEY,
-        vault_amount=8_765_432,      # 0.08765432 BTC — all 8 decimal places
-        commission_fee=43_219,       # 0.00043219 BTC
-        depositor_claim_value=21_987, # 0.00021987 BTC
         base_fee_rate=7,
-        pegin_max_fee=456_789,       # 0.00456789 BTC
         pegin_csv_timelock=144,
         payout_timelock=200,
         htlc_refund_timelock=144,
         prepegin_txid=bytes(range(32)),
-        htlc_vout=0,
         depositor_path=depositor_path(ct),
         keeper_count=1,
         challenger_count=1,
+        vault_count=1,
     )
 
 
-def _send_scalars(client: "RaggerClient", bitcoin_network: str) -> None:
+def _group() -> bytes:
+    return build_group_tlv(
+        htlc_vout=0,
+        vault_provider_pk=TEST_VP_KEY,
+        vault_amount=8_765_432,       # 0.08765432 BTC — all 8 decimal places
+        commission_fee=43_219,        # 0.00043219 BTC
+        depositor_claim_value=21_987, # 0.00021987 BTC
+        pegin_max_fee=456_789,        # 0.00456789 BTC
+    )
+
+
+def _send_scalars_and_group(client: "RaggerClient", bitcoin_network: str) -> None:
     client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
         p1=P1_SCALARS,
         p2=P2_UNUSED,
         data=_scalars(bitcoin_network),
+    )
+    client.transport_client.exchange(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_GROUP,
+        p2=P2_UNUSED,
+        data=_group(),
     )
 
 
@@ -100,6 +115,7 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
         scalars_tlv=_scalars(bitcoin_network),
         keeper_pks=[_KEY_A],
         challenger_pks=[_KEY_B],
+        groups=[_group()],
         path=ROOT_SCREENSHOT_PATH,
         test_case_name="vault_intent/approve_" + bitcoin_network,
         n_swipes=vault_intent_1k1c_steps(device),
@@ -117,7 +133,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
     Captures every page up to and including the rejection status screen.
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
-    _send_scalars(client, bitcoin_network)
+    _send_scalars_and_group(client, bitcoin_network)
 
     with pytest.raises(ExceptionRAPDU) as exc:
         with client.transport_client.exchange_async(
@@ -151,20 +167,15 @@ def _scalars_4k3c(bitcoin_network: str) -> bytes:
     ct = 0 if bitcoin_network == "main" else 1
     return build_intent_tlv(
         coin_type=ct,
-        vault_provider_pk=TEST_VP_KEY,
-        vault_amount=8_765_432,
-        commission_fee=43_219,
-        depositor_claim_value=21_987,
         base_fee_rate=7,
-        pegin_max_fee=456_789,
         pegin_csv_timelock=144,
         payout_timelock=200,
         htlc_refund_timelock=144,
         prepegin_txid=bytes(range(32)),
-        htlc_vout=0,
         depositor_path=depositor_path(ct),
         keeper_count=len(_SKIP_KEEPERS),
         challenger_count=len(_SKIP_CHALLENGERS),
+        vault_count=1,
     )
 
 
@@ -190,6 +201,13 @@ def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
         p1=P1_SCALARS,
         p2=P2_UNUSED,
         data=_scalars_4k3c(bitcoin_network),
+    )
+    client.transport_client.exchange(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_GROUP,
+        p2=P2_UNUSED,
+        data=_group(),
     )
 
     with client.transport_client.exchange_async(

@@ -85,6 +85,9 @@
  */
 #define VAULT_PATH_STR_SIZE 128u
 
+/** Maximum number of vault groups per Pre-PegIn batch (spec §3). */
+#define VAULT_MAX_VAULTS 10u
+
 /* Timelock range bounds (block counts). */
 
 /** Minimum inclusive bound for pegin_csv_timelock and htlc_refund_timelock. */

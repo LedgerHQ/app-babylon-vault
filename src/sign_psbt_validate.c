@@ -171,7 +171,7 @@ static bool _validate_display_prepegin(
         return false;
     }
     const uint8_t zeros[VAULT_HASH256_LEN] = {0};
-    if (memcmp(G_vault_context.htlc_hashlock, zeros, VAULT_HASH256_LEN) == 0) {
+    if (memcmp(G_vault_context.htlc_hashlock[0], zeros, VAULT_HASH256_LEN) == 0) {
         /* DERIVE_CONTEXT_HASH must be called before Pre-PegIn signing */
         SEND_SW(dc, SW_BAD_STATE);
         return false;
@@ -218,7 +218,7 @@ static bool _validate_display_prepegin(
     }
 
     /* 4. htlc_vout is within output range */
-    if (intent->htlc_vout >= st->n_outputs) {
+    if (intent->groups[0].htlc_vout >= st->n_outputs) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -229,7 +229,7 @@ static bool _validate_display_prepegin(
     if (!_read_output(dc,
                       st->outputs_root,
                       st->n_outputs,
-                      intent->htlc_vout,
+                      intent->groups[0].htlc_vout,
                       actual_spk,
                       &htlc_value)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -238,7 +238,7 @@ static bool _validate_display_prepegin(
 
     /* 6-7-8. Reconstruct expected HTLC scriptPubKey and compare */
     uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-    if (!vault_build_htlc_scriptpubkey(intent, G_vault_context.htlc_hashlock, expected_spk)) {
+    if (!vault_build_htlc_scriptpubkey(intent, G_vault_context.htlc_hashlock[0], expected_spk)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -248,12 +248,12 @@ static bool _validate_display_prepegin(
     }
 
     /* 9-10. HTLC amount ∈ [V + Dcv, V + Dcv + pegin_max_fee] */
-    uint64_t min_htlc = intent->vault_amount + intent->depositor_claim_value;
-    if (min_htlc < intent->vault_amount) {
+    uint64_t min_htlc = intent->groups[0].vault_amount + intent->groups[0].depositor_claim_value;
+    if (min_htlc < intent->groups[0].vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    uint64_t max_htlc = min_htlc + intent->pegin_max_fee;
+    uint64_t max_htlc = min_htlc + intent->groups[0].pegin_max_fee;
     if (max_htlc < min_htlc) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -276,7 +276,7 @@ static bool _validate_display_prepegin(
 
     bool anchor_found = false;
     for (unsigned int i = 0; i < st->n_outputs; i++) {
-        if (i == intent->htlc_vout) continue;
+        if (i == intent->groups[0].htlc_vout) continue;
         if (bitvector_get(internal_outputs, i)) continue;  // BIP-86 change
 
         /* Non-internal output: the only one allowed is the auth-anchor OP_RETURN, and it
@@ -320,8 +320,8 @@ static bool _validate_display_prepegin(
 
     /* 14. Show Screen 2 to the user (SW_DENY already sent by display function on rejection) */
     if (!display_prepegin_transaction(dc,
-                                      intent->vault_amount,
-                                      intent->depositor_claim_value,
+                                      intent->groups[0].vault_amount,
+                                      intent->groups[0].depositor_claim_value,
                                       fee,
                                       G_scratch.display_tx.addr_str)) {
         return false;
@@ -709,7 +709,7 @@ static bool _pegin_check_leaf0_script(dispatcher_context_t *dc,
      * so we never overwrite Leaf 0, eliminating a second vault_build_htlc_leaf0 call. */
     memset(G_scratch.leaf_check.expected_script, 0, VAULT_SCRIPT_MAX_LEN);
     int l0_len = vault_build_htlc_leaf0(intent,
-                                        G_vault_context.htlc_hashlock,
+                                        G_vault_context.htlc_hashlock[0],
                                         G_scratch.leaf_check.expected_script,
                                         VAULT_SCRIPT_MAX_LEN);
     if (l0_len < 0) {
@@ -796,14 +796,14 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
         return false;
     }
 
-    /* 2. PSBT_IN_OUTPUT_INDEX must match intent->htlc_vout */
+    /* 2. PSBT_IN_OUTPUT_INDEX must match intent->groups[0].htlc_vout */
     uint32_t vout;
     if (call_get_merkleized_map_value_u32_le(dc,
                                              input_map,
                                              (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
                                              1,
                                              &vout) != 4 ||
-        vout != intent->htlc_vout) {
+        vout != intent->groups[0].htlc_vout) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -873,7 +873,7 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
 
     /* 7. TAP_MERKLE_ROOT must match vault_build_htlc_merkle_root */
     uint8_t expected_root[VAULT_HASH256_LEN];
-    if (!vault_build_htlc_merkle_root(intent, G_vault_context.htlc_hashlock, expected_root)) {
+    if (!vault_build_htlc_merkle_root(intent, G_vault_context.htlc_hashlock[0], expected_root)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -912,7 +912,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     }
     if (!vault_build_vault_utxo_scriptpubkey(intent, expected_spk) ||
         memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0 ||
-        amount != intent->vault_amount) {
+        amount != intent->groups[0].vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -924,13 +924,13 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     }
     if (!vault_build_depositor_claim_scriptpubkey(intent, expected_spk) ||
         memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0 ||
-        amount != intent->depositor_claim_value) {
+        amount != intent->groups[0].depositor_claim_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
-    /* 3. Output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, intent->pegin_anchor_value sats)
-     * P2A script is 4 bytes — _read_output enforces 34-byte P2TR scripts, so read inline. */
+    /* 3. Output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, intent->groups[0].pegin_anchor_value
+     * sats) P2A script is 4 bytes — _read_output enforces 34-byte P2TR scripts, so read inline. */
     {
         merkleized_map_commitment_t anchor_map;
         if (call_get_merkleized_map(dc, st->outputs_root, 3, 2, &anchor_map) < 0) {
@@ -947,7 +947,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (read_u64_le(raw_amount, 0) != intent->pegin_anchor_value) {
+        if (read_u64_le(raw_amount, 0) != intent->groups[0].pegin_anchor_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -967,17 +967,17 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
 
     /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <=
      * pegin_max_fee.  Two-step addition to catch both possible wraps independently. */
-    uint64_t outputs_sum = intent->vault_amount + intent->depositor_claim_value;
-    if (outputs_sum < intent->vault_amount) {
+    uint64_t outputs_sum = intent->groups[0].vault_amount + intent->groups[0].depositor_claim_value;
+    if (outputs_sum < intent->groups[0].vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    outputs_sum += intent->pegin_anchor_value;
-    if (outputs_sum < intent->pegin_anchor_value) {
+    outputs_sum += intent->groups[0].pegin_anchor_value;
+    if (outputs_sum < intent->groups[0].pegin_anchor_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    if (htlc_value < outputs_sum || (htlc_value - outputs_sum) > intent->pegin_max_fee) {
+    if (htlc_value < outputs_sum || (htlc_value - outputs_sum) > intent->groups[0].pegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1255,7 +1255,10 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         expected_spk[1] = 0x20;
         memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
 
-        if (!_payout_check_witness_utxo(dc, &input_map, expected_spk, intent->vault_amount))
+        if (!_payout_check_witness_utxo(dc,
+                                        &input_map,
+                                        expected_spk,
+                                        intent->groups[0].vault_amount))
             return false;
         if (!_payout_check_single_leaf_script(dc, &input_map, leaf_len, parity)) return false;
     }
@@ -1354,8 +1357,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         const uint8_t *out1_pk;
         uint64_t expected_out1_value;
         if (claimer_idx == 0) {
-            out1_pk = intent->vault_provider_pk;
-            expected_out1_value = intent->commission_fee;
+            out1_pk = intent->groups[0].vault_provider_pk;
+            expected_out1_value = intent->groups[0].commission_fee;
         } else {
             out1_pk = intent->keeper_pks[claimer_idx - 1]; /* CPFP anchor to claimer */
             expected_out1_value = VAULT_DUST_LIMIT;
@@ -1391,7 +1394,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!_bip86_p2tr_spk(intent->vault_provider_pk, expected_spk)) {
+        if (!_bip86_p2tr_spk(intent->groups[0].vault_provider_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1408,7 +1411,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
     /* 6d. Fee bound: fee = (vault_amount + VAULT_DUST_LIMIT) - total_out
      *   fee <= base_fee_rate * (MAX_PAYOUT_VSIZE_BASE + MAX_PAYOUT_VSIZE_PER_PARTICIPANT*(N+M)) */
-    uint64_t total_in = intent->vault_amount + VAULT_DUST_LIMIT;
+    uint64_t total_in = intent->groups[0].vault_amount + VAULT_DUST_LIMIT;
     if (total_out > total_in) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;

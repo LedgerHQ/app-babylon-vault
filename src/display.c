@@ -393,21 +393,25 @@ bool display_vault_intent(dispatcher_context_t *dc) {
 
     // ---- Scalar fields ----
 
-    format_hex(G_vault_intent.vault_provider_pk,
+    format_hex(G_vault_intent.groups[0].vault_provider_pk,
                VAULT_XONLY_PUBKEY_LEN,
                vault_vp_key_str,
                sizeof(vault_vp_key_str));
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = vault_vp_key_str};
 
-    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.vault_amount, vault_amount_str);
+    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.groups[0].vault_amount, vault_amount_str);
     vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = vault_amount_str};
 
-    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.commission_fee, vault_commission_str);
+    format_sats_amount(COIN_COINID_SHORT,
+                       G_vault_intent.groups[0].commission_fee,
+                       vault_commission_str);
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Commission fee", .value = vault_commission_str};
 
-    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.depositor_claim_value, vault_claim_str);
+    format_sats_amount(COIN_COINID_SHORT,
+                       G_vault_intent.groups[0].depositor_claim_value,
+                       vault_claim_str);
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Depositor claim", .value = vault_claim_str};
 
@@ -418,7 +422,9 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Base fee rate", .value = vault_fee_rate_str};
 
-    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.pegin_max_fee, vault_pegin_fee_str);
+    format_sats_amount(COIN_COINID_SHORT,
+                       G_vault_intent.groups[0].pegin_max_fee,
+                       vault_pegin_fee_str);
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Max PegIn fee", .value = vault_pegin_fee_str};
 

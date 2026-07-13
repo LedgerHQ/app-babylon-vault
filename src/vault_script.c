@@ -302,7 +302,7 @@ int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int 
 
     if (off + 34 > buf_max) return -1;
     buf[off++] = OP_PUSHBYTES_32;
-    memcpy(buf + off, intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+    memcpy(buf + off, intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
     buf[off++] = OP_CHECKSIGVERIFY;
 
@@ -370,7 +370,7 @@ int vault_build_htlc_leaf0(const vault_intent_t *intent,
     /* <VP> OP_CHECKSIGVERIFY */
     if (off + 34 > buf_max) return -1;
     buf[off++] = OP_PUSHBYTES_32;
-    memcpy(buf + off, intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+    memcpy(buf + off, intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
     buf[off++] = OP_CHECKSIGVERIFY;
 
@@ -419,16 +419,16 @@ static int build_app_challengers(const vault_intent_t *intent,
         int vp_inserted = 0;
         for (int i = 0; i < (int) intent->keeper_count; i++) {
             if (i == claimer_idx - 1) continue;
-            if (!vp_inserted &&
-                memcmp(intent->vault_provider_pk, intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN) <
-                    0) {
-                memcpy(out[k++], intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+            if (!vp_inserted && memcmp(intent->groups[0].vault_provider_pk,
+                                       intent->keeper_pks[i],
+                                       VAULT_XONLY_PUBKEY_LEN) < 0) {
+                memcpy(out[k++], intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
                 vp_inserted = 1;
             }
             memcpy(out[k++], intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN);
         }
         if (!vp_inserted) {
-            memcpy(out[k++], intent->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+            memcpy(out[k++], intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
         }
     }
     return k;
@@ -459,8 +459,8 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
     uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];
     int k = build_app_challengers(intent, claimer_idx, _app_challengers);
 
-    const uint8_t *claimer_pk =
-        (claimer_idx == 0) ? intent->vault_provider_pk : intent->keeper_pks[claimer_idx - 1];
+    const uint8_t *claimer_pk = (claimer_idx == 0) ? intent->groups[0].vault_provider_pk
+                                                   : intent->keeper_pks[claimer_idx - 1];
 
     int off = 0, r;
 
@@ -645,10 +645,10 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     memcpy(tx + off, intent->prepegin_txid, VAULT_HASH256_LEN);
     off += 32;
     /* prevout index (LE) */
-    tx[off++] = (uint8_t) (intent->htlc_vout);
-    tx[off++] = (uint8_t) (intent->htlc_vout >> 8);
-    tx[off++] = (uint8_t) (intent->htlc_vout >> 16);
-    tx[off++] = (uint8_t) (intent->htlc_vout >> 24);
+    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout);
+    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout >> 8);
+    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout >> 16);
+    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout >> 24);
     /* scriptSig: empty */
     tx[off++] = 0u;
     /* sequence (LE) */
@@ -660,17 +660,19 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     /* output count: 3 */
     tx[off++] = 3u;
     /* output 0: Vault UTXO */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->vault_amount >> (i * 8));
+    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->groups[0].vault_amount >> (i * 8));
     tx[off++] = (uint8_t) sizeof(vault_spk);
     memcpy(tx + off, vault_spk, sizeof(vault_spk));
     off += sizeof(vault_spk);
     /* output 1: Depositor Claim */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->depositor_claim_value >> (i * 8));
+    for (int i = 0; i < 8; i++)
+        tx[off++] = (uint8_t) (intent->groups[0].depositor_claim_value >> (i * 8));
     tx[off++] = (uint8_t) sizeof(claim_spk);
     memcpy(tx + off, claim_spk, sizeof(claim_spk));
     off += sizeof(claim_spk);
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->pegin_anchor_value >> (i * 8));
+    for (int i = 0; i < 8; i++)
+        tx[off++] = (uint8_t) (intent->groups[0].pegin_anchor_value >> (i * 8));
     tx[off++] = 4u; /* script length */
     tx[off++] = 0x51u;
     tx[off++] = 0x02u;

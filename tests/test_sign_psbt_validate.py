@@ -39,12 +39,14 @@ from .vault_client import (
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
     P1_SCALARS,
+    P1_GROUP,
     P1_KEY_BATCH,
     P2_UNUSED,
     derive_context_hash,
     approve_vault_intent_with_nav,
     sign_psbt_with_nav_and_compare,
     build_intent_tlv,
+    build_group_tlv,
     VAULT_APP_NAME,
     vault_hashlock,
     vault_auth_anchor,
@@ -428,20 +430,26 @@ def _build_intent_tlv_for_test(
         challenger_pks = _TEST_CHALLENGER_PKS
     return build_intent_tlv(
         coin_type=coin_type,
-        vault_provider_pk=TEST_VP_KEY,
-        vault_amount=_VAULT_AMOUNT,
-        commission_fee=_COMMISSION_FEE,
-        depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
         base_fee_rate=_BASE_FEE_RATE,
-        pegin_max_fee=_PEGIN_MAX_FEE,
         pegin_csv_timelock=_PEGIN_CSV_TIMELOCK,
         payout_timelock=_PAYOUT_TIMELOCK,
         prepegin_txid=prepegin_txid,
-        htlc_vout=_HTLC_VOUT,
         htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
         depositor_path=depositor_path(coin_type),
         keeper_count=len(keeper_pks),
         challenger_count=len(challenger_pks),
+        vault_count=1,
+    )
+
+
+def _build_group_for_test() -> bytes:
+    return build_group_tlv(
+        htlc_vout=_HTLC_VOUT,
+        vault_provider_pk=TEST_VP_KEY,
+        vault_amount=_VAULT_AMOUNT,
+        commission_fee=_COMMISSION_FEE,
+        depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
+        pegin_max_fee=_PEGIN_MAX_FEE,
     )
 
 
@@ -481,6 +489,7 @@ def _setup_s1_state(
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=[_build_group_for_test()],
     )
     return hashlock
 
@@ -512,6 +521,7 @@ def _setup_s2_state(
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,
+        groups=[_build_group_for_test()],
     )
     return hashlock
 
@@ -1706,24 +1716,28 @@ def _setup_signet_payout_state(
 
     scalars_tlv = build_intent_tlv(
         coin_type=coin_type,
-        vault_provider_pk=_SIGNET_VP_KEY,
-        vault_amount=_SIGNET_VAULT_AMOUNT,
-        commission_fee=_SIGNET_COMMISSION_FEE,
-        depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
         base_fee_rate=1,
-        pegin_max_fee=_PEGIN_MAX_FEE,
         pegin_csv_timelock=_SIGNET_TIMELOCK,
         payout_timelock=_SIGNET_TIMELOCK,
         prepegin_txid=_PREPEGIN_TXID,
-        htlc_vout=_HTLC_VOUT,
         htlc_refund_timelock=_SIGNET_TIMELOCK,
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_SIGNET_KEEPER_PKS),
         challenger_count=len(_SIGNET_CHALLENGER_PKS),
+        vault_count=1,
+    )
+    group_tlv = build_group_tlv(
+        htlc_vout=_HTLC_VOUT,
+        vault_provider_pk=_SIGNET_VP_KEY,
+        vault_amount=_SIGNET_VAULT_AMOUNT,
+        commission_fee=_SIGNET_COMMISSION_FEE,
+        depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
+        pegin_max_fee=_PEGIN_MAX_FEE,
     )
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, _SIGNET_KEEPER_PKS, _SIGNET_CHALLENGER_PKS,
+        groups=[group_tlv],
     )
 
     # Build PegIn PSBT with signet keys and sign it to advance state.

@@ -8,68 +8,88 @@
 
 | INS    | Name                     | Brief purpose |
 |--------|--------------------------|---------------|
-| `0x80` | `APPROVE_VAULT_INTENT`   | Parse and validate vault intent TLV (scalars + key batches); show approval screen; transition to `INTENT_LOADED`. |
+| `0x80` | `APPROVE_VAULT_INTENT`   | Three-phase: P1=0x00 scalar TLV (13 fields), P1=0x02 per-vault group TLV (6 fields × vault_count), P1=0x01 raw key batches; show approval screen; transition to `INTENT_LOADED`. |
 | `0x81` | `DERIVE_CONTEXT_HASH`    | Derive the 32-byte root via HKDF-SHA-256 at `m/73681862'` over `info = SHA256(appName) ‖ SHA256(networkName) ‖ connectedPubkey ‖ context`; return the root. No display. |
 
 ---
 
 ## INS 0x80 — APPROVE_VAULT_INTENT — Wire Format
 
-Two-phase command. **P1=0x00** must be sent exactly once (scalar fields); **P1=0x01** is sent
-one or more times until all `keeper_count + challenger_count` public keys are delivered.
-Any error from either phase resets the in-flight state; a fresh P1=0x00 is required to retry.
+Three-phase command (v19). **P1=0x00** must be sent exactly once (13 scalar fields);
+**P1=0x02** must be sent `vault_count` times (one per-vault group each); **P1=0x01** is
+sent one or more times until all `keeper_count + challenger_count` public keys are delivered.
+Any error from any phase resets the in-flight state; a fresh P1=0x00 is required to retry.
 
 ### P1=0x00 — Scalar TLV payload
 
-Single APDU (total payload ≈ 179 B, well within the 255 B limit).
+Single APDU (total payload ≈ 122 B, well within the 255 B limit).
 
 Each field is encoded as:
 ```
 [ tag: 1 B ][ length: 1 B ][ value: length B ]
 ```
 
-All numeric values are **big-endian**. Tags may arrive in any order. All 17 tags are mandatory.
+All numeric values are **big-endian**. Tags may arrive in any order. All 13 tags are mandatory.
 Duplicate tags, unknown tags, and wrong-length fields are rejected.
 
-| Tag    | Field                      | Length | Type     | Validation rule |
-|--------|----------------------------|--------|----------|-----------------|
-| `0x01` | `structure_type`           | 1 B    | `u8`     | Must equal `VAULT_STRUCTURE_TYPE` |
-| `0x02` | `version`                  | 1 B    | `u8`     | Must equal `VAULT_PROTOCOL_VERSION` (= `0x01`) |
-| `0x03` | `coin_type`                | 4 B    | `u32 BE` | Must equal `BIP44_COIN_TYPE` |
-| `0x04` | `vault_provider_pk`        | 32 B   | bytes    | x-only Schnorr public key (BIP-340) |
-| `0x05` | `vault_amount`             | 8 B    | `u64 BE` | `> commission_fee + 2 × DUST` (660 sat) |
-| `0x06` | `commission_fee`           | 8 B    | `u64 BE` | Must be `> 0` |
-| `0x07` | `depositor_claim_value`    | 8 B    | `u64 BE` | Any value |
-| `0x08` | `base_fee_rate`            | 8 B    | `u64 BE` | Any value (sat/vbyte) |
-| `0x09` | `pegin_max_fee`            | 8 B    | `u64 BE` | Any value |
-| `0x0A` | `pegin_csv_timelock`       | 4 B    | `u32 BE` | `[72, 1008]` inclusive |
-| `0x0B` | `payout_timelock`          | 4 B    | `u32 BE` | `(90, 4032)` exclusive |
-| `0x0C` | `prepegin_txid`            | 32 B   | bytes    | Little-endian txid |
-| `0x0D` | `htlc_vout`                | 1 B    | `u8`     | Output index of HTLC in Pre-PegIn tx |
-| `0x0E` | `htlc_refund_timelock`     | 4 B    | `u32 BE` | `[72, 1008]` inclusive |
-| `0x0F` | `depositor_derivation_path`| 20 B   | `u32[5] BE` | BIP-86: `m/86'/coin_type'/acct'/chg/idx`; `path[1]` must match `coin_type`; `path[2]` hardened; `path[3]`, `path[4]` not hardened |
-| `0x10` | `keeper_count`             | 1 B    | `u8`     | `[1, 32]` inclusive |
-| `0x11` | `challenger_count`         | 1 B    | `u8`     | `[1, 32]` inclusive |
+| Tag    | Field                       | Length | Type        | Validation rule |
+|--------|-----------------------------|--------|-------------|-----------------|
+| `0x01` | `structure_type`            | 1 B    | `u8`        | Must equal `VAULT_STRUCTURE_TYPE` |
+| `0x02` | `version`                   | 1 B    | `u8`        | Must equal `VAULT_PROTOCOL_VERSION` (= `0x01`) |
+| `0x03` | `coin_type`                 | 4 B    | `u32 BE`    | Must equal `BIP44_COIN_TYPE` |
+| `0x08` | `base_fee_rate`             | 8 B    | `u64 BE`    | Any value (sat/vbyte) |
+| `0x0A` | `pegin_csv_timelock`        | 4 B    | `u32 BE`    | `[72, 1008]` inclusive |
+| `0x0B` | `payout_timelock`           | 4 B    | `u32 BE`    | `(90, 4032)` exclusive |
+| `0x0C` | `prepegin_txid`             | 32 B   | bytes       | Little-endian txid |
+| `0x0E` | `htlc_refund_timelock`      | 4 B    | `u32 BE`    | `[72, 1008]` inclusive |
+| `0x0F` | `depositor_derivation_path` | 20 B   | `u32[5] BE` | BIP-86: `m/86'/coin_type'/acct'/chg/idx`; `path[1]` must match `coin_type`; `path[2]` hardened; `path[3]`, `path[4]` not hardened |
+| `0x10` | `keeper_count`              | 1 B    | `u8`        | `[1, 32]` inclusive |
+| `0x11` | `challenger_count`          | 1 B    | `u8`        | `[1, 32]` inclusive |
+| `0x12` | `pegin_anchor_value`        | 8 B    | `u64 BE`    | Global P2A anchor value (sat); propagated to all vault groups |
+| `0x13` | `vault_count`               | 1 B    | `u8`        | `[1, 10]` inclusive |
 
-**Cross-field constraints** (checked after all tags parsed):
+**Cross-field constraint** (checked after all tags parsed):
 - `depositor_path[1] == coin_type | 0x80000000` (hardened coin type must match `coin_type` field)
+
+**Response:** `SW_OK` (`0x9000`), no data. Per-vault group streaming (P1=0x02) may now begin.
+
+---
+
+### P1=0x02 — Per-vault group TLV payload
+
+One APDU per vault group; must be sent exactly `vault_count` times in order (group 0, 1, …).
+Each group payload uses the same TLV encoding as P1=0x00 but in an **independent tag namespace**
+(`TAG_GRP_*`). All 6 group tags are mandatory per group. Tags `0x04`–`0x06` here are different
+fields from the old P1=0x00 scalars at those byte values.
+
+| Tag    | Field                    | Length | Type     | Validation rule |
+|--------|--------------------------|--------|----------|-----------------|
+| `0x01` | `htlc_vout`              | 1 B    | `u8`     | HTLC output index in Pre-PegIn tx |
+| `0x02` | `vault_provider_pk`      | 32 B   | bytes    | x-only Schnorr public key (BIP-340) |
+| `0x03` | `vault_amount`           | 8 B    | `u64 BE` | `> commission_fee + 2 × DUST` (660 sat); checked per-group |
+| `0x04` | `commission_fee`         | 8 B    | `u64 BE` | `≥ VAULT_DUST_LIMIT` (330 sat) |
+| `0x05` | `depositor_claim_value`  | 8 B    | `u64 BE` | Any value |
+| `0x06` | `pegin_max_fee`          | 8 B    | `u64 BE` | Any value |
+
+**Cross-field constraint** (checked per group after all 6 tags parsed):
 - `vault_amount > commission_fee + 660` (two P2TR dust limits = 2 × 330 sat)
 
-**Response:** `SW_OK` (`0x9000`), no data. Key streaming may now begin.
+**Response:** `SW_OK` (`0x9000`), no data. After all `vault_count` groups are received, key
+streaming (P1=0x01) may begin.
 
 **State context:**
 This command is accepted from any session state. The meaningful distinction is:
 
 - **Called from `HASH_DERIVED`** (after a successful `DERIVE_CONTEXT_HASH`).
   The 32-byte `root` produced by `DERIVE_CONTEXT_HASH` is copied to a stack buffer before
-  the internal session reset, then restored afterwards. Once `htlc_vout` is known (after the
-  key batch) the device recomputes the on-chain commitments from the root —
-  `htlc_hashlock = SHA256(Expand(root, "hashlock" ‖ I2OSP(htlc_vout,4)))` and
-  `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` — and binds them during Pre-PegIn /
-  PegIn validation. The root stays held through `INTENT_LOADED` → `SESSION2_PEGIN_EXPECTED` →
-  `SESSION2_PAYOUT_EXPECTED` → `SESSION2_COMPLETE`, which is terminal. The host already holds
-  the root (returned by `DERIVE_CONTEXT_HASH`) and expands the per-vault secrets itself, so
-  there is **no on-device secret-release step**.
+  the internal session reset, then restored afterwards. Once `htlc_vout` is known (after
+  the P1=0x02 group for vault 0 is processed) the device recomputes the on-chain commitments
+  from the root — `htlc_hashlock[i] = SHA256(Expand(root, "hashlock" ‖ I2OSP(htlc_vout_i,4)))`
+  and `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` — and binds them during
+  Pre-PegIn / PegIn validation. The root stays held through `INTENT_LOADED` →
+  `SESSION2_PEGIN_EXPECTED` → `SESSION2_PAYOUT_EXPECTED` → `SESSION2_COMPLETE`, which is
+  terminal. The host already holds the root (returned by `DERIVE_CONTEXT_HASH`) and expands
+  the per-vault secrets itself, so there is **no on-device secret-release step**.
 - **Called from any other state** — intent replacement / no-derive path.
   The session is reset normally; no root is preserved, so `htlc_hashlock`/`auth_anchor_hash`
   stay zero and Pre-PegIn/PegIn signing is rejected until a `DERIVE_CONTEXT_HASH` runs first.
@@ -91,7 +111,7 @@ Keys must be delivered **in order**: first all `keeper_count` keeper keys, then 
 `challenger_count` challenger keys. Constraints enforced per key as it arrives:
 
 - Strictly ascending lexicographic order **within** each group (reject if `key ≤ prev` in same group)
-- Not equal to `vault_provider_pk`
+- Not equal to any `vault_provider_pk` (checked across all `vault_count` vault groups)
 - Globally unique across all keys received so far
 
 After the final key is accepted the device also derives the depositor public key from
@@ -111,10 +131,10 @@ transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
 | SW       | Condition |
 |----------|-----------|
 | `0x6A80` | Duplicate tag, unknown tag, field validation failure, wrong field length, key ordering/uniqueness violation, extra keys beyond declared count |
-| `0x6A86` | P1 is not `0x00` or `0x01` |
+| `0x6A86` | P1 is not `0x00`, `0x01`, or `0x02` |
 | `0x6A87` | P1=0x01 payload length is not a multiple of 32 |
 | `0x6985` | User rejected the approval screen |
-| `0xB007` | P1=0x01 received without a prior successful P1=0x00 |
+| `0xB007` | P1=0x01 or P1=0x02 received out of sequence (e.g. P1=0x01 before all P1=0x02 groups) |
 | `0x6F00` | BIP-32 derivation of depositor key failed |
 
 ---
