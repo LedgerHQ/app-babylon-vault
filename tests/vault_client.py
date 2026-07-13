@@ -233,6 +233,7 @@ def derive_context_hash(client: "RaggerClient",
             )
 
     _sw, response_data = client.last_async_response()
+    assert _sw == SW_OK, f"Expected SW_OK, got {_sw:#06x}"
     assert len(response_data) == 32
     return bytes(response_data)
 

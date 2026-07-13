@@ -32,6 +32,7 @@ static void _finalize(dispatcher_context_t *dc) {
                                              connected_pubkey,
                                              NULL) != CX_OK) {
         explicit_bzero(connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN);
+        explicit_bzero(G_scratch.derive_ctx.context_buf, sizeof(G_scratch.derive_ctx.context_buf));
         SEND_SW(dc, SW_BIP32_FAIL);
         return;
     }
@@ -42,6 +43,7 @@ static void _finalize(dispatcher_context_t *dc) {
                                          G_scratch.derive_ctx.app_name_buf,
                                          G_scratch.derive_ctx.app_name_len)) {
             explicit_bzero(connected_pubkey, VAULT_COMPRESSED_PUBKEY_LEN);
+            explicit_bzero(G_scratch.derive_ctx.context_buf, sizeof(G_scratch.derive_ctx.context_buf));
             return; /* SW_DENY already sent */
         }
     }
@@ -64,6 +66,10 @@ static void _finalize(dispatcher_context_t *dc) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
+
+    /* Record whether the user approved this derivation; APPROVE_VAULT_INTENT
+     * will refuse to proceed if the root was silently derived (P2=0x01). */
+    G_vault_context.root_user_approved = (G_scratch.derive_ctx.p2_mode == P2_RETURN_ROOT);
 
     /* F2: persist the BIP-32 path so APPROVE_VAULT_INTENT can verify it matches
      * the depositor derivation path in the intent. */
@@ -193,6 +199,12 @@ static void handle_continuation_chunk(dispatcher_context_t *dc, const command_t 
         return;
     }
 
+    /* P2 must match the value recorded from the initial chunk. */
+    if (cmd->p2 != G_scratch.derive_ctx.p2_mode) {
+        SEND_SW(dc, SW_WRONG_P1P2);
+        return;
+    }
+
     const uint8_t *data = cmd->data;
     const size_t lc = cmd->lc;
 
@@ -205,9 +217,9 @@ static void handle_continuation_chunk(dispatcher_context_t *dc, const command_t 
         G_scratch.derive_ctx.context_total_len - G_scratch.derive_ctx.context_received_len;
 
     if (lc > remaining) {
-        /* Host sent more context bytes than declared — reject. */
+        /* Host sent more context bytes than declared — zero and reject. */
+        explicit_bzero(G_scratch.derive_ctx.context_buf, sizeof(G_scratch.derive_ctx.context_buf));
         vault_context_invalidate(&G_vault_context);
-        G_scratch.derive_ctx.streaming_in_progress = false;
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }

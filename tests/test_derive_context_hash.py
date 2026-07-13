@@ -37,6 +37,7 @@ from ragger.navigator import Navigator
 from .vault_client import (
     derive_context_hash,
     depositor_path,
+    _encode_bip32_path,
     CLA_VAULT,
     INS_DERIVE_CONTEXT_HASH,
     P1_INITIAL,
@@ -167,7 +168,7 @@ def test_empty_context_raises(client: "RaggerClient", bitcoin_network: str):
     path = depositor_path(ct)
     # New wire format: include 2-byte context_total_len = 0x0000, no context bytes.
     payload = (bytes([len(APP_NAME)]) + APP_NAME
-               + bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path)
+               + _encode_bip32_path(path)
                + b"\x00\x00")
     with pytest.raises(ExceptionRAPDU) as exc:
         client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
@@ -340,8 +341,7 @@ def test_path_too_deep_raises(client: "RaggerClient"):
 def test_context_too_large_raises(client: "RaggerClient"):
     """context_total_len > VAULT_CONTEXT_MAX_LEN (1024) → SW_INCORRECT_DATA."""
     _path = [HARDENED | 86, HARDENED | 0, HARDENED | 0, 0, 0]
-    path_bytes = bytes([len(_path)]) + b"".join(p.to_bytes(4, "big") for p in _path)
-    payload = bytes([len(APP_NAME)]) + APP_NAME + path_bytes + (1025).to_bytes(2, "big")
+    payload = bytes([len(APP_NAME)]) + APP_NAME + _encode_bip32_path(_path) + (1025).to_bytes(2, "big")
     with pytest.raises(ExceptionRAPDU) as exc:
         client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
                                          p1=P1_INITIAL, p2=P2_UNUSED, data=payload)
@@ -353,7 +353,8 @@ def test_context_too_large_raises(client: "RaggerClient"):
 # ---------------------------------------------------------------------------
 
 def _enter_streaming(client: "RaggerClient", bitcoin_network: str,
-                     context_total: int = 100, first_chunk_len: int = 50) -> None:
+                     context_total: int = 100, first_chunk_len: int = 50,
+                     p2: int = P2_SHOW) -> None:
     """Send a valid P1=0x00 that puts the device into streaming mode.
 
     Declares context_total bytes but only sends first_chunk_len in the initial
@@ -361,10 +362,9 @@ def _enter_streaming(client: "RaggerClient", bitcoin_network: str,
     """
     ct = 0 if bitcoin_network == "main" else 1
     path = depositor_path(ct)
-    path_bytes = bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path)
-    header = bytes([len(APP_NAME)]) + APP_NAME + path_bytes + context_total.to_bytes(2, "big")
+    header = bytes([len(APP_NAME)]) + APP_NAME + _encode_bip32_path(path) + context_total.to_bytes(2, "big")
     client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-                                     p1=P1_INITIAL, p2=P2_UNUSED,
+                                     p1=P1_INITIAL, p2=p2,
                                      data=header + b"\xaa" * first_chunk_len)
 
 
@@ -384,6 +384,33 @@ def test_empty_continuation_raises(client: "RaggerClient", bitcoin_network: str)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
                                          p1=P1_CONTINUE, p2=P2_UNUSED, data=b"")
+    assert exc.value.status == SW_WRONG_DATA_LENGTH
+
+
+def test_continuation_p2_mismatch_raises(client: "RaggerClient", bitcoin_network: str):
+    """P1=0x01 with a different P2 than the initial chunk → SW_WRONG_P1P2."""
+    _enter_streaming(client, bitcoin_network, context_total=100, first_chunk_len=50, p2=P2_SHOW)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_CONTINUE, p2=P2_SILENT, data=b"\xbb" * 10)
+    assert exc.value.status == SW_WRONG_P1P2
+
+
+def test_continuation_overflow_p2_silent_raises(client: "RaggerClient", bitcoin_network: str):
+    """P1=0x01 overflow on a P2_SILENT stream → SW_INCORRECT_DATA."""
+    _enter_streaming(client, bitcoin_network, context_total=100, first_chunk_len=50, p2=P2_SILENT)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_CONTINUE, p2=P2_SILENT, data=b"\xbb" * 51)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_empty_continuation_p2_silent_raises(client: "RaggerClient", bitcoin_network: str):
+    """P1=0x01 with lc == 0 on a P2_SILENT stream → SW_WRONG_DATA_LENGTH."""
+    _enter_streaming(client, bitcoin_network, context_total=100, first_chunk_len=50, p2=P2_SILENT)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_CONTINUE, p2=P2_SILENT, data=b"")
     assert exc.value.status == SW_WRONG_DATA_LENGTH
 
 
@@ -487,9 +514,8 @@ def test_user_rejects_screen(client: "RaggerClient", navigator: Navigator,
     path = depositor_path(ct)
     ctx = b"\xde\xad\xbe\xef"
 
-    path_bytes = bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path)
     payload = (bytes([len(APP_NAME)]) + APP_NAME
-               + path_bytes
+               + _encode_bip32_path(path)
                + len(ctx).to_bytes(2, "big")
                + ctx)
 

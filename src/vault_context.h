@@ -97,6 +97,14 @@ typedef struct {
 
     /** Number of levels in derivation_path. */
     uint8_t derivation_path_len;
+
+    /**
+     * True when the root was derived with user approval (P2=0x00 on
+     * DERIVE_CONTEXT_HASH).  False for silent re-derivation (P2=0x01).
+     * APPROVE_VAULT_INTENT requires this to be true; a silently-derived root
+     * cannot be used to sign vault transactions without a prior user confirmation.
+     */
+    bool root_user_approved;
 } vault_context_t;
 
 // ---------------------------------------------------------------------------
