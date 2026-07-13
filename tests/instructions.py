@@ -161,9 +161,9 @@ def vault_intent_approve_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], 
 # Step counts for the DERIVE_CONTEXT_HASH approval screen.
 # The review has 1 content page ("App name") — minimal navigation before the hold.
 # Verify these against the first --golden_run if the counts produce wrong snapshots.
-DCH_APPROVE_SWIPES_STAX = 0   # Stax: 1 pair fits on the confirm page — no swipe needed
-DCH_APPROVE_SWIPES      = 0   # Flex, Apex: same
-DCH_APPROVE_CLICKS      = 1   # NanoSP, NanoX: 1 click to advance from "App name" to confirm
+DCH_APPROVE_SWIPES_STAX = 2   # Stax: intro(1/3) → App name(2/3) → Allow derivation?(3/3)
+DCH_APPROVE_SWIPES      = 2   # Flex, Apex: same 3-page layout
+DCH_APPROVE_CLICKS      = 2   # NanoSP, NanoX: header → App name → Allow derivation?
 
 
 def derive_context_hash_approve_steps(device: Device) -> int:

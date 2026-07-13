@@ -423,14 +423,20 @@ def test_screen_snapshot(client: "RaggerClient", navigator: Navigator,
                          device: Device, bitcoin_network: str):
     """Screen 1 snapshot: 1024-byte context (maximum, multi-chunk), P2=0x00.
 
-    Uses navigate_until_text_and_compare with screen_change_before_first_instruction=False
-    so the review screen (already rendered when the last APDU is processed) is captured
-    immediately without waiting for a change that may have already happened.
-    On first run use --golden_run:
+    Uses navigate_and_compare with a fixed step count and
+    screen_change_before_first_instruction=True so that _last_screenshot is updated
+    to the intro page before the first SWIPE, preventing the stale-reference race
+    that produces a duplicate 00000/00001 frame.  On first run use --golden_run:
 
         pytest tests/test_derive_context_hash.py::test_screen_snapshot --golden_run -k flex
+
+    If the snapshot count looks wrong after golden_run, adjust DCH_APPROVE_SWIPES /
+    DCH_APPROVE_CLICKS in instructions.py and regenerate.
     """
-    from .instructions import derive_context_hash_nav
+    from .instructions import (
+        derive_context_hash_approve_instructions,
+        derive_context_hash_approve_steps,
+    )
     from .vault_client import _dch_exchange, _encode_bip32_path
 
     ct = 0 if bitcoin_network == "main" else 1
@@ -450,8 +456,9 @@ def test_screen_snapshot(client: "RaggerClient", navigator: Navigator,
     for chunk in cont_chunks[:-1]:
         _dch_exchange(client, P1_CONTINUE, P2_SHOW, chunk)
 
-    # Last chunk triggers Screen 1.
-    nav_instr, confirm_instrs, search_text = derive_context_hash_nav(device)
+    # Last chunk triggers Screen 1 — capture with navigate_and_compare.
+    n_steps = derive_context_hash_approve_steps(device)
+    instructions = derive_context_hash_approve_instructions(device, n_steps)
     with client.transport_client.exchange_async(
         cla=CLA_VAULT,
         ins=INS_DERIVE_CONTEXT_HASH,
@@ -459,13 +466,11 @@ def test_screen_snapshot(client: "RaggerClient", navigator: Navigator,
         p2=P2_SHOW,
         data=cont_chunks[-1],
     ):
-        navigator.navigate_until_text_and_compare(
-            navigate_instruction=nav_instr,
-            validation_instructions=confirm_instrs,
-            text=search_text,
+        navigator.navigate_and_compare(
             path=ROOT_SCREENSHOT_PATH,
             test_case_name="derive_context_hash/approve_" + bitcoin_network,
-            screen_change_before_first_instruction=False,
+            instructions=instructions,
+            screen_change_before_first_instruction=True,
         )
 
     root = bytes(client.last_async_response()[1])
