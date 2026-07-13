@@ -158,6 +158,37 @@ def vault_intent_approve_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], 
             "^Hold to sign$")
 
 
+# Step counts for the DERIVE_CONTEXT_HASH approval screen.
+# The review has 1 content page ("App name") — minimal navigation before the hold.
+# Verify these against the first --golden_run if the counts produce wrong snapshots.
+DCH_APPROVE_SWIPES_STAX = 0   # Stax: 1 pair fits on the confirm page — no swipe needed
+DCH_APPROVE_SWIPES      = 0   # Flex, Apex: same
+DCH_APPROVE_CLICKS      = 1   # NanoSP, NanoX: 1 click to advance from "App name" to confirm
+
+
+def derive_context_hash_approve_steps(device: Device) -> int:
+    """Return the step count for the DERIVE_CONTEXT_HASH approval screen."""
+    if device.is_nano:
+        return DCH_APPROVE_CLICKS
+    if device.name == "stax":
+        return DCH_APPROVE_SWIPES_STAX
+    return DCH_APPROVE_SWIPES
+
+
+def derive_context_hash_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
+    """Return the full navigation instruction list for approving DERIVE_CONTEXT_HASH.
+
+    n_steps: RIGHT_CLICKs (Nano) or SWIPEs (touch) before the confirm trigger.
+    Pass derive_context_hash_approve_steps(device) for the standard 1-field screen.
+    """
+    if device.is_nano:
+        return [NavInsID.RIGHT_CLICK] * n_steps + [NavInsID.BOTH_CLICK]
+    return (
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * n_steps
+        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+    )
+
+
 def derive_context_hash_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
     """Return (navigate_instruction, validation_instructions, search_text) to approve
     a DERIVE_CONTEXT_HASH request.
@@ -172,6 +203,23 @@ def derive_context_hash_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], s
                 r"^Allow derivation\?$")
     return (NavInsID.SWIPE_CENTER_TO_LEFT,
             [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS],
+            "^Allow derivation\\?$")
+
+
+def derive_context_hash_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
+    """Return (navigate_instruction, validation_instructions, search_text) to reject
+    a DERIVE_CONTEXT_HASH request.
+
+    Touch: SWIPE until "Allow derivation?", USE_CASE_REVIEW_REJECT, then
+           USE_CASE_CHOICE_CONFIRM to confirm the rejection modal.
+    Nano:  RIGHT_CLICK until "Reject operation?", BOTH_CLICK to confirm.
+    """
+    if device.is_nano:
+        return (NavInsID.RIGHT_CLICK,
+                [NavInsID.BOTH_CLICK],
+                r"^Reject operation\?$")
+    return (NavInsID.SWIPE_CENTER_TO_LEFT,
+            [NavInsID.USE_CASE_REVIEW_REJECT, NavInsID.USE_CASE_CHOICE_CONFIRM],
             "^Allow derivation\\?$")
 
 

@@ -33,7 +33,9 @@ P1_CONTINUE  = 0x01
 P1_SCALARS   = 0x00
 P1_GROUP     = 0x02  # per-vault group phase (NAPPS-1442)
 P1_KEY_BATCH = 0x01
-P2_UNUSED    = 0x00
+P2_UNUSED    = 0x00  # alias for P2_SHOW (backward compat)
+P2_SHOW      = 0x00  # DERIVE_CONTEXT_HASH: show Screen 1, return 32-byte root
+P2_SILENT    = 0x01  # DERIVE_CONTEXT_HASH: silent re-derivation, SW_OK only
 
 # Max bytes per APDU data field
 _CHUNK_SIZE     = 255
@@ -115,7 +117,7 @@ TEST_DEPOSITOR_XONLY_MAINNET = bytes.fromhex('FBB1F6159D2D75F87CD29137D3D58C3C52
 TEST_DEPOSITOR_XONLY_TESTNET = bytes.fromhex('DC8D2F9EFF0C4F4DBDE070A48E330EFC908B62A766568D91E658F284B324B878')
 
 
-def _exchange(client: RaggerClient, p1: int, data: bytes) -> bytes:
+def _dch_exchange(client: "RaggerClient", p1: int, p2: int, data: bytes) -> bytes:
     """Send one DERIVE_CONTEXT_HASH APDU and return the response data.
 
     Raises ExceptionRAPDU on any non-whitelisted SW (handled by caller).
@@ -124,7 +126,7 @@ def _exchange(client: RaggerClient, p1: int, data: bytes) -> bytes:
         cla=CLA_VAULT,
         ins=INS_DERIVE_CONTEXT_HASH,
         p1=p1,
-        p2=P2_UNUSED,
+        p2=p2,
         data=data,
     )
     return bytes(response.data)
@@ -136,51 +138,99 @@ def _encode_bip32_path(path: List[int]) -> bytes:
     return bytes([len(path)]) + b"".join(p.to_bytes(4, "big") for p in path)
 
 
-def derive_context_hash(client: RaggerClient,
+def derive_context_hash(client: "RaggerClient",
                         app_name: bytes,
                         path: List[int],
                         context: bytes,
                         navigator: "Navigator",
-                        device: "Device") -> bytes:
-    """Send the single DERIVE_CONTEXT_HASH APDU, navigate the approval screen, and return
-    the 32-byte root.
+                        device: "Device",
+                        p2: int = P2_SHOW) -> bytes:
+    """Send DERIVE_CONTEXT_HASH APDUs (chunked if needed), navigate Screen 1, return root.
 
-    Wire (P1=0x00): app_name_len(1B) | app_name | path_len(1B) | path(4·n B BE) | context.
-    The handler shows an NBGL approval screen; the caller must supply navigator + device so
-    this function can drive the confirmation before the device sends its response.
+    Wire format (NAPPS-1441 rev 2.1):
+      P1=0x00: app_name_len(1B) | app_name | path_len(1B) | path(4·n B BE)
+               | context_total_len(2B BE) | first_context_chunk
+      P1=0x01: continuation context bytes (repeated until total received)
+
+    P2=0x00 (P2_SHOW):   Screen 1 shown on final chunk; returns 32-byte root.
+    P2=0x01 (P2_SILENT): No screen; returns b"".
 
     Args:
         client:    RaggerClient fixture from conftest.
         app_name:  UTF-8 app name, 1..64 bytes (host sends b"babylon-btc-vault").
         path:      connectedPubkey BIP-32 path (u32 levels, hardened bit set as usual).
         context:   vaultContext bytes; must be non-empty.
-        navigator: Ragger Navigator fixture.
+        navigator: Ragger Navigator fixture (only used for P2=0x00).
         device:    Ledgered Device fixture (selects Nano vs touch navigation).
+        p2:        P2_SHOW (default) or P2_SILENT.
 
     Returns:
-        32-byte root.
+        32-byte root (P2_SHOW) or b"" (P2_SILENT).
     """
     from .instructions import derive_context_hash_nav
 
     assert 1 <= len(app_name) <= 64, "app_name must be 1..64 bytes"
-    assert len(context) > 0, "context must be non-empty"
+    assert 1 <= len(context) <= 1024, "context must be 1..1024 bytes"
 
-    payload = bytes([len(app_name)]) + app_name + _encode_bip32_path(path) + context
+    # Build the P1=0x00 fixed header.
+    path_bytes = _encode_bip32_path(path)
+    context_total_len_bytes = len(context).to_bytes(2, "big")
+    header = bytes([len(app_name)]) + app_name + path_bytes + context_total_len_bytes
+
+    # Determine how much context fits in the first APDU (max Lc = 255).
+    first_chunk_max = 255 - len(header)
+    assert first_chunk_max > 0, "P1=0x00 header too large (app_name or path too long)"
+    first_chunk = context[:first_chunk_max]
+    remaining = context[first_chunk_max:]
+
+    p1_0_payload = header + first_chunk
+
+    # Prepare P1=0x01 continuation chunks (255 bytes each).
+    cont_chunks = [remaining[i:i + 255] for i in range(0, len(remaining), 255)]
+
+    if p2 == P2_SILENT:
+        # All APDUs are non-blocking — no screen.
+        _dch_exchange(client, P1_INITIAL, p2, p1_0_payload)
+        for chunk in cont_chunks:
+            _dch_exchange(client, P1_CONTINUE, p2, chunk)
+        return b""
+
+    # P2_SHOW: the final APDU triggers Screen 1; use exchange_async for it.
     nav_instr, confirm_instrs, search_text = derive_context_hash_nav(device)
 
-    with client.transport_client.exchange_async(
-        cla=CLA_VAULT,
-        ins=INS_DERIVE_CONTEXT_HASH,
-        p1=P1_INITIAL,
-        p2=P2_UNUSED,
-        data=payload,
-    ):
-        navigator.navigate_until_text(
-            navigate_instruction=nav_instr,
-            validation_instructions=confirm_instrs,
-            text=search_text,
-            screen_change_before_first_instruction=False,
-        )
+    if not cont_chunks:
+        # Single-chunk: P1=0x00 is the final APDU.
+        with client.transport_client.exchange_async(
+            cla=CLA_VAULT,
+            ins=INS_DERIVE_CONTEXT_HASH,
+            p1=P1_INITIAL,
+            p2=p2,
+            data=p1_0_payload,
+        ):
+            navigator.navigate_until_text(
+                navigate_instruction=nav_instr,
+                validation_instructions=confirm_instrs,
+                text=search_text,
+                screen_change_before_first_instruction=False,
+            )
+    else:
+        # Multi-chunk: intermediate APDUs are non-blocking; last P1=0x01 triggers screen.
+        _dch_exchange(client, P1_INITIAL, p2, p1_0_payload)
+        for chunk in cont_chunks[:-1]:
+            _dch_exchange(client, P1_CONTINUE, p2, chunk)
+        with client.transport_client.exchange_async(
+            cla=CLA_VAULT,
+            ins=INS_DERIVE_CONTEXT_HASH,
+            p1=P1_CONTINUE,
+            p2=p2,
+            data=cont_chunks[-1],
+        ):
+            navigator.navigate_until_text(
+                navigate_instruction=nav_instr,
+                validation_instructions=confirm_instrs,
+                text=search_text,
+                screen_change_before_first_instruction=False,
+            )
 
     _sw, response_data = client.last_async_response()
     assert len(response_data) == 32

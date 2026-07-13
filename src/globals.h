@@ -108,28 +108,35 @@ typedef struct {
 /**
  * Scratch for handler_derive_context_hash.
  *
- * display_tx must be first: display_derive_context_hash writes to its fields
- * (offsets 0–227) while reading app_name_buf/context_buf via passed pointers.
- * The copy buffers therefore sit above the display_tx footprint and are never
- * clobbered during the blocking display call.  After display returns,
- * hkdf_derive_root reads context_buf which display_tx never touches.
+ * display_tx must be first: display_derive_context_hash writes to display_tx.addr_str
+ * for the app-name string while the blocking display call is in progress.
+ * All other fields sit above the display_tx footprint and are never clobbered
+ * during the call.  After display returns, hkdf_derive_root reads context_buf.
  *
- * Max context size is 255 (single-APDU Lc bound).
+ * Multi-chunk streaming state (NAPPS-1441):
+ *   streaming_in_progress — set on P1=0x00 when context spans multiple APDUs.
+ *   context_total_len     — declared length from the P1=0x00 header (2-byte BE).
+ *   context_received_len  — bytes accumulated so far.
+ *   p2_mode               — 0x00 = show screen + return root; 0x01 = silent.
+ *
+ * Max context size is VAULT_CONTEXT_MAX_LEN (1024 bytes), delivered across one or
+ * more APDUs.  context_buf is placed last so the struct layout keeps the
+ * smaller scalar fields at low offsets.
  */
 typedef struct {
     display_tx_scratch_t display_tx;
     uint8_t app_name_buf[VAULT_APP_NAME_MAX_LEN];
-    uint8_t context_buf[255];
+    uint8_t app_name_len;
+    uint8_t p2_mode;
+    bool streaming_in_progress;
+    uint8_t path_len;
     // path[] and connected_pubkey live here (not on the handler stack) so that the
     // combined stack depth during the blocking display call stays within budget.
     uint32_t path[VAULT_MAX_PATH_DEPTH];
     uint8_t connected_pubkey[VAULT_COMPRESSED_PUBKEY_LEN];
-    // Pre-formatted display strings written by the handler before the display call.
-    // path_str: BIP-32 path as "m/86'/1'/0'/0/0" (NUL-terminated, ≤VAULT_PATH_STR_SIZE bytes).
-    // ctx_hash_str: SHA-256(context) as 64 lowercase hex chars + NUL.
-    uint8_t path_len;
-    char path_str[VAULT_PATH_STR_SIZE];
-    char ctx_hash_str[65];
+    uint16_t context_total_len;
+    uint16_t context_received_len;
+    uint8_t context_buf[VAULT_CONTEXT_MAX_LEN];
 } derive_context_hash_scratch_t;
 
 /**
