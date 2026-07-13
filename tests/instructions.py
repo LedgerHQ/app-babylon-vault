@@ -217,7 +217,7 @@ def derive_context_hash_reject_nav(device: Device) -> Tuple[NavInsID, List[NavIn
     if device.is_nano:
         return (NavInsID.RIGHT_CLICK,
                 [NavInsID.BOTH_CLICK],
-                r"^Reject operation\?$")
+                r"^Reject operation$")
     return (NavInsID.SWIPE_CENTER_TO_LEFT,
             [NavInsID.USE_CASE_REVIEW_REJECT, NavInsID.USE_CASE_CHOICE_CONFIRM],
             "^Allow derivation\\?$")
