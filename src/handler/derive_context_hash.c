@@ -221,6 +221,7 @@ static void handle_continuation_chunk(dispatcher_context_t *dc, const command_t 
         /* Host sent more context bytes than declared — zero and reject. */
         explicit_bzero(G_scratch.derive_ctx.context_buf, sizeof(G_scratch.derive_ctx.context_buf));
         vault_context_invalidate(&G_vault_context);
+        G_scratch.derive_ctx.streaming_in_progress = false;
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }

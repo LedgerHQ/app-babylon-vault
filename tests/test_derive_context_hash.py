@@ -378,6 +378,19 @@ def test_continuation_overflow_raises(client: "RaggerClient", bitcoin_network: s
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_continuation_overflow_resets_streaming_state(client: "RaggerClient", bitcoin_network: str):
+    """After a continuation overflow, streaming_in_progress is cleared: a follow-up P1=0x01 must return SW_BAD_STATE."""
+    _enter_streaming(client, bitcoin_network, context_total=100, first_chunk_len=50)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_CONTINUE, p2=P2_UNUSED, data=b"\xbb" * 51)
+    assert exc.value.status == SW_INCORRECT_DATA
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                         p1=P1_CONTINUE, p2=P2_UNUSED, data=b"\xcc" * 10)
+    assert exc.value.status == SW_BAD_STATE
+
+
 def test_empty_continuation_raises(client: "RaggerClient", bitcoin_network: str):
     """P1=0x01 with lc == 0 → SW_WRONG_DATA_LENGTH."""
     _enter_streaming(client, bitcoin_network, context_total=100, first_chunk_len=50)
