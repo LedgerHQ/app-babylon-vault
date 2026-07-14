@@ -280,7 +280,13 @@ def derive_for_intent(client: "RaggerClient",
 
     Convenience wrapper for test suites that need to reach HASH_DERIVED before
     APPROVE_VAULT_INTENT.  Returns the 32-byte root.
+
+    The small sleep absorbs the Speculos startup race: the first APDU after
+    launch can return SW_BIP32_FAIL (0x6f00) if BIP32 key material hasn't
+    finished loading yet.
     """
+    import time
+    time.sleep(0.1)
     ct = 0 if bitcoin_network == "main" else 1
     return derive_context_hash(client, VAULT_APP_NAME, depositor_path(ct), context, navigator, device)
 
