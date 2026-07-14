@@ -34,9 +34,18 @@ VAULT_INTENT_4K4C_SWIPES_STAX = 8    # Stax:        10 snapshots
 VAULT_INTENT_4K4C_SWIPES     = 12    # Flex, Apex:  15 snapshots
 VAULT_INTENT_4K4C_CLICKS     = 28   # NanoSP/NanoX: 29 snapshots
 
-VAULT_INTENT_32K32C_SWIPES_STAX = 36   # Stax:        38 snapshots
+VAULT_INTENT_32K32C_SWIPES_STAX = 36   # Stax:        39 snapshots
 VAULT_INTENT_32K32C_SWIPES     = 68   # Flex, Apex:  71 snapshots
-VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 141 snapshots
+VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 142 snapshots
+
+# Steps for 10-vault + 32-keeper + 32-challenger intent (64 keys + 10 groups).
+# Apex_p diverges from Flex by one page — vault groups render one screen wider there.
+# Derived from golden snapshot counts: n_swipes = snapshots - 3 (touch),
+#                                      n_clicks = snapshots - 2 (nano).
+VAULT_INTENT_10V_32K32C_SWIPES_STAX = 54   # Stax:        57 snapshots
+VAULT_INTENT_10V_32K32C_SWIPES_APEX = 87   # Apex_p:      90 snapshots
+VAULT_INTENT_10V_32K32C_SWIPES      = 86   # Flex:        89 snapshots
+VAULT_INTENT_10V_32K32C_CLICKS      = 203  # NanoSP/NanoX: 205 snapshots
 
 
 def vault_intent_1k1c_steps(device: Device) -> int:
@@ -74,6 +83,17 @@ def vault_intent_32k32c_steps(device: Device) -> int:
     if device.name == "stax":
         return VAULT_INTENT_32K32C_SWIPES_STAX
     return VAULT_INTENT_32K32C_SWIPES
+
+
+def vault_intent_10v_32k32c_steps(device: Device) -> int:
+    """Return the deterministic step count for 10-vault + 32K + 32C intent data."""
+    if device.is_nano:
+        return VAULT_INTENT_10V_32K32C_CLICKS
+    if device.name == "stax":
+        return VAULT_INTENT_10V_32K32C_SWIPES_STAX
+    if device.name == "apex_p":
+        return VAULT_INTENT_10V_32K32C_SWIPES_APEX
+    return VAULT_INTENT_10V_32K32C_SWIPES
 
 
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
