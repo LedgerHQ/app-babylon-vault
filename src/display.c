@@ -288,9 +288,22 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 // review, so these file-scope lists are safe (no re-entrancy).
 static nbgl_layoutTagValueList_t g_vault_params_list;
 static nbgl_layoutTagValueList_t g_vault_keys_list;
+// Per-vault group streaming state for multi-vault (vault_count > 1).
+// File-scope so these buffers survive across NBGL callback frames inside io_ui_process.
+// Safe to reuse per segment: streaming review never navigates back to a confirmed segment.
+static uint8_t g_stream_vault_idx;
+static nbgl_layoutTagValueList_t g_vault_grp_list;
+static nbgl_layoutTagValue_t g_vault_grp_pairs[6];
+static char g_grp_vault_label[16]; /* "10 of 10\0" */
+static char g_grp_vp_str[VAULT_HEX_KEY_STR_SIZE];
+static char g_grp_amt_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+static char g_grp_comm_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+static char g_grp_claim_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+static char g_grp_fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
 
 static void vault_stream_keys(void);
 static void vault_stream_finish(void);
+static void vault_stream_group(void);
 
 // Skip is touch-only. On nano, the SDK keys its skip page off a non-NULL
 // skipCallback (not off SKIPPABLE_OPERATION), so passing one would insert a skip
@@ -334,12 +347,60 @@ static void vault_stream_keys(void) {
                                            VAULT_SKIP_CB(vault_stream_finish));
 }
 
+static void vault_after_group(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_group();
+}
+
+// Streams vault groups one segment at a time, reusing static string buffers.
+// Calls vault_stream_keys() once all vault_count groups have been confirmed.
+static void vault_stream_group(void) {
+    if (g_stream_vault_idx >= G_vault_intent.vault_count) {
+        vault_stream_keys();
+        return;
+    }
+    uint8_t i = g_stream_vault_idx++;
+    const vault_group_t *grp = &G_vault_intent.groups[i];
+
+    snprintf(g_grp_vault_label, sizeof(g_grp_vault_label),
+             "%u of %u", (unsigned) (i + 1u), (unsigned) G_vault_intent.vault_count);
+    format_hex(grp->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN, g_grp_vp_str, sizeof(g_grp_vp_str));
+    format_sats_amount(COIN_COINID_SHORT, grp->vault_amount, g_grp_amt_str);
+    format_sats_amount(COIN_COINID_SHORT, grp->commission_fee, g_grp_comm_str);
+    format_sats_amount(COIN_COINID_SHORT, grp->depositor_claim_value, g_grp_claim_str);
+    format_sats_amount(COIN_COINID_SHORT, grp->pegin_max_fee, g_grp_fee_str);
+
+    g_vault_grp_pairs[0] =
+        (nbgl_layoutTagValue_t) {.item = "Vault", .value = g_grp_vault_label};
+    g_vault_grp_pairs[1] =
+        (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = g_grp_vp_str};
+    g_vault_grp_pairs[2] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = g_grp_amt_str};
+    g_vault_grp_pairs[3] =
+        (nbgl_layoutTagValue_t) {.item = "Commission fee", .value = g_grp_comm_str};
+    g_vault_grp_pairs[4] =
+        (nbgl_layoutTagValue_t) {.item = "Depositor claim", .value = g_grp_claim_str};
+    g_vault_grp_pairs[5] =
+        (nbgl_layoutTagValue_t) {.item = "Max PegIn fee", .value = g_grp_fee_str};
+
+    g_vault_grp_list.pairs = g_vault_grp_pairs;
+    g_vault_grp_list.nbPairs = 6;
+    g_vault_grp_list.nbMaxLinesForValue = 0;
+
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list,
+                                           vault_after_group,
+                                           VAULT_SKIP_CB(vault_stream_keys));
+}
+
 static void vault_after_params(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
         return;
     }
-    vault_stream_keys();
+    g_stream_vault_idx = 0;
+    vault_stream_group();
 }
 
 // After the intro page: start the params segment. vault_stream_keys is the params
@@ -362,41 +423,18 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // and cannot overlap with the hkdf or script_scratch union members.
     nbgl_layoutTagValue_t *const vault_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
-    char vault_vp_key_str[VAULT_HEX_KEY_STR_SIZE];
-    char vault_amount_str[MAX_AMOUNT_LENGTH + 1];
-    char vault_commission_str[MAX_AMOUNT_LENGTH + 1];
-    char vault_claim_str[MAX_AMOUNT_LENGTH + 1];
     char vault_fee_rate_str[VAULT_FEE_RATE_STR_SIZE];
-    char vault_pegin_fee_str[MAX_AMOUNT_LENGTH + 1];
     char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_refund_tl_str[VAULT_TIMELOCK_STR_SIZE];
 
     int n = 0;
 
-    // ---- Scalar fields ----
-
-    format_hex(G_vault_intent.groups[0].vault_provider_pk,
-               VAULT_XONLY_PUBKEY_LEN,
-               vault_vp_key_str,
-               sizeof(vault_vp_key_str));
-    vault_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = vault_vp_key_str};
-
-    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.groups[0].vault_amount, vault_amount_str);
-    vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = vault_amount_str};
-
-    format_sats_amount(COIN_COINID_SHORT,
-                       G_vault_intent.groups[0].commission_fee,
-                       vault_commission_str);
-    vault_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Commission fee", .value = vault_commission_str};
-
-    format_sats_amount(COIN_COINID_SHORT,
-                       G_vault_intent.groups[0].depositor_claim_value,
-                       vault_claim_str);
-    vault_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Depositor claim", .value = vault_claim_str};
+    // ---- Scalar fields (global params only) ----
+    //
+    // Per-vault group fields are streamed one segment at a time by vault_stream_group(),
+    // for all vault counts including 1.  This keeps the display path uniform and ensures
+    // every vault review shows a "Vault N of M" header regardless of vault_count.
 
     snprintf(vault_fee_rate_str,
              sizeof(vault_fee_rate_str),
@@ -404,12 +442,6 @@ bool display_vault_intent(dispatcher_context_t *dc) {
              (unsigned) G_vault_intent.base_fee_rate);
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Base fee rate", .value = vault_fee_rate_str};
-
-    format_sats_amount(COIN_COINID_SHORT,
-                       G_vault_intent.groups[0].pegin_max_fee,
-                       vault_pegin_fee_str);
-    vault_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Max PegIn fee", .value = vault_pegin_fee_str};
 
     format_timelock_blocks(G_vault_intent.pegin_csv_timelock,
                            vault_pegin_csv_str,

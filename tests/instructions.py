@@ -13,9 +13,9 @@ from typing import List, Tuple
 # +1 page on touch vs. the old single review: the streaming review splits params
 # and keys into separate segments, forcing a page break so the first keeper starts
 # on a fresh page.
-VAULT_INTENT_1K1C_SWIPES_STAX = 4   # Stax: 6 pages (intro + params + keys + hold-to-sign)
+VAULT_INTENT_1K1C_SWIPES_STAX = 5   # Stax: 6 pages (intro + params + keys + hold-to-sign)
 VAULT_INTENT_1K1C_SWIPES      = 6   # Flex, Apex: 7 pages
-VAULT_INTENT_1K1C_CLICKS      = 15  # Nano devices
+VAULT_INTENT_1K1C_CLICKS      = 16  # Nano devices
 
 # Steps for 32-keeper + 32-challenger intent (64 keys total).
 # These are used by test_max_32_keepers_32_challengers to switch from text-based
@@ -30,13 +30,13 @@ VAULT_INTENT_1K1C_CLICKS      = 15  # Nano devices
 # NOTE: unlike 1K1C, the params/keys segment break does NOT add a touch page here:
 # with more keys the keeper list already started on a fresh page in the old layout,
 # so these keep their pre-streaming swipe counts (bumping them over-swipes → timeout).
-VAULT_INTENT_4K4C_SWIPES_STAX = 7    # Stax:        10 snapshots
+VAULT_INTENT_4K4C_SWIPES_STAX = 8    # Stax:        10 snapshots
 VAULT_INTENT_4K4C_SWIPES     = 12    # Flex, Apex:  15 snapshots
-VAULT_INTENT_4K4C_CLICKS     = 27   # NanoSP/NanoX: 29 snapshots
+VAULT_INTENT_4K4C_CLICKS     = 28   # NanoSP/NanoX: 29 snapshots
 
-VAULT_INTENT_32K32C_SWIPES_STAX = 35   # Stax:        38 snapshots
+VAULT_INTENT_32K32C_SWIPES_STAX = 36   # Stax:        38 snapshots
 VAULT_INTENT_32K32C_SWIPES     = 68   # Flex, Apex:  71 snapshots
-VAULT_INTENT_32K32C_CLICKS     = 139  # NanoSP/NanoX: 141 snapshots
+VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 141 snapshots
 
 
 def vault_intent_1k1c_steps(device: Device) -> int:

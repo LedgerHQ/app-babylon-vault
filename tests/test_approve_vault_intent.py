@@ -589,3 +589,82 @@ def test_base_fee_rate_overflow_rejected(client: RaggerClient, bitcoin_network: 
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, scalars)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# P1=0x02 vault-group phase — NAPPS-1442 acceptance criteria
+# ---------------------------------------------------------------------------
+
+def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
+                                   device: Device, bitcoin_network: str):
+    """10-vault intent: all 10 P1=0x02 groups accepted in ascending htlc_vout order."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
+    scalars = _make_scalars(bitcoin_network, vault_count=10, keeper_count=1, challenger_count=1)
+    approve_vault_intent_with_nav(client, navigator, device, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  groups=groups,
+                                  path=SCREENSHOT_PATH,
+                                  test_case_name="vault_intent/10vault_1k1c_" + bitcoin_network)
+
+
+def test_htlc_vout_out_of_order(client: RaggerClient, bitcoin_network: str):
+    """Second group with htlc_vout <= first group must return SW_INCORRECT_DATA."""
+    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=5))
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=3))  # 3 <= 5
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_htlc_vout_equal_rejected(client: RaggerClient, bitcoin_network: str):
+    """Two groups with equal htlc_vout must return SW_INCORRECT_DATA (not strictly ascending)."""
+    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=3))
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=3))  # equal
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_missing_group_phase_rejected(client: RaggerClient, bitcoin_network: str):
+    """P1=0x01 sent with no prior P1=0x02 groups must return SW_BAD_STATE."""
+    scalars = _make_scalars(bitcoin_network, vault_count=1, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    # Skip P1=0x02 entirely — vault_group_index=0, vault_count=1 → mismatch
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
+    assert exc.value.status == SW_BAD_STATE
+
+
+def test_extra_group_beyond_vault_count(client: RaggerClient, bitcoin_network: str):
+    """Sending vault_count+1 P1=0x02 APDUs must return SW_INCORRECT_DATA on the extra one."""
+    scalars = _make_scalars(bitcoin_network, vault_count=1, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=0))   # group 0 — accepted
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=1))  # beyond vault_count
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_depositor_path_mismatch_rejected(client: RaggerClient, navigator: Navigator,
+                                          device: Device, bitcoin_network: str):
+    """Intent depositor_path differing from DERIVE_CONTEXT_HASH path must return SW_INCORRECT_DATA.
+
+    DERIVE_CONTEXT_HASH is run with the standard path m/86'/coin_type'/0'/0/0.
+    The intent TLV claims m/86'/coin_type'/0'/0/1 (change index 1 instead of 0).
+    The F2 check in handle_key_batch fires when all keys arrive and rejects.
+    """
+    ct = _coin_type(bitcoin_network)
+    # DCH stores m/86'/ct'/0'/0/0 in the session context.
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    # Intent claims m/86'/ct'/0'/0/1 — passes TLV validation (index 1 is not hardened).
+    mismatch_path = depositor_path(ct)[:-1] + [1]
+    scalars = _make_scalars(bitcoin_network, depositor_path=mismatch_path,
+                            keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
+    assert exc.value.status == SW_INCORRECT_DATA
