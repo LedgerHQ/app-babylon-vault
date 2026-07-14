@@ -22,7 +22,7 @@
 
 // Settable BIP-32 mock key (defined in mock_cx.c).
 extern uint8_t g_mock_bip32_key[32];
-extern bool    g_mock_bip32_key_set;
+extern bool g_mock_bip32_key_set;
 
 // ---------------------------------------------------------------------------
 // derive-context-hash §4.2 authoritative wallet-integration vector
@@ -32,10 +32,10 @@ extern bool    g_mock_bip32_key_set;
 static const uint8_t V42_IKM[32] = {
     0x39, 0x1c, 0xdb, 0x92, 0x20, 0x97, 0xec, 0x9c, 0x96, 0xfc, 0x13, 0xca, 0xdb, 0x01, 0xd5, 0x74,
     0x5c, 0xcf, 0x31, 0xf5, 0xdb, 0xec, 0x3a, 0x38, 0x10, 0x34, 0x40, 0x71, 0x47, 0x79, 0xec, 0x85};
-static const uint8_t V42_PUBKEY[33] = {
-    0x03, 0xaa, 0xeb, 0x52, 0xdd, 0x74, 0x94, 0xc3, 0x61, 0x04, 0x9d, 0xe6, 0x7c, 0xc6, 0x80, 0xe8,
-    0x3e, 0xbc, 0xbb, 0xbd, 0xbe, 0xb1, 0x36, 0x37, 0xd9, 0x2c, 0xd8, 0x45, 0xf7, 0x03, 0x08, 0xaf,
-    0x5e};
+static const uint8_t V42_PUBKEY[33] = {0x03, 0xaa, 0xeb, 0x52, 0xdd, 0x74, 0x94, 0xc3, 0x61,
+                                       0x04, 0x9d, 0xe6, 0x7c, 0xc6, 0x80, 0xe8, 0x3e, 0xbc,
+                                       0xbb, 0xbd, 0xbe, 0xb1, 0x36, 0x37, 0xd9, 0x2c, 0xd8,
+                                       0x45, 0xf7, 0x03, 0x08, 0xaf, 0x5e};
 static const uint8_t V42_ROOT[32] = {
     0xf8, 0x2c, 0xed, 0x3b, 0xe0, 0xe2, 0x95, 0x91, 0xa7, 0x86, 0x3e, 0xce, 0x03, 0xd6, 0x5f, 0x79,
     0xfb, 0x49, 0x4f, 0xe0, 0xde, 0x72, 0x03, 0x54, 0x98, 0x55, 0xf4, 0x62, 0x45, 0x5d, 0xf0, 0x08};
@@ -43,10 +43,10 @@ static const uint8_t V42_ROOT[32] = {
 // ---------------------------------------------------------------------------
 // Mock-key vectors (ikm=0x42*32, app="TestApp", pubkey=0x02||0x11*32, mainnet).
 // ---------------------------------------------------------------------------
-static const uint8_t PK_TEST[33] = {
-    0x02, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-    0x11};
+static const uint8_t PK_TEST[33] = {0x02, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                                    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                                    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+                                    0x11, 0x11, 0x11, 0x11, 0x11, 0x11};
 static const uint8_t REF_ROOT_NO_CTX[32] = {
     0x64, 0x4d, 0x5d, 0x2e, 0xf4, 0x57, 0x0a, 0xca, 0xbd, 0x27, 0x45, 0x44, 0xe8, 0x9d, 0xb0, 0x54,
     0xdf, 0xfd, 0xff, 0xc7, 0x69, 0x9b, 0x10, 0x0d, 0x8f, 0x1f, 0x8a, 0xfd, 0x74, 0x65, 0x27, 0x64};
@@ -66,19 +66,18 @@ static const char CTX[] = "hello_context";  // 13 bytes
 
 // Raw HKDF: PRK = HMAC-SHA256(salt, ikm); out = HMAC-SHA256(PRK, info || 0x01).
 static bool hkdf_raw(const uint8_t *ikm,
-                     size_t         ikm_len,
+                     size_t ikm_len,
                      const uint8_t *salt,
-                     size_t         salt_len,
+                     size_t salt_len,
                      const uint8_t *info,
-                     size_t         info_len,
-                     uint8_t        out[32]) {
+                     size_t info_len,
+                     uint8_t out[32]) {
     uint8_t salt_buf[32];  // salt is "derive-context-hash" = 19 B; fits easily
     if (salt_len > sizeof(salt_buf)) return false;
     memcpy(salt_buf, salt, salt_len);
 
     uint8_t prk[32];
-    cx_hkdf_extract(CX_SHA256, ikm, (unsigned int) ikm_len,
-                    salt_buf, (unsigned int) salt_len, prk);
+    cx_hkdf_extract(CX_SHA256, ikm, (unsigned int) ikm_len, salt_buf, (unsigned int) salt_len, prk);
 
     cx_hmac_sha256_t hmac;
     const uint8_t counter = 0x01;
@@ -112,11 +111,12 @@ static void test_spec_vector_4_1_v1(void **state) {
     (void) state;
     uint8_t info[36];
     memcpy(info, V41_INFO_PREFIX, 32);
-    info[32] = 0xde; info[33] = 0xad; info[34] = 0xbe; info[35] = 0xef;
+    info[32] = 0xde;
+    info[33] = 0xad;
+    info[34] = 0xbe;
+    info[35] = 0xef;
     uint8_t out[32];
-    assert_true(hkdf_raw(V42_IKM, 32,
-                         (const uint8_t *) "derive-context-hash", 19,
-                         info, 36, out));
+    assert_true(hkdf_raw(V42_IKM, 32, (const uint8_t *) "derive-context-hash", 19, info, 36, out));
     assert_memory_equal(out, V41_OUT1, 32);
 }
 
@@ -127,9 +127,7 @@ static void test_spec_vector_4_1_v2(void **state) {
     memcpy(info, V41_INFO_PREFIX, 32);
     info[32] = 0x00;
     uint8_t out[32];
-    assert_true(hkdf_raw(V42_IKM, 32,
-                         (const uint8_t *) "derive-context-hash", 19,
-                         info, 33, out));
+    assert_true(hkdf_raw(V42_IKM, 32, (const uint8_t *) "derive-context-hash", 19, info, 33, out));
     assert_memory_equal(out, V41_OUT2, 32);
 }
 
@@ -140,9 +138,7 @@ static void test_spec_vector_4_1_v3(void **state) {
     memcpy(info, V41_INFO_PREFIX, 32);
     memset(info + 32, 0x00, 64);
     uint8_t out[32];
-    assert_true(hkdf_raw(V42_IKM, 32,
-                         (const uint8_t *) "derive-context-hash", 19,
-                         info, 96, out));
+    assert_true(hkdf_raw(V42_IKM, 32, (const uint8_t *) "derive-context-hash", 19, info, 96, out));
     assert_memory_equal(out, V41_OUT3, 32);
 }
 
@@ -188,8 +184,12 @@ static void test_spec_vector_4_2(void **state) {
     memcpy(g_mock_bip32_key, V42_IKM, 32);
     g_mock_bip32_key_set = true;
     uint8_t root[32];
-    bool ok = hkdf_derive_root((const uint8_t *) "test-app", 8, V42_PUBKEY,
-                               (const uint8_t *) "\xde\xad\xbe\xef", 4, root);
+    bool ok = hkdf_derive_root((const uint8_t *) "test-app",
+                               8,
+                               V42_PUBKEY,
+                               (const uint8_t *) "\xde\xad\xbe\xef",
+                               4,
+                               root);
     g_mock_bip32_key_set = false;  // back to the default 0x42 IKM for other tests
     assert_true(ok);
     assert_memory_equal(root, V42_ROOT, 32);
@@ -198,16 +198,20 @@ static void test_spec_vector_4_2(void **state) {
 static void test_root_no_ctx(void **state) {
     (void) state;
     uint8_t root[32];
-    assert_true(hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST, (const uint8_t *) "", 0,
-                                 root));
+    assert_true(
+        hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST, (const uint8_t *) "", 0, root));
     assert_memory_equal(root, REF_ROOT_NO_CTX, 32);
 }
 
 static void test_root_with_ctx(void **state) {
     (void) state;
     uint8_t root[32];
-    assert_true(hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST,
-                                 (const uint8_t *) CTX, sizeof(CTX) - 1, root));
+    assert_true(hkdf_derive_root((const uint8_t *) "TestApp",
+                                 7,
+                                 PK_TEST,
+                                 (const uint8_t *) CTX,
+                                 sizeof(CTX) - 1,
+                                 root));
     assert_memory_equal(root, REF_ROOT_WITH_CTX, 32);
 }
 
@@ -229,20 +233,38 @@ static void test_different_app_name_diverges(void **state) {
 static void test_different_context_diverges(void **state) {
     (void) state;
     uint8_t a[32];
-    hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST, (const uint8_t *) CTX,
-                     sizeof(CTX) - 1, a);
+    hkdf_derive_root((const uint8_t *) "TestApp",
+                     7,
+                     PK_TEST,
+                     (const uint8_t *) CTX,
+                     sizeof(CTX) - 1,
+                     a);
     assert_memory_not_equal(a, REF_ROOT_NO_CTX, 32);
 }
 
 // connectedPubkey is part of info (v2): a different pubkey must change the root.
 static void test_different_pubkey_diverges(void **state) {
     (void) state;
-    uint8_t other_pk[33] = {
-        0x03, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
-        0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
-        0x22, 0x22, 0x22};
+    uint8_t other_pk[33] = {0x03, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+                            0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+                            0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22};
     uint8_t a[32];
     hkdf_derive_root((const uint8_t *) "TestApp", 7, other_pk, (const uint8_t *) "", 0, a);
+    assert_memory_not_equal(a, REF_ROOT_NO_CTX, 32);
+}
+
+/* VAULT_CONTEXT_MAX_LEN (1024 bytes) — hkdf_derive_root must handle the maximum
+ * declared context length without truncation or overflow. */
+static void test_max_context_len(void **state) {
+    (void) state;
+    uint8_t ctx[1024];
+    memset(ctx, 0xA5, sizeof(ctx));
+    uint8_t a[32], b[32];
+    /* Must succeed twice and produce the same deterministic output. */
+    assert_true(hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST, ctx, 1024, a));
+    assert_true(hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST, ctx, 1024, b));
+    assert_memory_equal(a, b, 32);
+    /* Must differ from the zero-context root. */
     assert_memory_not_equal(a, REF_ROOT_NO_CTX, 32);
 }
 
@@ -263,6 +285,7 @@ int main(void) {
         cmocka_unit_test(test_different_app_name_diverges),
         cmocka_unit_test(test_different_context_diverges),
         cmocka_unit_test(test_different_pubkey_diverges),
+        cmocka_unit_test(test_max_context_len),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

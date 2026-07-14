@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - NAPPS-1441: DERIVE_CONTEXT_HASH rev 2.1 — multi-chunk streaming, P2 mode, Screen 1
+
+Upgrades `DERIVE_CONTEXT_HASH` (INS `0x81`) to the rev 2.1 wire format: chunked context
+streaming over multiple APDUs, a silent re-derivation mode, and an optional approval screen
+that displays the requesting app name.
+
+### Changed
+
+- **Wire format** (breaking): P1=0x00 payload is now
+  `app_name_len(1B) | app_name | path_len(1B) | path(4·n B BE) | context_total_len(2B BE) | first_context_chunk`.
+  The 2-byte `context_total_len` field is new; clients must send it before the context bytes.
+- **P2 semantics**: P2=0x00 shows Screen 1 and returns the 32-byte root; P2=0x01 performs a
+  silent re-derivation (no screen, SW_OK only). Previously P2 was unused.
+- **Context streaming**: context up to `VAULT_CONTEXT_MAX_LEN` (1024 B) is spread across an
+  initial P1=0x00 APDU and zero or more P1=0x01 continuation APDUs.  The device accumulates
+  bytes in `G_scratch.derive_ctx.context_buf` and finalizes on the last chunk.  A new P1=0x00
+  while streaming cancels the in-flight session and starts fresh.
+- **Handler structure**: `handler_derive_context_hash` is now a thin P1 dispatcher (mirrors
+  `handler_approve_vault_intent`); logic lives in `handle_initial_chunk`,
+  `handle_continuation_chunk`, and the shared `_finalize` helper.
+
+### Added
+
+- **Screen 1** (`display_derive_context_hash`): shown on finalization when P2=0x00; presents
+  a single `TYPE_OPERATION` review with the `"App name"` field; confirm text `"Allow
+  derivation?"`.  User rejection returns `SW_DENY` (0x6985).
+- `VAULT_APP_NAME_MAX_LEN` (64), `VAULT_CONTEXT_MAX_LEN` (1024) constants in
+  `vault_constants.h`; `app_name_charset_valid` inline in `derive_context_hash_core.h`
+  (allowed set: `[a-z0-9\-]`).
+- `derive_context_hash_reject_nav` navigation helper in `tests/instructions.py`.
+- 11 new Ragger integration tests covering: invalid P2, empty / invalid-charset app_name,
+  path too deep, context_total_len overflow, continuation chunk overflow, empty continuation,
+  reset-during-streaming, max context (1024 B) correctness, screen snapshot, and user
+  rejection.
+
 ## [0.5.0] - NAPPS-1440: v19 data model — per-vault group struct, TLV layout, context fields
 
 Introduces the v19 batch Pre-PegIn data model: up to 10 vault groups per intent, three-phase

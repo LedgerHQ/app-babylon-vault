@@ -71,6 +71,9 @@
 /** Maximum byte length of the appName field. */
 #define VAULT_APP_NAME_MAX_LEN 64u
 
+/** Maximum byte length of the context field (spec §2.1: 1024 bytes / 2048 hex chars). */
+#define VAULT_CONTEXT_MAX_LEN 1024u
+
 /** Maximum depth of a BIP-32 derivation path (number of levels). */
 #define VAULT_MAX_PATH_DEPTH 10u
 

@@ -9,7 +9,7 @@
 | INS    | Name                     | Brief purpose |
 |--------|--------------------------|---------------|
 | `0x80` | `APPROVE_VAULT_INTENT`   | Three-phase: P1=0x00 scalar TLV (13 fields), P1=0x02 per-vault group TLV (6 fields × vault_count), P1=0x01 raw key batches; show approval screen; transition to `INTENT_LOADED`. |
-| `0x81` | `DERIVE_CONTEXT_HASH`    | Derive the 32-byte root via HKDF-SHA-256 at `m/73681862'` over `info = SHA256(appName) ‖ SHA256(networkName) ‖ connectedPubkey ‖ context`; return the root. No display. |
+| `0x81` | `DERIVE_CONTEXT_HASH`    | Derive the 32-byte root via HKDF-SHA-256 at `m/73681862'` over `info = SHA256(appName) ‖ SHA256(networkName) ‖ connectedPubkey ‖ context`; optional Screen 1 (P2=0x00); chunked context up to 1024 B. |
 
 ---
 
@@ -139,13 +139,24 @@ transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
 
 ---
 
-## INS 0x81 — DERIVE_CONTEXT_HASH — Wire Format
+## INS 0x81 — DERIVE_CONTEXT_HASH — Wire Format (rev 2.1)
 
-Single APDU (P1=0x00), no user display. Returns the 32-byte **root**; the host expands
-it into the per-vault secrets (hashlock / auth-anchor / WOTS seed — see
-`derive-vault-secrets`). The device retains no preimage and has **no release step**.
+Multi-chunk streaming command. P1=0x00 opens the stream; P1=0x01 delivers continuation
+chunks. Returns the 32-byte **root** on the final chunk (P2=0x00) or SW_OK only (P2=0x01).
+The host expands the root into the per-vault secrets (see `derive-vault-secrets`).
+The device retains no preimage and has **no release step**.
 
-### P1=0x00 — payload
+### P1 / P2 encoding
+
+| P1     | P2     | Meaning |
+|--------|--------|---------|
+| `0x00` | `0x00` | Initial chunk; show Screen 1 on final chunk; return 32-byte root. |
+| `0x00` | `0x01` | Initial chunk; silent re-derivation; return SW_OK only on final chunk. |
+| `0x01` | same as P1=0x00 | Continuation chunk; P2 must match the value sent in P1=0x00. |
+
+P2 must be consistent across all APDUs of one streaming sequence.
+
+### P1=0x00 — initial chunk payload
 
 | Offset | Field | Size | Notes |
 |--------|-------|------|-------|
@@ -153,27 +164,47 @@ it into the per-vault secrets (hashlock / auth-anchor / WOTS seed — see
 | 1 | `app_name` | `L` B | UTF-8 app name (host sends `"babylon-btc-vault"`) |
 | 1+`L` | `path_len` | 1 B | connectedPubkey BIP-32 depth in levels; `1..10` |
 | 2+`L` | `path` | `path_len`×4 B | each level as u32 **big-endian** (hardened bit set as usual) |
-| 2+`L`+4·`path_len` | `context` | remaining `Lc` | `vaultContext` bytes; must be non-empty |
+| 2+`L`+4·`path_len` | `context_total_len` | 2 B | total context byte count, **big-endian**; `1..1024` |
+| 4+`L`+4·`path_len` | first context chunk | remaining `Lc` | first `≤Lc` bytes of `vaultContext`; may be empty if `context_total_len > Lc` |
 
-(`L = app_name_len`.) The whole payload fits one APDU — the Babylon `vaultContext` is a
-fixed ~72 bytes, so there is no chunking.
+(`L = app_name_len`.) If all `context_total_len` bytes fit in the initial APDU, the stream
+finalizes immediately and returns the response (P2=0x00: 32-byte root; P2=0x01: SW_OK).
+Otherwise returns SW_OK with no data and expects P1=0x01 continuation APDUs.
 
-### Response
+### P1=0x01 — continuation chunk payload
 
-| Field | Size | Value |
+| Field | Size | Notes |
 |-------|------|-------|
-| Data  | 32 B | `root` (the 32-byte HKDF output) |
-| SW    | 2 B  | `0x9000` |
+| context bytes | `Lc` B | Next chunk of `vaultContext`; must be non-empty |
+
+Returns SW_OK with no data until `context_received == context_total_len`, then finalizes.
+Must be preceded by a valid P1=0x00 in the same session; P1=0x01 without a prior P1=0x00
+returns SW_BAD_STATE.
+
+### Response (final chunk only)
+
+| P2     | Data | SW |
+|--------|------|----|
+| `0x00` | 32 B `root` (the 32-byte HKDF output) | `0x9000` |
+| `0x01` | empty | `0x9000` |
+
+Both modes store the derivation path in the session context for path-match validation.
+
+### Screen 1 (P2=0x00 only)
+
+Shown on the final chunk, before the root is derived and returned. Displays `app_name`
+and asks the user to approve. Rejection returns SW_DENY without deriving the root.
 
 ### Error conditions
 
 | SW     | Condition |
 |--------|-----------|
-| `0x6A80` | `app_name_len` 0 or > 64; `path_len` 0 or > 10; empty `context`; truncated fields |
-| `0x6A86` | P1 is not `0x00` |
-| `0x6A87` | payload shorter than the mandatory fixed fields |
+| `0x6A80` | `app_name_len` 0 or > 64; `app_name` charset invalid; `path_len` 0 or > 10; `context_total_len` 0 or > 1024; continuation chunk exceeds declared total; truncated fields |
+| `0x6A86` | P1 is not `0x00` or `0x01`; P2 is not `0x00` or `0x01` |
+| `0x6A87` | P1=0x00 payload shorter than the mandatory fixed fields; P1=0x01 payload empty |
+| `0x6985` | User rejected Screen 1 (P2=0x00 only) |
 | `0x6F00` | connected-pubkey BIP-32 derivation at `path` failed |
-| `0xB007` | HMAC / HKDF operation failed |
+| `0xB007` | P1=0x01 received without a prior P1=0x00; HMAC / HKDF operation failed |
 
 ### Crypto detail
 
@@ -182,6 +213,7 @@ fixed ~72 bytes, so there is no chunking.
 - **info**: `SHA256(app_name) || SHA256(canonicalNetworkName) || connectedPubkey[33] || context`
   - `canonicalNetworkName`: `"bitcoin-mainnet"` (mainnet build) / `"bitcoin-signet"` (testnet build)
   - `connectedPubkey`: 33-byte compressed SEC1 key the device derives at `path`
+  - `context`: full reassembled context (up to 1024 B, spanning all chunks)
 - **HKDF-Expand** (single block, L=32): `root = HMAC-SHA256(PRK, info || 0x01)`
 
 The on-chain HTLC hashlock is `SHA256(Expand(root, info("hashlock", I2OSP(htlc_vout, 4))))`

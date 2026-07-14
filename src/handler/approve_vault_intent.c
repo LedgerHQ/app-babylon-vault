@@ -47,11 +47,13 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     uint8_t saved_root[VAULT_HASH256_LEN];
     uint32_t saved_path[VAULT_MAX_PATH_DEPTH];
     uint8_t saved_path_len = 0;
+    bool saved_user_approved = false;
     bool preserve_root = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
     if (preserve_root) {
         memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
         saved_path_len = G_vault_context.derivation_path_len;
         memcpy(saved_path, G_vault_context.derivation_path, saved_path_len * sizeof(uint32_t));
+        saved_user_approved = G_vault_context.root_user_approved;
     }
 
     vault_context_invalidate(&G_vault_context);
@@ -63,6 +65,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         G_vault_context.derivation_path_len = saved_path_len;
         memcpy(G_vault_context.derivation_path, saved_path, saved_path_len * sizeof(uint32_t));
         explicit_bzero(saved_path, sizeof(saved_path));
+        G_vault_context.root_user_approved = saved_user_approved;
         // Restore state to HASH_DERIVED so handle_key_batch can transition
         // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
         // because vault_context_invalidate() left state at IDLE.
@@ -167,6 +170,14 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
      * intermediate batches, getting implicit per-batch confirmation before the
      * final batch rejects.  Placing the check here short-circuits that. */
     if (G_vault_context.state != VAULT_STATE_HASH_DERIVED) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+
+    /* Require user approval: a root derived silently (P2=0x01) cannot be used
+     * to authorise vault transactions without a prior Screen 1 confirmation. */
+    if (!G_vault_context.root_user_approved) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);
         return;
