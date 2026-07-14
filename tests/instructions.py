@@ -43,8 +43,7 @@ VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 142 snapshots
 # Derived from golden snapshot counts: n_swipes = snapshots - 3 (touch),
 #                                      n_clicks = snapshots - 2 (nano).
 VAULT_INTENT_10V_32K32C_SWIPES_STAX = 54   # Stax:        57 snapshots
-VAULT_INTENT_10V_32K32C_SWIPES_APEX = 87   # Apex_p:      90 snapshots
-VAULT_INTENT_10V_32K32C_SWIPES      = 86   # Flex:        89 snapshots
+VAULT_INTENT_10V_32K32C_SWIPES_APEX = 86   # Apex_p:      90 snapshots
 VAULT_INTENT_10V_32K32C_CLICKS      = 203  # NanoSP/NanoX: 205 snapshots
 
 
@@ -91,9 +90,7 @@ def vault_intent_10v_32k32c_steps(device: Device) -> int:
         return VAULT_INTENT_10V_32K32C_CLICKS
     if device.name == "stax":
         return VAULT_INTENT_10V_32K32C_SWIPES_STAX
-    if device.name == "apex_p":
-        return VAULT_INTENT_10V_32K32C_SWIPES_APEX
-    return VAULT_INTENT_10V_32K32C_SWIPES
+    return VAULT_INTENT_10V_32K32C_SWIPES_APEX
 
 
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
