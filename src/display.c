@@ -365,16 +365,18 @@ static void vault_stream_group(void) {
     uint8_t i = g_stream_vault_idx++;
     const vault_group_t *grp = &G_vault_intent.groups[i];
 
-    snprintf(g_grp_vault_label, sizeof(g_grp_vault_label),
-             "%u of %u", (unsigned) (i + 1u), (unsigned) G_vault_intent.vault_count);
+    snprintf(g_grp_vault_label,
+             sizeof(g_grp_vault_label),
+             "%u of %u",
+             (unsigned) (i + 1u),
+             (unsigned) G_vault_intent.vault_count);
     format_hex(grp->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN, g_grp_vp_str, sizeof(g_grp_vp_str));
     format_sats_amount(COIN_COINID_SHORT, grp->vault_amount, g_grp_amt_str);
     format_sats_amount(COIN_COINID_SHORT, grp->commission_fee, g_grp_comm_str);
     format_sats_amount(COIN_COINID_SHORT, grp->depositor_claim_value, g_grp_claim_str);
     format_sats_amount(COIN_COINID_SHORT, grp->pegin_max_fee, g_grp_fee_str);
 
-    g_vault_grp_pairs[0] =
-        (nbgl_layoutTagValue_t) {.item = "Vault", .value = g_grp_vault_label};
+    g_vault_grp_pairs[0] = (nbgl_layoutTagValue_t) {.item = "Vault", .value = g_grp_vault_label};
     g_vault_grp_pairs[1] =
         (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = g_grp_vp_str};
     g_vault_grp_pairs[2] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = g_grp_amt_str};
