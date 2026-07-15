@@ -427,7 +427,9 @@ static int build_app_challengers(const vault_intent_t *intent,
             if (!vp_inserted && memcmp(intent->groups[group_idx].vault_provider_pk,
                                        intent->keeper_pks[i],
                                        VAULT_XONLY_PUBKEY_LEN) < 0) {
-                memcpy(out[k++], intent->groups[group_idx].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+                memcpy(out[k++],
+                       intent->groups[group_idx].vault_provider_pk,
+                       VAULT_XONLY_PUBKEY_LEN);
                 vp_inserted = 1;
             }
             memcpy(out[k++], intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN);
@@ -516,7 +518,11 @@ bool vault_build_htlc_merkle_root(const vault_intent_t *intent,
                                   uint8_t out[VAULT_HASH256_LEN]) {
     uint8_t lh0[VAULT_HASH256_LEN], lh1[VAULT_HASH256_LEN];
 
-    int len0 = vault_build_htlc_leaf0(intent, group_idx, h, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
+    int len0 = vault_build_htlc_leaf0(intent,
+                                      group_idx,
+                                      h,
+                                      G_scratch.script_scratch,
+                                      VAULT_SCRIPT_MAX_LEN);
     if (len0 < 0) {
         memset(out, 0, VAULT_HASH256_LEN);
         return false;
@@ -563,7 +569,10 @@ bool vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent,
                                          uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t leaf_hash[VAULT_HASH256_LEN];
 
-    int len = vault_build_vault_utxo_leaf(intent, group_idx, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
+    int len = vault_build_vault_utxo_leaf(intent,
+                                          group_idx,
+                                          G_scratch.script_scratch,
+                                          VAULT_SCRIPT_MAX_LEN);
     if (len < 0) {
         memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
         return false;
@@ -673,7 +682,8 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     /* output count: 3 */
     tx[off++] = 3u;
     /* output 0: Vault UTXO */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->groups[group_idx].vault_amount >> (i * 8));
+    for (int i = 0; i < 8; i++)
+        tx[off++] = (uint8_t) (intent->groups[group_idx].vault_amount >> (i * 8));
     tx[off++] = (uint8_t) sizeof(vault_spk);
     memcpy(tx + off, vault_spk, sizeof(vault_spk));
     off += sizeof(vault_spk);
