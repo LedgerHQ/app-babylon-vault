@@ -24,7 +24,8 @@ from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
 from .instructions import (vault_intent_1k1c_steps, vault_intent_4k4c_steps,
-                            vault_intent_32k32c_steps, vault_intent_10v_32k32c_steps)
+                            vault_intent_32k32c_steps, vault_intent_10v_1k1c_steps,
+                            vault_intent_10v_32k32c_steps)
 from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
@@ -598,7 +599,12 @@ def test_base_fee_rate_overflow_rejected(client: RaggerClient, bitcoin_network: 
 
 def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
                                    device: Device, bitcoin_network: str):
-    """10-vault intent: all 10 P1=0x02 groups accepted in ascending htlc_vout order."""
+    """10-vault intent: all 10 P1=0x02 groups accepted in ascending htlc_vout order.
+
+    Uses deterministic step counts (not text-based navigation) to avoid the
+    navigate_until_text_and_compare race that duplicates a frame when the swipe
+    animation fires between wait_for_screen_change() and compare_screen_with_text().
+    """
     derive_for_intent(client, navigator, device, bitcoin_network)
     groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
     scalars = _make_scalars(bitcoin_network, vault_count=10, keeper_count=1, challenger_count=1)
@@ -606,7 +612,8 @@ def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=groups,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/10vault_1k1c_" + bitcoin_network)
+                                  test_case_name="vault_intent/10vault_1k1c_" + bitcoin_network,
+                                  n_swipes=vault_intent_10v_1k1c_steps(device))
 
 
 def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Navigator,
