@@ -77,21 +77,33 @@ void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[
  * Precondition for htlc_leaf0: intent->depositor_pk is pre-populated.
  * ----------------------------------------------------------------------- */
 
+/**
+ * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
+ */
 int vault_build_htlc_leaf0(const vault_intent_t *intent,
+                           int group_idx,
                            const uint8_t h[VAULT_HASH256_LEN],
                            uint8_t *buf,
                            int buf_max);
 
 int vault_build_htlc_leaf1(const vault_intent_t *intent, uint8_t *buf, int buf_max);
 
-int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int buf_max);
+/**
+ * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
+ */
+int vault_build_vault_utxo_leaf(const vault_intent_t *intent,
+                                int group_idx,
+                                uint8_t *buf,
+                                int buf_max);
 
 int vault_build_depositor_claim_leaf(const vault_intent_t *intent, uint8_t *buf, int buf_max);
 
 /**
+ * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
  * @param claimer_idx  0 = VP is claimer; 1..keeper_count = VK_i is claimer.
  */
 int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
+                                    int group_idx,
                                     int claimer_idx,
                                     uint8_t *buf,
                                     int buf_max);
@@ -100,31 +112,48 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
  * Derived outputs
  * ----------------------------------------------------------------------- */
 
+/**
+ * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
+ */
 bool vault_build_htlc_merkle_root(const vault_intent_t *intent,
+                                  int group_idx,
                                   const uint8_t h[VAULT_HASH256_LEN],
                                   uint8_t out[VAULT_HASH256_LEN]);
 
+/**
+ * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
+ */
 bool vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
+                                   int group_idx,
                                    const uint8_t h[VAULT_HASH256_LEN],
                                    uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
+/**
+ * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
+ */
 bool vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent,
+                                         int group_idx,
                                          uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
 bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
                                               uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
 /**
+ * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
  * @param claimer_idx  0 = VP; 1..keeper_count = VK_i.
  */
 bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
+                                             int group_idx,
                                              int claimer_idx,
                                              uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
 /**
  * Compute the SegWit txid of the PegIn transaction from the loaded intent.
  *
- * Valid only in Session 2: uses prepegin_txid and htlc_vout from the intent.
+ * @param group_idx    Index into intent->groups[]; selects per-vault amounts and htlc_vout.
+ * Valid only in Session 2: uses prepegin_txid and htlc_vout from the group.
  * Returns false if key derivation fails (clears out to zero).
  */
-bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]);
+bool vault_compute_pegin_txid(const vault_intent_t *intent,
+                              int group_idx,
+                              uint8_t out[VAULT_HASH256_LEN]);

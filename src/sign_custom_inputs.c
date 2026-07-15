@@ -88,6 +88,7 @@ bool sign_custom_inputs(
         }
 
         int leaf_len = vault_build_htlc_leaf0(intent,
+                                              0,
                                               G_vault_context.htlc_hashlock[0],
                                               G_scratch.script_scratch,
                                               VAULT_SCRIPT_MAX_LEN);
@@ -103,6 +104,7 @@ bool sign_custom_inputs(
          * the approved intent, so the sighash commits to a device-known script. */
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (!vault_build_htlc_scriptpubkey(intent,
+                                           0,
                                            G_vault_context.htlc_hashlock[0],
                                            expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -170,7 +172,7 @@ bool sign_custom_inputs(
         }
 
         int leaf_len =
-            vault_build_vault_utxo_leaf(intent, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
+            vault_build_vault_utxo_leaf(intent, 0, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -184,7 +186,7 @@ bool sign_custom_inputs(
          * from the approved intent (rebuilds G_scratch.script_scratch, which we
          * are done reading from above). */
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!vault_build_vault_utxo_scriptpubkey(intent, expected_spk)) {
+        if (!vault_build_vault_utxo_scriptpubkey(intent, 0, expected_spk)) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
