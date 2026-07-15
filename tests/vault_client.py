@@ -403,7 +403,7 @@ def approve_vault_intent_with_nav(
 
     When path and test_case_name are provided, snapshot comparison is performed:
       - If n_swipes is given, navigate_and_compare is used with an explicit instruction
-        list (deterministic — use instructions.vault_intent_1k1c_steps(device) for
+        list (deterministic — use instructions.vault_intent_steps(device, 1, 1) for
         standard 1K+1C data).
       - If n_swipes is None, navigate_until_text_and_compare is used (timing-sensitive).
     When path is None, navigate_until_text is used (no comparison).

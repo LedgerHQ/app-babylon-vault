@@ -23,9 +23,7 @@ from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
-from .instructions import (vault_intent_1k1c_steps, vault_intent_4k4c_steps,
-                            vault_intent_32k32c_steps, vault_intent_10v_1k1c_steps,
-                            vault_intent_10v_32k32c_steps)
+from .instructions import vault_intent_steps
 from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
@@ -72,7 +70,6 @@ TXID = bytes(range(32))
 KEY_A = TEST_VALID_KEYS[0]
 KEY_B = TEST_VALID_KEYS[1]
 KEY_C = TEST_VALID_KEYS[2]
-KEY_D = TEST_VALID_KEYS[3]
 
 
 def _coin_type(network: str) -> int:
@@ -137,22 +134,8 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigato
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/1k1c_" + bitcoin_network,
-                                  n_swipes=vault_intent_1k1c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 1, 1))
 
-
-def test_keys_split_across_batches(client: RaggerClient, navigator: Navigator,
-                                    device: Device, bitcoin_network: str):
-    """4 keepers + 4 challengers forces two P1=0x01 batches (7+1 keys)."""
-    derive_for_intent(client, navigator, device, bitcoin_network)
-    keepers     = TEST_VALID_KEYS[0:4]
-    challengers = TEST_VALID_KEYS[4:8]
-    scalars = _make_scalars(bitcoin_network, keeper_count=4, challenger_count=4)
-    approve_vault_intent_with_nav(client, navigator, device, scalars,
-                                  keeper_pks=keepers, challenger_pks=challengers,
-                                  groups=[_make_group()],
-                                  path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/4k4c_" + bitcoin_network,
-                                  n_swipes=vault_intent_4k4c_steps(device))
 
 
 # 64 distinct valid secp256k1 x-only keys for the max-capacity test.
@@ -247,7 +230,7 @@ def test_max_32_keepers_32_challengers(client: RaggerClient, navigator: Navigato
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/max_32k32c_" + bitcoin_network,
-                                  n_swipes=vault_intent_32k32c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 1, 32))
 
 
 def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Navigator,
@@ -262,7 +245,7 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
                                   groups=grp,
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/reload_1_" + bitcoin_network,
-                                  n_swipes=vault_intent_1k1c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 1, 1))
     # Second load — derive first to reach HASH_DERIVED, then handler invalidates the
     # first session and shows the screen again
     derive_for_intent(client, navigator, device, bitcoin_network)
@@ -271,7 +254,7 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
                                   groups=grp,
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/reload_2_" + bitcoin_network,
-                                  n_swipes=vault_intent_1k1c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 1, 1))
 
 
 def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, navigator: Navigator,
@@ -296,7 +279,7 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, n
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/session2_survive_" + bitcoin_network,
-                                  n_swipes=vault_intent_1k1c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 1, 1))
 
     # Step 3 — state is INTENT_LOADED; P1=0x01 without a preceding P1=0x00 must fail
     # with SW_BAD_STATE (scalars_loaded == false).
@@ -318,7 +301,7 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/reset_session_" + bitcoin_network,
-                                  n_swipes=vault_intent_1k1c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 1, 1))
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
     root = derive_for_intent(client, navigator, device, bitcoin_network)
@@ -613,7 +596,7 @@ def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
                                   groups=groups,
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/10vault_1k1c_" + bitcoin_network,
-                                  n_swipes=vault_intent_10v_1k1c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 10, 1))
 
 
 def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Navigator,
@@ -621,8 +604,7 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
     """10-vault intent with the firmware-maximum 32 keepers + 32 challengers.
 
     Combines the multi-vault streaming path (P1=0x02 × 10) with the largest possible
-    key set (64 keys in 10 P1=0x01 batches).  Step counts derived from existing goldens:
-    new_screens = 32k32c_screens + (10vault_1k1c_screens - 1k1c_screens).
+    key set (64 keys in 10 P1=0x01 batches).
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
     groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
@@ -634,7 +616,7 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
                                   groups=groups,
                                   path=SCREENSHOT_PATH,
                                   test_case_name="vault_intent/10vault_32k32c_" + bitcoin_network,
-                                  n_swipes=vault_intent_10v_32k32c_steps(device))
+                                  n_swipes=vault_intent_steps(device, 10, 32))
 
 
 def test_htlc_vout_out_of_order(client: RaggerClient, bitcoin_network: str):

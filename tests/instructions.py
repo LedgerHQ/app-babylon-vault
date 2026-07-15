@@ -3,126 +3,34 @@ from ledgered.devices import Device
 from ragger_bitcoin.ragger_instructions import Instructions
 from typing import List, Tuple
 
-# Steps to page through all content fields of a 1-keeper + 1-challenger intent
-# before reaching the final confirm/reject trigger.
-#
-# Stax fits 2 keys on one page (wider display), so 1K+1C = 5 pages total.
-# Flex and Apex fit only 1 key per page (less vertical space), so 1K+1C = 6 pages.
-#
-# Update these constants (and regenerate golden snapshots) if the display layout changes.
-# +1 page on touch vs. the old single review: the streaming review splits params
-# and keys into separate segments, forcing a page break so the first keeper starts
-# on a fresh page.
-VAULT_INTENT_1K1C_SWIPES_STAX = 5   # Stax: 6 pages (intro + params + keys + hold-to-sign)
-VAULT_INTENT_1K1C_SWIPES      = 6   # Flex, Apex: 7 pages
-VAULT_INTENT_1K1C_CLICKS      = 16  # Nano devices
 
-# Steps for 32-keeper + 32-challenger intent (64 keys total).
-# These are used by test_max_32_keepers_32_challengers to switch from text-based
-# navigation (navigate_until_text_and_compare) to deterministic navigate_and_compare.
-# Text-based nav is racy on touch devices: the flex/stax swipe animation can fire
-# one extra tick between wait_for_screen_change() and compare_screen_with_text(),
-# causing the loop to break one swipe too early and skip the last content screenshot.
-#
-# Derived from the golden snapshot counts: n_swipes = snapshots - 3 (touch),
-#                                          n_clicks = snapshots - 2 (nano).
-# Update these constants and regenerate snapshots if the display layout changes.
-# NOTE: unlike 1K1C, the params/keys segment break does NOT add a touch page here:
-# with more keys the keeper list already started on a fresh page in the old layout,
-# so these keep their pre-streaming swipe counts (bumping them over-swipes → timeout).
-VAULT_INTENT_4K4C_SWIPES_STAX = 8    # Stax:        10 snapshots
-VAULT_INTENT_4K4C_SWIPES     = 12    # Flex, Apex:  15 snapshots
-VAULT_INTENT_4K4C_CLICKS     = 28   # NanoSP/NanoX: 29 snapshots
+def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) -> int:
+    """Compute navigation step count from the screen layout formulas.
 
-VAULT_INTENT_32K32C_SWIPES_STAX = 36   # Stax:        39 snapshots
-VAULT_INTENT_32K32C_SWIPES     = 68   # Flex, Apex:  71 snapshots
-VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 142 snapshots
+    vault_count: total number of vaults (>= 1). The first vault is rendered inline
+                 on the params screen; each additional vault adds dedicated screens.
+    challenger_count: number of challenger/keeper pairs.
 
-# Steps for 10-vault + 1-keeper + 1-challenger intent (1 group display × 10).
-# Stax and Apex_p golden counts differ from Flex after the vault-group display rework.
-# Flex and Apex_p also diverge from each other: Apex_p renders vault groups one page wider.
-# Derived from golden snapshot counts: n_swipes = snapshots - 3 (touch),
-#                                      n_clicks = snapshots - 2 (nano).
-# Use these in test_10_vault_groups_accepted to avoid the navigate_until_text_and_compare
-# race that duplicates a frame when the swipe animation fires between screen capture calls.
-VAULT_INTENT_10V_1K1C_SWIPES_STAX = 23   # Stax:        22 snapshots
-VAULT_INTENT_10V_1K1C_SWIPES_APEX = 24   # Apex_p:      25 snapshots
-VAULT_INTENT_10V_1K1C_CLICKS      = 79   # NanoSP/NanoX: 81 snapshots
+    Stax  (touch):  screens = 1+1 + 2*(vault_count-1) + challenger_count,   total + 2
+    Flex/Apex (touch): screens = 1+1 + 2*(vault_count-1) + 2*challenger_count, total + 2
+    Nano:           screens = 1+4 + 7*(vault_count-1) + 4*challenger_count,  total + 7
 
-# Steps for 10-vault + 32-keeper + 32-challenger intent (64 keys + 10 groups).
-# Apex_p diverges from Flex by one page — vault groups render one screen wider there.
-# Derived from golden snapshot counts: n_swipes = snapshots - 3 (touch),
-#                                      n_clicks = snapshots - 2 (nano).
-VAULT_INTENT_10V_32K32C_SWIPES_STAX = 54   # Stax:        57 snapshots
-VAULT_INTENT_10V_32K32C_SWIPES_APEX = 86   # Apex_p:      90 snapshots
-VAULT_INTENT_10V_32K32C_CLICKS      = 203  # NanoSP/NanoX: 205 snapshots
-
-
-def vault_intent_1k1c_steps(device: Device) -> int:
-    """Return the step count for standard 1K+1C intent data on the given device."""
-    if device.is_nano:
-        return VAULT_INTENT_1K1C_CLICKS
-    if device.name == "stax":
-        return VAULT_INTENT_1K1C_SWIPES_STAX
-    return VAULT_INTENT_1K1C_SWIPES
-
-
-def vault_intent_4k4c_steps(device: Device) -> int:
-    """Return the deterministic step count for 4K+4C intent data on the given device.
-
-    Use instead of n_swipes=None to avoid the navigate_until_text_and_compare race
-    that duplicates the first screenshot and skips the last content screenshot.
+    n_swipes = total_screens (touch); n_clicks = total_screens (nano).
+    Relationship to golden snapshot counts: n_swipes = snapshots - 3, n_clicks = snapshots - 2.
     """
+    extra = vault_count - 1
     if device.is_nano:
-        return VAULT_INTENT_4K4C_CLICKS
+        return 1 + 4 + 7 * extra + 4 * challenger_count + 7
     if device.name == "stax":
-        return VAULT_INTENT_4K4C_SWIPES_STAX
-    return VAULT_INTENT_4K4C_SWIPES
-
-
-def vault_intent_32k32c_steps(device: Device) -> int:
-    """Return the deterministic step count for 32K+32C intent data on the given device.
-
-    Use this instead of n_swipes=None (text-based navigation) to avoid the race
-    in navigate_until_text_and_compare where an animation tick between
-    wait_for_screen_change() and compare_screen_with_text() causes the last
-    content screenshot to be skipped.
-    """
-    if device.is_nano:
-        return VAULT_INTENT_32K32C_CLICKS
-    if device.name == "stax":
-        return VAULT_INTENT_32K32C_SWIPES_STAX
-    return VAULT_INTENT_32K32C_SWIPES
-
-
-def vault_intent_10v_1k1c_steps(device: Device) -> int:
-    """Return the deterministic step count for 10-vault + 1K + 1C intent data.
-
-    Flex and Apex_p diverge by one page; use separate constants to avoid over-swiping
-    (over-swipe → Speculos timeout) or under-swiping (misses the last content screen).
-    """
-    if device.is_nano:
-        return VAULT_INTENT_10V_1K1C_CLICKS
-    if device.name == "stax":
-        return VAULT_INTENT_10V_1K1C_SWIPES_STAX
-    return VAULT_INTENT_10V_1K1C_SWIPES_APEX
-    
-
-
-def vault_intent_10v_32k32c_steps(device: Device) -> int:
-    """Return the deterministic step count for 10-vault + 32K + 32C intent data."""
-    if device.is_nano:
-        return VAULT_INTENT_10V_32K32C_CLICKS
-    if device.name == "stax":
-        return VAULT_INTENT_10V_32K32C_SWIPES_STAX
-    return VAULT_INTENT_10V_32K32C_SWIPES_APEX
+        return 1 + 1 + 2 * extra + challenger_count + 2
+    return 1 + 1 + 2 * extra + 2 * challenger_count + 2
 
 
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
     """Return the complete navigation instruction list for approving a vault intent.
 
     n_steps: RIGHT_CLICKs (Nano) or SWIPEs (touch) to reach the confirm trigger.
-    Pass vault_intent_1k1c_steps(device) for standard 1-keeper + 1-challenger data.
+    Pass vault_intent_steps(device, 1, 1) for standard 1-keeper + 1-challenger data.
     """
     if device.is_nano:
         return [NavInsID.RIGHT_CLICK] * n_steps + [NavInsID.BOTH_CLICK]
@@ -149,7 +57,7 @@ def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
 
     NOTE: skip is a UX affordance whose exact page sequence is layout-dependent.
     Verify/adjust this list against the first --golden_run, as with the
-    VAULT_INTENT_* step constants above.
+    step formulas in vault_intent_steps above.
     """
     assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
     return [
