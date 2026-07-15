@@ -45,9 +45,8 @@ VAULT_INTENT_32K32C_CLICKS     = 140  # NanoSP/NanoX: 142 snapshots
 #                                      n_clicks = snapshots - 2 (nano).
 # Use these in test_10_vault_groups_accepted to avoid the navigate_until_text_and_compare
 # race that duplicates a frame when the swipe animation fires between screen capture calls.
-VAULT_INTENT_10V_1K1C_SWIPES_STAX = 19   # Stax:        22 snapshots
-VAULT_INTENT_10V_1K1C_SWIPES_FLEX = 24   # Flex:        27 snapshots
-VAULT_INTENT_10V_1K1C_SWIPES_APEX = 22   # Apex_p:      25 snapshots
+VAULT_INTENT_10V_1K1C_SWIPES_STAX = 23   # Stax:        22 snapshots
+VAULT_INTENT_10V_1K1C_SWIPES_APEX = 24   # Apex_p:      25 snapshots
 VAULT_INTENT_10V_1K1C_CLICKS      = 79   # NanoSP/NanoX: 81 snapshots
 
 # Steps for 10-vault + 32-keeper + 32-challenger intent (64 keys + 10 groups).
@@ -106,9 +105,8 @@ def vault_intent_10v_1k1c_steps(device: Device) -> int:
         return VAULT_INTENT_10V_1K1C_CLICKS
     if device.name == "stax":
         return VAULT_INTENT_10V_1K1C_SWIPES_STAX
-    if device.name == "apex_p":
-        return VAULT_INTENT_10V_1K1C_SWIPES_APEX
-    return VAULT_INTENT_10V_1K1C_SWIPES_FLEX
+    return VAULT_INTENT_10V_1K1C_SWIPES_APEX
+    
 
 
 def vault_intent_10v_32k32c_steps(device: Device) -> int:
