@@ -291,7 +291,11 @@ int vault_build_htlc_leaf1(const vault_intent_t *intent, uint8_t *buf, int buf_m
  *         <P> OP_CSV
  * ----------------------------------------------------------------------- */
 
-int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int buf_max) {
+int vault_build_vault_utxo_leaf(const vault_intent_t *intent,
+                                int group_idx,
+                                uint8_t *buf,
+                                int buf_max) {
+    if (group_idx < 0 || group_idx >= (int) intent->vault_count) return -1;
     int off = 0, r;
 
     if (off + 34 > buf_max) return -1;
@@ -302,7 +306,7 @@ int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int 
 
     if (off + 34 > buf_max) return -1;
     buf[off++] = OP_PUSHBYTES_32;
-    memcpy(buf + off, intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+    memcpy(buf + off, intent->groups[group_idx].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
     buf[off++] = OP_CHECKSIGVERIFY;
 
@@ -341,9 +345,11 @@ int vault_build_vault_utxo_leaf(const vault_intent_t *intent, uint8_t *buf, int 
  * ----------------------------------------------------------------------- */
 
 int vault_build_htlc_leaf0(const vault_intent_t *intent,
+                           int group_idx,
                            const uint8_t h[VAULT_HASH256_LEN],
                            uint8_t *buf,
                            int buf_max) {
+    if (group_idx < 0 || group_idx >= (int) intent->vault_count) return -1;
     int off = 0, r;
 
     /* OP_SIZE <32> OP_EQUALVERIFY */
@@ -370,7 +376,7 @@ int vault_build_htlc_leaf0(const vault_intent_t *intent,
     /* <VP> OP_CHECKSIGVERIFY */
     if (off + 34 > buf_max) return -1;
     buf[off++] = OP_PUSHBYTES_32;
-    memcpy(buf + off, intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+    memcpy(buf + off, intent->groups[group_idx].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
     off += 32;
     buf[off++] = OP_CHECKSIGVERIFY;
 
@@ -408,6 +414,7 @@ int vault_build_htlc_leaf0(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 static int build_app_challengers(const vault_intent_t *intent,
+                                 int group_idx,
                                  int claimer_idx,
                                  uint8_t out[][VAULT_XONLY_PUBKEY_LEN]) {
     int k = 0;
@@ -419,16 +426,18 @@ static int build_app_challengers(const vault_intent_t *intent,
         int vp_inserted = 0;
         for (int i = 0; i < (int) intent->keeper_count; i++) {
             if (i == claimer_idx - 1) continue;
-            if (!vp_inserted && memcmp(intent->groups[0].vault_provider_pk,
+            if (!vp_inserted && memcmp(intent->groups[group_idx].vault_provider_pk,
                                        intent->keeper_pks[i],
                                        VAULT_XONLY_PUBKEY_LEN) < 0) {
-                memcpy(out[k++], intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+                memcpy(out[k++],
+                       intent->groups[group_idx].vault_provider_pk,
+                       VAULT_XONLY_PUBKEY_LEN);
                 vp_inserted = 1;
             }
             memcpy(out[k++], intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN);
         }
         if (!vp_inserted) {
-            memcpy(out[k++], intent->groups[0].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
+            memcpy(out[k++], intent->groups[group_idx].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN);
         }
     }
     return k;
@@ -447,9 +456,11 @@ static int build_app_challengers(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
+                                    int group_idx,
                                     int claimer_idx,
                                     uint8_t *buf,
                                     int buf_max) {
+    if (group_idx < 0 || group_idx >= (int) intent->vault_count) return -1;
     if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count) return -1;
 
     /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.
@@ -457,9 +468,9 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
     _Static_assert(VAULT_MAX_KEEPERS * VAULT_XONLY_PUBKEY_LEN <= 1024u,
                    "AppChallengers scratch exceeds 1 KB; revisit if target RAM shrinks");
     uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];
-    int k = build_app_challengers(intent, claimer_idx, _app_challengers);
+    int k = build_app_challengers(intent, group_idx, claimer_idx, _app_challengers);
 
-    const uint8_t *claimer_pk = (claimer_idx == 0) ? intent->groups[0].vault_provider_pk
+    const uint8_t *claimer_pk = (claimer_idx == 0) ? intent->groups[group_idx].vault_provider_pk
                                                    : intent->keeper_pks[claimer_idx - 1];
 
     int off = 0, r;
@@ -505,11 +516,16 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 bool vault_build_htlc_merkle_root(const vault_intent_t *intent,
+                                  int group_idx,
                                   const uint8_t h[VAULT_HASH256_LEN],
                                   uint8_t out[VAULT_HASH256_LEN]) {
     uint8_t lh0[VAULT_HASH256_LEN], lh1[VAULT_HASH256_LEN];
 
-    int len0 = vault_build_htlc_leaf0(intent, h, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
+    int len0 = vault_build_htlc_leaf0(intent,
+                                      group_idx,
+                                      h,
+                                      G_scratch.script_scratch,
+                                      VAULT_SCRIPT_MAX_LEN);
     if (len0 < 0) {
         memset(out, 0, VAULT_HASH256_LEN);
         return false;
@@ -534,10 +550,11 @@ bool vault_build_htlc_merkle_root(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 bool vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
+                                   int group_idx,
                                    const uint8_t h[VAULT_HASH256_LEN],
                                    uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t merkle_root[VAULT_HASH256_LEN];
-    if (!vault_build_htlc_merkle_root(intent, h, merkle_root)) {
+    if (!vault_build_htlc_merkle_root(intent, group_idx, h, merkle_root)) {
         memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
         return false;
     }
@@ -551,10 +568,14 @@ bool vault_build_htlc_scriptpubkey(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 bool vault_build_vault_utxo_scriptpubkey(const vault_intent_t *intent,
+                                         int group_idx,
                                          uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t leaf_hash[VAULT_HASH256_LEN];
 
-    int len = vault_build_vault_utxo_leaf(intent, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
+    int len = vault_build_vault_utxo_leaf(intent,
+                                          group_idx,
+                                          G_scratch.script_scratch,
+                                          VAULT_SCRIPT_MAX_LEN);
     if (len < 0) {
         memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
         return false;
@@ -591,11 +612,13 @@ bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
  * ----------------------------------------------------------------------- */
 
 bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
+                                             int group_idx,
                                              int claimer_idx,
                                              uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
     uint8_t leaf_hash[VAULT_HASH256_LEN];
 
     int len = vault_build_assert0_payout_leaf(intent,
+                                              group_idx,
                                               claimer_idx,
                                               G_scratch.script_scratch,
                                               VAULT_SCRIPT_MAX_LEN);
@@ -622,9 +645,11 @@ bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
  * The serialization is exactly 150 bytes (no segwit marker / witness data).
  * ----------------------------------------------------------------------- */
 
-bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HASH256_LEN]) {
+bool vault_compute_pegin_txid(const vault_intent_t *intent,
+                              int group_idx,
+                              uint8_t out[VAULT_HASH256_LEN]) {
     uint8_t vault_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN], claim_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-    if (!vault_build_vault_utxo_scriptpubkey(intent, vault_spk) ||
+    if (!vault_build_vault_utxo_scriptpubkey(intent, group_idx, vault_spk) ||
         !vault_build_depositor_claim_scriptpubkey(intent, claim_spk)) {
         memset(out, 0, VAULT_HASH256_LEN);
         return false;
@@ -645,10 +670,10 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     memcpy(tx + off, intent->prepegin_txid, VAULT_HASH256_LEN);
     off += 32;
     /* prevout index (LE) */
-    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout);
-    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout >> 8);
-    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout >> 16);
-    tx[off++] = (uint8_t) (intent->groups[0].htlc_vout >> 24);
+    tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout);
+    tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout >> 8);
+    tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout >> 16);
+    tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout >> 24);
     /* scriptSig: empty */
     tx[off++] = 0u;
     /* sequence (LE) */
@@ -660,19 +685,20 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent, uint8_t out[VAULT_HA
     /* output count: 3 */
     tx[off++] = 3u;
     /* output 0: Vault UTXO */
-    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (intent->groups[0].vault_amount >> (i * 8));
+    for (int i = 0; i < 8; i++)
+        tx[off++] = (uint8_t) (intent->groups[group_idx].vault_amount >> (i * 8));
     tx[off++] = (uint8_t) sizeof(vault_spk);
     memcpy(tx + off, vault_spk, sizeof(vault_spk));
     off += sizeof(vault_spk);
     /* output 1: Depositor Claim */
     for (int i = 0; i < 8; i++)
-        tx[off++] = (uint8_t) (intent->groups[0].depositor_claim_value >> (i * 8));
+        tx[off++] = (uint8_t) (intent->groups[group_idx].depositor_claim_value >> (i * 8));
     tx[off++] = (uint8_t) sizeof(claim_spk);
     memcpy(tx + off, claim_spk, sizeof(claim_spk));
     off += sizeof(claim_spk);
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
     for (int i = 0; i < 8; i++)
-        tx[off++] = (uint8_t) (intent->groups[0].pegin_anchor_value >> (i * 8));
+        tx[off++] = (uint8_t) (intent->groups[group_idx].pegin_anchor_value >> (i * 8));
     tx[off++] = 4u; /* script length */
     tx[off++] = 0x51u;
     tx[off++] = 0x02u;

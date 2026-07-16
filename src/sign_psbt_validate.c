@@ -238,7 +238,7 @@ static bool _validate_display_prepegin(
 
     /* 6-7-8. Reconstruct expected HTLC scriptPubKey and compare */
     uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-    if (!vault_build_htlc_scriptpubkey(intent, G_vault_context.htlc_hashlock[0], expected_spk)) {
+    if (!vault_build_htlc_scriptpubkey(intent, 0, G_vault_context.htlc_hashlock[0], expected_spk)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -709,6 +709,7 @@ static bool _pegin_check_leaf0_script(dispatcher_context_t *dc,
      * so we never overwrite Leaf 0, eliminating a second vault_build_htlc_leaf0 call. */
     memset(G_scratch.leaf_check.expected_script, 0, VAULT_SCRIPT_MAX_LEN);
     int l0_len = vault_build_htlc_leaf0(intent,
+                                        0,
                                         G_vault_context.htlc_hashlock[0],
                                         G_scratch.leaf_check.expected_script,
                                         VAULT_SCRIPT_MAX_LEN);
@@ -873,7 +874,7 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
 
     /* 7. TAP_MERKLE_ROOT must match vault_build_htlc_merkle_root */
     uint8_t expected_root[VAULT_HASH256_LEN];
-    if (!vault_build_htlc_merkle_root(intent, G_vault_context.htlc_hashlock[0], expected_root)) {
+    if (!vault_build_htlc_merkle_root(intent, 0, G_vault_context.htlc_hashlock[0], expected_root)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -901,6 +902,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
                                     sign_psbt_state_t *st,
                                     const vault_intent_t *intent,
                                     uint64_t htlc_value) {
+    const int group_idx = 0;
     /* 1. Output 0: Vault UTXO scriptPubKey and amount */
     uint8_t spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t amount;
@@ -910,9 +912,9 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    if (!vault_build_vault_utxo_scriptpubkey(intent, expected_spk) ||
+    if (!vault_build_vault_utxo_scriptpubkey(intent, group_idx, expected_spk) ||
         memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0 ||
-        amount != intent->groups[0].vault_amount) {
+        amount != intent->groups[group_idx].vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -924,7 +926,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     }
     if (!vault_build_depositor_claim_scriptpubkey(intent, expected_spk) ||
         memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0 ||
-        amount != intent->groups[0].depositor_claim_value) {
+        amount != intent->groups[group_idx].depositor_claim_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -947,7 +949,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (read_u64_le(raw_amount, 0) != intent->groups[0].pegin_anchor_value) {
+        if (read_u64_le(raw_amount, 0) != intent->groups[group_idx].pegin_anchor_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -967,17 +969,19 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
 
     /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <=
      * pegin_max_fee.  Two-step addition to catch both possible wraps independently. */
-    uint64_t outputs_sum = intent->groups[0].vault_amount + intent->groups[0].depositor_claim_value;
-    if (outputs_sum < intent->groups[0].vault_amount) {
+    uint64_t outputs_sum =
+        intent->groups[group_idx].vault_amount + intent->groups[group_idx].depositor_claim_value;
+    if (outputs_sum < intent->groups[group_idx].vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    outputs_sum += intent->groups[0].pegin_anchor_value;
-    if (outputs_sum < intent->groups[0].pegin_anchor_value) {
+    outputs_sum += intent->groups[group_idx].pegin_anchor_value;
+    if (outputs_sum < intent->groups[group_idx].pegin_anchor_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    if (htlc_value < outputs_sum || (htlc_value - outputs_sum) > intent->groups[0].pegin_max_fee) {
+    if (htlc_value < outputs_sum ||
+        (htlc_value - outputs_sum) > intent->groups[group_idx].pegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1165,7 +1169,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * vault_compute_pegin_txid uses G_scratch.script_scratch — call before
      * any use of G_scratch.leaf_check.expected_script (same memory). */
     uint8_t computed_pegin_txid[VAULT_HASH256_LEN];
-    if (!vault_compute_pegin_txid(intent, computed_pegin_txid)) {
+    if (!vault_compute_pegin_txid(intent, 0, computed_pegin_txid)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1229,6 +1233,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * vault_build_vault_utxo_leaf writes directly to buf without touching G_scratch. */
     {
         int leaf_len = vault_build_vault_utxo_leaf(intent,
+                                                   0,
                                                    G_scratch.leaf_check.expected_script,
                                                    VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
@@ -1288,6 +1293,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * Input 0 checks are complete). */
     {
         int leaf_len = vault_build_assert0_payout_leaf(intent,
+                                                       0,
                                                        claimer_idx,
                                                        G_scratch.leaf_check.expected_script,
                                                        VAULT_SCRIPT_MAX_LEN);
