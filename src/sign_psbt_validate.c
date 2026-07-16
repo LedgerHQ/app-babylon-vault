@@ -902,6 +902,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
                                     sign_psbt_state_t *st,
                                     const vault_intent_t *intent,
                                     uint64_t htlc_value) {
+    const int group_idx = 0;
     /* 1. Output 0: Vault UTXO scriptPubKey and amount */
     uint8_t spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t amount;
@@ -911,9 +912,9 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    if (!vault_build_vault_utxo_scriptpubkey(intent, 0, expected_spk) ||
+    if (!vault_build_vault_utxo_scriptpubkey(intent, group_idx, expected_spk) ||
         memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0 ||
-        amount != intent->groups[0].vault_amount) {
+        amount != intent->groups[group_idx].vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -925,7 +926,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
     }
     if (!vault_build_depositor_claim_scriptpubkey(intent, expected_spk) ||
         memcmp(spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0 ||
-        amount != intent->groups[0].depositor_claim_value) {
+        amount != intent->groups[group_idx].depositor_claim_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -948,7 +949,7 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (read_u64_le(raw_amount, 0) != intent->groups[0].pegin_anchor_value) {
+        if (read_u64_le(raw_amount, 0) != intent->groups[group_idx].pegin_anchor_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -968,17 +969,19 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
 
     /* 4. Fee: htlc_value >= vault_amount + depositor_claim_value + anchor, remainder <=
      * pegin_max_fee.  Two-step addition to catch both possible wraps independently. */
-    uint64_t outputs_sum = intent->groups[0].vault_amount + intent->groups[0].depositor_claim_value;
-    if (outputs_sum < intent->groups[0].vault_amount) {
+    uint64_t outputs_sum =
+        intent->groups[group_idx].vault_amount + intent->groups[group_idx].depositor_claim_value;
+    if (outputs_sum < intent->groups[group_idx].vault_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    outputs_sum += intent->groups[0].pegin_anchor_value;
-    if (outputs_sum < intent->groups[0].pegin_anchor_value) {
+    outputs_sum += intent->groups[group_idx].pegin_anchor_value;
+    if (outputs_sum < intent->groups[group_idx].pegin_anchor_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    if (htlc_value < outputs_sum || (htlc_value - outputs_sum) > intent->groups[0].pegin_max_fee) {
+    if (htlc_value < outputs_sum ||
+        (htlc_value - outputs_sum) > intent->groups[group_idx].pegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }

@@ -295,6 +295,7 @@ int vault_build_vault_utxo_leaf(const vault_intent_t *intent,
                                 int group_idx,
                                 uint8_t *buf,
                                 int buf_max) {
+    if (group_idx < 0 || group_idx >= (int) intent->vault_count) return -1;
     int off = 0, r;
 
     if (off + 34 > buf_max) return -1;
@@ -348,6 +349,7 @@ int vault_build_htlc_leaf0(const vault_intent_t *intent,
                            const uint8_t h[VAULT_HASH256_LEN],
                            uint8_t *buf,
                            int buf_max) {
+    if (group_idx < 0 || group_idx >= (int) intent->vault_count) return -1;
     int off = 0, r;
 
     /* OP_SIZE <32> OP_EQUALVERIFY */
@@ -458,6 +460,7 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
                                     int claimer_idx,
                                     uint8_t *buf,
                                     int buf_max) {
+    if (group_idx < 0 || group_idx >= (int) intent->vault_count) return -1;
     if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count) return -1;
 
     /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.

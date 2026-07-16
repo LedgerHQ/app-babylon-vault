@@ -33,6 +33,7 @@ static vault_intent_t make_n1m1(void) {
     memset(intent.groups[0].vault_provider_pk, 0x02, 32);
     memset(intent.keeper_pks[0],     0x03, 32);
     memset(intent.challenger_pks[0], 0x04, 32);
+    intent.vault_count           = 1;
     intent.keeper_count          = 1;
     intent.challenger_count      = 1;
     /* 144 = 0x90: high bit set → requires sign byte in Script push */
@@ -760,6 +761,7 @@ static vault_intent_t make_vault_a(void) {
     memcpy(intent.challenger_pks[0], s_challenger_pk0,    32);
     memcpy(intent.challenger_pks[1], s_challenger_pk1,    32);
     memcpy(intent.challenger_pks[2], s_challenger_pk2,    32);
+    intent.vault_count           = 1;
     intent.keeper_count          = 3;
     intent.challenger_count      = 3;
     intent.htlc_refund_timelock  = 432;
