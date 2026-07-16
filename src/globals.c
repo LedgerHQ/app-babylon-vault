@@ -29,6 +29,7 @@
 //                                         tap_leaf_script_state_t tls: 2636 B — in union, no growth
 //   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
 //                                       ≤ 10232 B  (well within remaining SRAM after min stack)
+// display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
 // ---------------------------------------------------------------------------
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,

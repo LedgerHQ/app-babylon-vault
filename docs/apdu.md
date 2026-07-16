@@ -130,11 +130,11 @@ transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
 
 | SW       | Condition |
 |----------|-----------|
-| `0x6A80` | Duplicate tag, unknown tag, field validation failure, wrong field length, key ordering/uniqueness violation, extra keys beyond declared count |
+| `0x6A80` | Duplicate tag, unknown tag, field validation failure, wrong field length, key ordering/uniqueness violation, extra keys beyond declared count, extra vault groups beyond `vault_count`, `htlc_vout` not strictly ascending across groups, depositor path in intent does not match path used in `DERIVE_CONTEXT_HASH` |
 | `0x6A86` | P1 is not `0x00`, `0x01`, or `0x02` |
 | `0x6A87` | P1=0x01 payload length is not a multiple of 32 |
 | `0x6985` | User rejected the approval screen |
-| `0xB007` | P1=0x01 or P1=0x02 received out of sequence (e.g. P1=0x01 before all P1=0x02 groups) |
+| `0xB007` | P1=0x01 or P1=0x02 received out of sequence (e.g. P1=0x01 before all P1=0x02 groups, or P1=0x01 before `DERIVE_CONTEXT_HASH` completes) |
 | `0x6F00` | BIP-32 derivation of depositor key failed |
 
 ---

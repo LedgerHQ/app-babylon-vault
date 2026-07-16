@@ -45,7 +45,7 @@ from .vault_client import (
 from .instructions import (
     vault_intent_reject_instructions,
     vault_intent_skip_instructions,
-    vault_intent_1k1c_steps,
+    vault_intent_steps,
 )
 
 ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
@@ -118,7 +118,7 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
         groups=[_group()],
         path=ROOT_SCREENSHOT_PATH,
         test_case_name="vault_intent/approve_" + bitcoin_network,
-        n_swipes=vault_intent_1k1c_steps(device),
+        n_swipes=vault_intent_steps(device, 1, 1),
     )
 
 
@@ -146,7 +146,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
             navigator.navigate_and_compare(
                 path=ROOT_SCREENSHOT_PATH,
                 test_case_name="vault_intent/reject_" + bitcoin_network,
-                instructions=vault_intent_reject_instructions(device, vault_intent_1k1c_steps(device)),
+                instructions=vault_intent_reject_instructions(device, vault_intent_steps(device, 1, 1)),
                 screen_change_before_first_instruction=True,
             )
     assert exc.value.status == SW_DENY

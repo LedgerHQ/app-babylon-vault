@@ -280,7 +280,13 @@ def derive_for_intent(client: "RaggerClient",
 
     Convenience wrapper for test suites that need to reach HASH_DERIVED before
     APPROVE_VAULT_INTENT.  Returns the 32-byte root.
+
+    The small sleep absorbs the Speculos startup race: the first APDU after
+    launch can return SW_BIP32_FAIL (0x6f00) if BIP32 key material hasn't
+    finished loading yet.
     """
+    import time
+    time.sleep(0.1)
     ct = 0 if bitcoin_network == "main" else 1
     return derive_context_hash(client, VAULT_APP_NAME, depositor_path(ct), context, navigator, device)
 
@@ -397,7 +403,7 @@ def approve_vault_intent_with_nav(
 
     When path and test_case_name are provided, snapshot comparison is performed:
       - If n_swipes is given, navigate_and_compare is used with an explicit instruction
-        list (deterministic — use instructions.vault_intent_1k1c_steps(device) for
+        list (deterministic — use instructions.vault_intent_steps(device, 1, 1) for
         standard 1K+1C data).
       - If n_swipes is None, navigate_until_text_and_compare is used (timing-sensitive).
     When path is None, navigate_until_text is used (no comparison).
