@@ -181,9 +181,9 @@ bool sign_custom_inputs(
         }
 
         int leaf_len = vault_build_vault_utxo_leaf(intent,
-                                                    sgi,
-                                                    G_scratch.script_scratch,
-                                                    VAULT_SCRIPT_MAX_LEN);
+                                                   sgi,
+                                                   G_scratch.script_scratch,
+                                                   VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
