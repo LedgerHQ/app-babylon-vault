@@ -299,7 +299,8 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
      * AND the intent carries a non-zero prepegin_txid.  Without this transition the
      * sign_psbt dispatch can never reach _validate_pegin. */
     const uint8_t zeros[VAULT_HASH256_LEN] = {0};
-    if (memcmp(G_vault_context.htlc_hashlock[G_vault_intent.vault_count - 1],
+    if (G_vault_intent.vault_count > 0 &&
+        memcmp(G_vault_context.htlc_hashlock[G_vault_intent.vault_count - 1],
                zeros,
                VAULT_HASH256_LEN) != 0 &&
         memcmp(G_vault_intent.prepegin_txid, zeros, VAULT_HASH256_LEN) != 0) {
