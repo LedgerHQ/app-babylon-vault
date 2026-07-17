@@ -53,6 +53,7 @@ SW_INCORRECT_DATA    = _HexInt(0x6A80)
 SW_WRONG_DATA_LENGTH = _HexInt(0x6A87)
 SW_WRONG_P1P2        = _HexInt(0x6A86)
 SW_BAD_STATE         = _HexInt(0xB007)
+SW_BAD_CPFP_ANCHOR   = _HexInt(0xB009)
 
 # P1=0x00 scalar tag byte assignments — must match src/vault_intent_tags.h
 # Tags 0x04–0x07, 0x09, 0x0D were per-vault scalars in v18; rejected by firmware whitelist since v19.

@@ -35,6 +35,7 @@ from test_utils.taproot import tagged_hash, taproot_tweak_pubkey, ser_script, pu
 from .vault_client import (
     SW_DENY,
     SW_BAD_STATE,
+    SW_BAD_CPFP_ANCHOR,
     SW_INCORRECT_DATA,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
@@ -2349,3 +2350,131 @@ def test_sign_psbt_pegin_max_participants(
     # Valid max-size PegIn: validation passes and sign_custom_inputs signs Leaf 0 → SW_OK.
     result = client.sign_psbt(psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
+
+
+# ===========================================================================
+# CPFP anchor key validation (NAPPS-1445)
+# ===========================================================================
+
+def test_sign_psbt_payout_vp_wrong_cpfp_anchor_key(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """VP Payout fails with SW_BAD_CPFP_ANCHOR when Out2 scriptPubKey uses the wrong key."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    # Out2 is the VP CPFP anchor; replace its script with a different (wrong) key.
+    wrong_key = TEST_VALID_KEYS[2]
+    psbt.tx.vout[2] = CTxOut(VAULT_DUST_LIMIT, _bip86_p2tr_spk(wrong_key))
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_BAD_CPFP_ANCHOR
+
+
+def test_sign_psbt_payout_vk_wrong_cpfp_anchor_key(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """VK Payout fails with SW_BAD_CPFP_ANCHOR when Out1 scriptPubKey uses the wrong key."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    # VP payout first to advance payout_index to 1 (VK turn).
+    vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    client.sign_psbt(vp_psbt, dummy_wallet, None)
+
+    # VK payout with a tampered CPFP anchor key in Out1.
+    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
+    wrong_key = TEST_VALID_KEYS[2]
+    vk_psbt.tx.vout[1] = CTxOut(VAULT_DUST_LIMIT, _bip86_p2tr_spk(wrong_key))
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(vk_psbt, dummy_wallet, None)
+    assert exc.value.status == SW_BAD_CPFP_ANCHOR
+
+
+# ===========================================================================
+# 3-vault batch iteration (NAPPS-1445)
+# ===========================================================================
+
+def test_sign_psbt_payout_3vault_batch(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """3-vault batch: SESSION2_COMPLETE is set only after all 3 groups' payouts are signed.
+
+    Uses uniform groups (same vault_amount/commission_fee, htlc_vout = 0/1/2) to keep
+    the PSBT builders simple.  Verifies that intermediate group completions leave the
+    device in PAYOUT_EXPECTED and that a post-complete attempt returns SW_BAD_STATE.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    # Derive root and approve a 3-vault Session-2 intent with uniform group parameters.
+    global _DERIVED_ROOT
+    _DERIVED_ROOT = derive_context_hash(
+        client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
+    )
+    hashlock_0 = vault_hashlock(_DERIVED_ROOT, 0)
+    scalars_tlv = build_intent_tlv(
+        coin_type=coin_type,
+        base_fee_rate=_BASE_FEE_RATE,
+        pegin_csv_timelock=_PEGIN_CSV_TIMELOCK,
+        payout_timelock=_PAYOUT_TIMELOCK,
+        prepegin_txid=_PREPEGIN_TXID,
+        htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
+        depositor_path=depositor_path(coin_type),
+        keeper_count=len(_TEST_KEEPER_PKS),
+        challenger_count=len(_TEST_CHALLENGER_PKS),
+        vault_count=3,
+    )
+    uniform_groups = [
+        build_group_tlv(
+            htlc_vout=i,
+            vault_provider_pk=TEST_VP_KEY,
+            vault_amount=_VAULT_AMOUNT,
+            commission_fee=_COMMISSION_FEE,
+            depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
+            pegin_max_fee=_PEGIN_MAX_FEE,
+        )
+        for i in range(3)
+    ]
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=uniform_groups,
+    )
+
+    # PegIn for group 0 only (multi-vault PegIn for groups 1/2 is not yet implemented).
+    pegin_psbt = _build_pegin_psbt(dep_pk, hashlock_0, _PREPEGIN_TXID, htlc_vout=0)
+    client.sign_psbt(pegin_psbt, dummy_wallet, None)
+
+    # Sign all N+1 payouts for each of the 3 groups in order.
+    # claimer_idx 0 = VP; 1..keeper_count = VK_i.
+    for gi in range(3):
+        for ci in range(len(_TEST_KEEPER_PKS) + 1):
+            psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci, htlc_vout=gi)
+            result = client.sign_psbt(psbt, dummy_wallet, None)
+            _assert_single_schnorr_sig(result, dep_pk)
+
+    # SESSION2_COMPLETE is now set; any further payout must be rejected.
+    extra_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0, htlc_vout=0)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(extra_psbt, dummy_wallet, None)
+    assert exc.value.status == SW_BAD_STATE
