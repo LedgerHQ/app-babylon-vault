@@ -152,11 +152,13 @@ static void test_transition_session1_back_to_intent_loaded(void **state) {
     vault_context_init(&ctx);
     ctx.state = VAULT_STATE_SESSION1_PREPEGIN_EXPECTED;
 
+    /* SESSION1_PREPEGIN_EXPECTED is terminal — no forward transition is defined;
+     * vault_context_transition must reject this edge and invalidate the context. */
     bool ok = vault_context_transition(&ctx,
                                        VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
                                        VAULT_STATE_INTENT_LOADED);
-    assert_true(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_INTENT_LOADED);
+    assert_false(ok);
+    assert_int_equal(ctx.state, VAULT_STATE_IDLE);
 }
 
 static void test_transition_intent_loaded_to_session2_pegin(void **state) {
@@ -204,10 +206,12 @@ static void test_transition_session2_complete_to_idle(void **state) {
     vault_context_init(&ctx);
     ctx.state = VAULT_STATE_SESSION2_COMPLETE;
 
+    /* SESSION2_COMPLETE is terminal — no forward transition is defined;
+     * vault_context_transition must reject this edge and invalidate the context. */
     bool ok = vault_context_transition(&ctx,
                                        VAULT_STATE_SESSION2_COMPLETE,
                                        VAULT_STATE_IDLE);
-    assert_true(ok);
+    assert_false(ok);
     assert_int_equal(ctx.state, VAULT_STATE_IDLE);
 }
 
