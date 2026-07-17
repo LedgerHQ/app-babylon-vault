@@ -318,6 +318,10 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
  * ---------------------------------------------------------------------- */
 
 void handler_approve_vault_intent(dispatcher_context_t *dc, const command_t *cmd) {
+    if (cmd->p2 != 0x00) {
+        SEND_SW(dc, SW_WRONG_P1P2);
+        return;
+    }
     switch (cmd->p1) {
         case P1_SCALARS:
             handle_scalar_payload(dc, cmd);

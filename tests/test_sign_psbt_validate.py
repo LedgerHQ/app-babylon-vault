@@ -476,6 +476,21 @@ def _build_groups_tlv_3vault() -> List[bytes]:
     ]
 
 
+def _build_groups_tlv_2vault() -> List[bytes]:
+    """Two vault group TLVs at htlc_vouts [0, 1]."""
+    return [
+        build_group_tlv(
+            htlc_vout=i,
+            vault_provider_pk=TEST_VP_KEY,
+            vault_amount=_VAULT_AMOUNT,
+            commission_fee=_COMMISSION_FEE,
+            depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
+            pegin_max_fee=_PEGIN_MAX_FEE,
+        )
+        for i in range(2)
+    ]
+
+
 def _setup_s1_state_3vault(
     client: "RaggerClient",
     navigator: "Navigator",
@@ -629,6 +644,43 @@ def _setup_s2_state(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,
         groups=[_build_group_for_test()],
+    )
+    return hashlock
+
+
+def _setup_s2_state_2vault(
+    client: "RaggerClient",
+    navigator: "Navigator",
+    device,
+    coin_type: int,
+) -> bytes:
+    """Derive root + approve 2-vault Session-2 intent. Returns the hashlock for group 0.
+
+    After this call the device is in VAULT_STATE_SESSION2_PEGIN_EXPECTED.
+    Uses vault_count=2 to exercise the I3 index arithmetic
+    (htlc_hashlock[vault_count-1] vs htlc_hashlock[0]).
+    """
+    global _DERIVED_ROOT
+    _DERIVED_ROOT = derive_context_hash(
+        client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
+    )
+    hashlock = vault_hashlock(_DERIVED_ROOT, 0)  # group 0 htlc_vout=0
+    scalars_tlv = build_intent_tlv(
+        coin_type=coin_type,
+        base_fee_rate=_BASE_FEE_RATE,
+        pegin_csv_timelock=_PEGIN_CSV_TIMELOCK,
+        payout_timelock=_PAYOUT_TIMELOCK,
+        prepegin_txid=_PREPEGIN_TXID,
+        htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
+        depositor_path=depositor_path(coin_type),
+        keeper_count=len(_TEST_KEEPER_PKS),
+        challenger_count=len(_TEST_CHALLENGER_PKS),
+        vault_count=2,
+    )
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=_build_groups_tlv_2vault(),
     )
     return hashlock
 
@@ -1244,6 +1296,33 @@ def test_sign_psbt_pegin_wrong_htlc_vout(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_session2_direct_jump_2vault(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Session-2 direct jump fires correctly when vault_count=2.
+
+    Regression guard for the I3 fix: the transition condition in handle_key_batch
+    checks htlc_hashlock[vault_count-1] (the last derived slot), not htlc_hashlock[0].
+    With vault_count=1 those are the same index; vault_count=2 distinguishes them.
+
+    If the jump fires, the device enters SESSION2_PEGIN_EXPECTED and PegIn succeeds.
+    If it did not fire (INTENT_LOADED instead), the dispatch would reach _validate_pegin
+    for a no-wallet-policy PSBT and fail with SW_INCORRECT_DATA on input structure.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state_2vault(client, navigator, device, coin_type)
+
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
 
 
 # ===========================================================================

@@ -41,7 +41,7 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
 
-/* Bounds guard for every helper that takes a group_idx and indexes into
+/* Bounds guard for functions that receive group_idx as a parameter and index
  * htlc_hashlock[] or intent->groups[].  vault_count ∈ [1, VAULT_MAX_VAULTS]
  * is enforced at parse time, so the upper check also implies gi < VAULT_MAX_VAULTS. */
 #define ASSERT_GROUP_IDX(dc, intent, gi)                                \
@@ -286,7 +286,11 @@ static bool _validate_prepegin(
     expected_anchor_spk[1] = 0x20;  // OP_PUSHBYTES_32
     memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
 
-    /* vault_count ∈ [1, VAULT_MAX_VAULTS] is enforced at parse time; subtraction is safe. */
+    /* Assert vault_count ∈ [1, VAULT_MAX_VAULTS] enforced at parse time.
+     * Guards against a false-positive [security.ArrayBound] warning: the analyzer cannot
+     * prove the invariant across the parse/validate boundary and flags the -1 index path. */
+    LEDGER_ASSERT(intent->vault_count >= 1 && intent->vault_count <= VAULT_MAX_VAULTS,
+                  "vault_count out of range");
     const unsigned int max_htlc_vout = intent->groups[intent->vault_count - 1].htlc_vout;
 
     bool anchor_found = false;
@@ -986,6 +990,10 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     }
 
     const vault_intent_t *intent = &G_vault_intent;
+    /* PegIn is scoped to group 0: it spends groups[0].htlc_vout of the Pre-PegIn
+     * transaction identified by intent->prepegin_txid.  A multi-vault Pre-PegIn
+     * creates N HTLC outputs; signing the remaining groups[1..N-1] via PegIn is
+     * not yet implemented — those HTLCs are recovered via Refund in the interim. */
     const int group_idx = 0;
 
     if (st->tx_version < 2 || st->locktime != 0) {
