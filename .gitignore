@@ -45,6 +45,9 @@ doc/latex
 tests/snapshots-tmp
 
 
-# local 
+# local
 /tmp/
 /scripts_local/
+
+# Build dry-run artefact
+build_dry_run_output.txt

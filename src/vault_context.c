@@ -45,13 +45,17 @@ static inline bool vault_transition_allowed(vault_state_t from, vault_state_t to
             return (to == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED ||
                     to == VAULT_STATE_SESSION2_PEGIN_EXPECTED);
         case VAULT_STATE_SESSION1_PREPEGIN_EXPECTED:
-            return (to == VAULT_STATE_INTENT_LOADED);
+            /* Terminal within the session: no forward transition is defined.
+             * The only exit is vault_context_invalidate (full reset to IDLE). */
+            return false;
         case VAULT_STATE_SESSION2_PEGIN_EXPECTED:
             return (to == VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
         case VAULT_STATE_SESSION2_PAYOUT_EXPECTED:
             return (to == VAULT_STATE_SESSION2_COMPLETE);
         case VAULT_STATE_SESSION2_COMPLETE:
-            return (to == VAULT_STATE_IDLE);
+            /* Terminal state: no forward transition is defined.
+             * The only exit is vault_context_invalidate (full reset to IDLE). */
+            return false;
             /* no default */
     }
     return false; /* unreachable; satisfies -Wreturn-type */

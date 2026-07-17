@@ -533,3 +533,4 @@ def sign_psbt_with_nav_and_compare(
         client.sign_psbt(psbt, wallet, wallet_hmac, navigator, testname=testname)
     finally:
         del client.ragger_navigate
+
