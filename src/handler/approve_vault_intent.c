@@ -263,10 +263,16 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
-    if (!vault_derive_hashlock_commitment(G_vault_context.root,
-                                          G_vault_intent.groups[0].htlc_vout,
-                                          G_vault_context.htlc_hashlock[0]) ||
-        !vault_derive_auth_anchor_commitment(G_vault_context.root,
+    for (uint8_t gi = 0; gi < G_vault_intent.vault_count; gi++) {
+        if (!vault_derive_hashlock_commitment(G_vault_context.root,
+                                              G_vault_intent.groups[gi].htlc_vout,
+                                              G_vault_context.htlc_hashlock[gi])) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_BAD_STATE);
+            return;
+        }
+    }
+    if (!vault_derive_auth_anchor_commitment(G_vault_context.root,
                                              G_vault_context.auth_anchor_hash)) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);
@@ -293,7 +299,9 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
      * AND the intent carries a non-zero prepegin_txid.  Without this transition the
      * sign_psbt dispatch can never reach _validate_pegin. */
     const uint8_t zeros[VAULT_HASH256_LEN] = {0};
-    if (memcmp(G_vault_context.htlc_hashlock[0], zeros, VAULT_HASH256_LEN) != 0 &&
+    if (memcmp(G_vault_context.htlc_hashlock[G_vault_intent.vault_count - 1],
+               zeros,
+               VAULT_HASH256_LEN) != 0 &&
         memcmp(G_vault_intent.prepegin_txid, zeros, VAULT_HASH256_LEN) != 0) {
         if (!vault_context_transition(&G_vault_context,
                                       VAULT_STATE_INTENT_LOADED,
