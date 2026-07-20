@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - NAPPS-1442–1445: Multi-vault end-to-end — P1=0x02 approval, script group-indexing, validation, payout & signing
+
+Completes multi-vault support across the full session flow for `vault_count > 1`.
+NAPPS-1442 wired the P1=0x02 handler and streaming display; NAPPS-1443 made all script
+builders group-index-aware; NAPPS-1444 extended Pre-PegIn/PegIn validation over all
+groups; NAPPS-1445 extended payout validation and signing and fixed the
+`vault_group_index` cursor reset at the PegIn→Payout transition.
+
+### Added
+
+- **Streaming vault-group review** (`vault_stream_group`, `display.c`): each vault group
+  is presented as a separate NBGL streaming segment with a `"N of M"` header and 6 fields
+  (VP key, vault amount, commission fee, depositor claim, max PegIn fee).  The display path
+  is uniform for all `vault_count` values — single-vault intents also go through
+  `vault_stream_group`.  File-scope static buffers keep NBGL pointers live across
+  `io_ui_process` callbacks.
+- **`group_idx` parameter** on all vault script builders: `vault_build_vault_utxo_leaf`,
+  `vault_build_vault_utxo_scriptpubkey`, `vault_build_assert0_payout_leaf` (also gains
+  `claimer_idx`), `vault_build_htlc_leaf0`, `vault_build_htlc_merkle_root`,
+  `vault_build_htlc_scriptpubkey`, `vault_compute_pegin_txid`.  Each selects
+  `intent->groups[group_idx]` fields; bounds-checked by `ASSERT_GROUP_IDX`.
+- `SW_BAD_CPFP_ANCHOR` (0xB009): distinct status word for CPFP anchor output scriptPubKey
+  mismatches, differentiating them from generic `SW_INCORRECT_DATA`.
+- Ragger integration tests for multi-vault (2-vault) Pre-PegIn, PegIn, and payout
+  sequences including happy paths, wrong-group, and state-ordering violations.
+
+### Changed
+
+- **Pre-PegIn validator**: iterates all `vault_count` groups; `htlc_hashlock[gi]` is
+  computed per group from the derived root and the group's `htlc_vout`.
+- **PegIn validator**: uses the per-group HTLC txid and scripts for each group.
+- **`_validate_payout`**: uses `vault_group_index` as the current-group cursor for all
+  per-group fields.  `ASSERT_GROUP_IDX` guards the cursor before every group access.
+  After the last claimer of a group (`payout_index > keeper_count`), `payout_index` resets
+  to 0 and `vault_group_index` increments; `SESSION2_COMPLETE` is set only once
+  `vault_group_index` reaches `vault_count`.
+- **`sign_custom_inputs`**: vault UTXO leaf and scriptPubKey are built for `sgi`; when
+  `payout_index` is 0 the group advance has already happened so `sgi = vault_group_index - 1`.
+- **PegIn→Payout transition**: `vault_group_index` reset to 0 in `sign_custom_inputs` so
+  the payout cursor starts at group 0 regardless of how many groups were ingested.
+
+---
+
 ## [0.6.0] - NAPPS-1441: DERIVE_CONTEXT_HASH rev 2.1 — multi-chunk streaming, P2 mode, Screen 1
 
 Upgrades `DERIVE_CONTEXT_HASH` (INS `0x81`) to the rev 2.1 wire format: chunked context
@@ -40,12 +83,94 @@ that displays the requesting app name.
   reset-during-streaming, max context (1024 B) correctness, screen snapshot, and user
   rejection.
 
-## [0.5.0] - NAPPS-1440: v19 data model — per-vault group struct, TLV layout, context fields
+## [0.5.0] - NAPPS-1376–1422, 1440: Payout validation, signing session, fee-bumpable PegIn, DERIVE_CONTEXT_HASH realignment, signet ticker, v19 data model
 
-Introduces the v19 batch Pre-PegIn data model: up to 10 vault groups per intent, three-phase
-`APPROVE_VAULT_INTENT` protocol (P1=0x00 scalars → P1=0x02 per-vault groups → P1=0x01 keys).
+Omnibus release covering all work between 0.4.0 and the v19 data model.
 
-### Added
+### Added (NAPPS-1376: Payout validation)
+
+- `_validate_payout` in `sign_psbt_validate.c`: validates both Payout PSBT inputs (Vault
+  UTXO + Assert:0 Payout) and all outputs; enforces claimer ordering via `payout_index`;
+  fee bounded by `base_fee_rate * max_vsize`.
+- Real-world Payout cross-validation unit tests against on-chain signet fixtures.
+
+### Security (NAPPS-1376)
+
+- Fixed missing length guard before `memmove` in `_tap_leaf_script_callback`: oversized
+  leaf scripts (> `VAULT_SCRIPT_MAX_LEN`) now set `ambiguous = true` instead of writing
+  past the destination buffer.
+- Deferred PegIn state transition (`SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED`)
+  from `validate_and_display_transaction` to `sign_custom_inputs` (NAPPS-1377), so the
+  state only advances when the HTLC input is actually signed and the host can retry on
+  signing failure.
+- `vault_tlv.c` now rejects `commission_fee < VAULT_DUST_LIMIT` (previously only `0`), so
+  the VP commission payout output can no longer be a below-dust P2TR output.
+
+### Added (NAPPS-1377: Signing session)
+
+- `sign_custom_inputs.c`: full PSBT signing hook — `read_p2tr_witness_utxo` reads and
+  validates the witness UTXO for each custom input, binding the scriptPubKey the sighash
+  commits to against the device-reconstructed script from the approved intent; signs the
+  vault UTXO input (Assert:0 signing follows from payout validation).
+
+### Added (NAPPS-1415: 32 × 32 transaction test vectors)
+
+- Ragger test vectors and fixtures for 32-keeper × 32-challenger intents and
+  depositor-as-claimer scenarios; validates the full signing flow at maximum key counts.
+
+### Changed (NAPPS-1416: Signet ticker)
+
+- The test build (`COIN=babylon_vault_testnet`) now displays amounts with the **`sBTC`**
+  ticker instead of `TEST`.  The base submodule hardcodes `COIN_COINID_SHORT="TEST"`;
+  the app Makefile overrides it at compile time.  App name and `BITCOIN_NETWORK` are
+  unchanged; golden snapshots updated.
+
+### Added (NAPPS-1419: Skip navigation for long intents)
+
+- Skip/fast-forward NBGL navigation callbacks for the vault intent approval screen on
+  touch devices (Stax/Flex); allows stepping past key sections when `keeper_count` or
+  `challenger_count` is large.  Ragger tests for skip flow and snapshots.
+
+### Added (NAPPS-1421: Fee-bumpable PegIn — P2A anchor)
+
+- `vault_intent_t.pegin_anchor_value` (u64, `TAG_PEGIN_ANCHOR_VALUE` 0x12): satoshi value
+  of the P2A anchor output (`OP_1 OP_PUSHBYTES_2 0x4e73`) in the PegIn transaction.
+- `vault_intent_t.htlc_vout` (u8): HTLC output index in the Pre-PegIn transaction; used
+  by `APPROVE_VAULT_INTENT` to recompute the per-vault HKDF-derived hashlock.
+- `_validate_pegin` enforces Output 2 as a valid P2A anchor with `pegin_anchor_value` sats
+  and includes it in the fee-bound sum.
+- `AUTH_ANCHOR_SPK_LEN` (34) static assert: auth-anchor OP_RETURN and P2TR scriptPubKey
+  share the same byte length, allowing `_read_output` to reuse one buffer.
+- `VAULT_TARGET_SIGNET` build sentinel in `vault_constants.h`: forces an explicit
+  `#define` at build time to confirm the target network, preventing a silent
+  testnet3/4 misconfiguration.
+
+### Changed (NAPPS-1422: DERIVE_CONTEXT_HASH realignment — breaking)
+
+- `DERIVE_CONTEXT_HASH` now returns the **32-byte root** instead of a hashlock.  The HKDF
+  `info` is `SHA256(app_name) || SHA256(canonicalNetworkName) || connectedPubkey[33] || context`;
+  `canonicalNetworkName` is `"bitcoin-mainnet"` / `"bitcoin-signet"`.
+- The on-chain HTLC hashlock is `SHA256(HKDF-Expand(root, "hashlock" || I2OSP(htlc_vout, 4)))`.
+  The device recomputes it at `APPROVE_VAULT_INTENT` once `htlc_vout` is known and binds it
+  in Pre-PegIn and PegIn Leaf 0 validation.
+- Session context stores `root` (zeroed on invalidation) instead of the HTLC preimage;
+  `vault_context_t` gains `auth_anchor_hash`.
+
+### Added (NAPPS-1422)
+
+- Pre-PegIn validation requires the shared auth-anchor `OP_RETURN`
+  (`0x6A 0x20 || SHA256(authAnchor)`, value 0) and binds it to the value expanded from
+  the derived root, preventing host substitution.
+- On-device HKDF-Expand commitment helper (`derive_vault_secrets_core.h`) for
+  `"hashlock"` and `"auth-anchor"` labels under the `"babylonbtcvault"` domain tag.
+
+### Removed (NAPPS-1422)
+
+- `RELEASE_CONTEXT_SECRET` (INS `0x82`) and the `SESSION2_COMPLETE` custody gating.
+  The host holds the root; `SESSION2_COMPLETE` is now a terminal state with no
+  secret-release step.
+
+### Added (NAPPS-1440: v19 data model)
 
 - `vault_group_t` struct in `vault_intent.h` holding the 6 per-vault fields: `htlc_vout`,
   `vault_provider_pk`, `vault_amount`, `commission_fee`, `depositor_claim_value`,
@@ -61,98 +186,20 @@ Introduces the v19 batch Pre-PegIn data model: up to 10 vault groups per intent,
   `vault_group_index`, `derivation_path[VAULT_MAX_PATH_DEPTH]`, and `derivation_path_len`.
 - `docs/apdu.md` updated with the three-phase wire format and both tag tables.
 
-### Changed
+### Changed (NAPPS-1440)
 
 - `vault_tlv_parse()` (P1=0x00) now rejects old per-vault scalar tags (`0x04`–`0x07`, `0x09`,
   `0x0D`) via a whitelist bitmask (`VAULT_INTENT_ALL_TAGS_MASK`); those fields must be sent
   in P1=0x02 instead.
 - `TAG_PEGIN_ANCHOR_VALUE` (global scalar) is stored temporarily in `groups[0].pegin_anchor_value`
-  by the P1=0x00 parser; the P1=0x02 handler (NAPPS-1442) propagates it to all groups.
+  by the P1=0x00 parser; the P1=0x02 handler propagates it to all groups.
 - All callers updated to use `groups[0]` for per-vault fields: `vault_script.c`, `display.c`,
   `sign_psbt_validate.c`, `sign_custom_inputs.c`, `approve_vault_intent.c`,
   `approve_vault_intent_core.h`; `htlc_hashlock` references updated to `htlc_hashlock[0]`.
 - `vault_context_t` size budget raised from 128 B to 512 B in `globals.c` (`_Static_assert`)
   to accommodate `htlc_hashlock[10][32]` (320 B).
 - Unit tests in `test_vault_tlv.c` updated: `build_valid_tlv()` emits the 13 scalar tags;
-  3 stale per-vault-in-scalar tests removed; 8 new tests added (vault_count bounds,
-  old-tag rejection, `vault_tlv_parse_group` valid/missing/dust/amount cases).
-
-## [Unreleased] - NAPPS-1422: Realign DERIVE_CONTEXT_HASH with the new babylon-toolkit spec
-
-Realigns `DERIVE_CONTEXT_HASH` (INS `0x81`) to babylon-toolkit `derive-context-hash` rev 2.1
-and `derive-vault-secrets` rev 0.1 (both captured under `docs/specs/`).
-
-### Changed
-
-- `DERIVE_CONTEXT_HASH` now returns the **32-byte root** instead of a hashlock, and takes a
-  single-APDU payload `app_name_len | app_name | path_len | path | context`. The HKDF `info`
-  is `SHA256(app_name) || SHA256(canonicalNetworkName) || connectedPubkey[33] || context`; the
-  device derives `connectedPubkey` from the host-supplied path. `canonicalNetworkName` is
-  `"bitcoin-mainnet"` on the mainnet build and `"bitcoin-signet"` on the testnet/signet build.
-- The on-chain HTLC hashlock is now `SHA256(HKDF-Expand(root, "hashlock" || I2OSP(htlc_vout, 4)))`
-  — **not** `SHA256(root)`. The device recomputes it (and the auth-anchor commitment) from the
-  preserved root at `APPROVE_VAULT_INTENT`, once `htlc_vout` is known, and binds it in Pre-PegIn
-  and PegIn Leaf 0 validation.
-- The session context holds the derived `root` (zeroed on invalidation) instead of an HTLC
-  preimage; `vault_context_t` gains `auth_anchor_hash`.
-
-### Added
-
-- Pre-PegIn validation now **requires** the shared auth-anchor `OP_RETURN`
-  (`0x6A 0x20 || SHA256(authAnchor)`, 34 bytes, **value 0**) and binds it to the value expanded
-  from the derived root, so a host cannot substitute or fund it.
-- On-device HKDF-Expand-only commitment helper (`src/handler/derive_vault_secrets_core.h`) for
-  the `hashlock` and `auth-anchor` labels under the `"babylonbtcvault"` domain tag.
-
-### Removed
-
-- `RELEASE_CONTEXT_SECRET` (INS `0x82`) and the `SESSION2_COMPLETE` custody gating. The device
-  no longer retains or releases a preimage — the host holds the root (returned by
-  `DERIVE_CONTEXT_HASH`) and expands the per-vault secrets itself. `SESSION2_COMPLETE` is now a
-  terminal state.
-
-### Notes
-
-- Batched deposits (multiple HTLC outputs per Pre-PegIn) remain **out of scope**: the intent
-  carries a single `htlc_vout`. The new per-output-keyed secrets are the protocol primitive that
-  would enable batching later.
-
-## [Unreleased] - NAPPS-1416: Signet ticker
-
-### Changed
-
-- The test build (`COIN=babylon_vault_testnet`) now displays amounts with the **`sBTC`**
-  ticker instead of `TEST`. Babylon's test network is Bitcoin signet, which is
-  indistinguishable from testnet on-device (same `tb` prefix, BIP-32 version bytes, coin
-  type 1), so the single testnet build targets signet; the `sBTC` ticker reflects that. The
-  base submodule hardcodes `COIN_COINID_SHORT="TEST"` for the testnet network, so the app
-  Makefile overrides it after the `include` (DEFINES is expanded into `-D` flags at compile
-  time, so the override wins), with no `bitcoin_app_base` change. The official app name is
-  unchanged — it stays "Babylon Vault Testnet" (pinned by the guideline enforcer), as do the
-  `babylon_vault_testnet` variant name and `BITCOIN_NETWORK = testnet`.
-- Golden snapshots updated to show `sBTC` amounts.
-
-## [Unreleased] - NAPPS-1376: Payout validation
-
-### Added
-
-- `_validate_payout` in `sign_psbt_validate.c`: validates both Payout PSBT inputs (Vault UTXO
-  + Assert:0 Payout) and all outputs; enforces claimer ordering via `payout_index`;
-  fee bounded by `base_fee_rate * max_vsize`.
-- Real-world Payout cross-validation unit tests against on-chain signet fixtures.
-
-### Security
-
-- Fixed missing length guard before `memmove` in `_tap_leaf_script_callback`: oversized
-  leaf scripts (> `VAULT_SCRIPT_MAX_LEN`) now set `ambiguous = true` instead of writing
-  past the destination buffer.
-- Deferred PegIn state transition (`SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED`)
-  from `validate_and_display_transaction` to `sign_custom_inputs` (NAPPS-1377), so the
-  state only advances when the HTLC input is actually signed and the host can retry on
-  signing failure.
-- `vault_tlv.c` now rejects `commission_fee < VAULT_DUST_LIMIT` (previously only `0`), so
-  the VP commission payout output can no longer be a below-dust P2TR output, keeping the
-  payout transaction standard/relayable as documented in `vault_constants.h`.
+  3 stale per-vault-in-scalar tests removed; 8 new tests added.
 
 ---
 
