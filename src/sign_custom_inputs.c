@@ -153,6 +153,10 @@ bool sign_custom_inputs(
                                                VAULT_STATE_SESSION2_PEGIN_EXPECTED,
                                                VAULT_STATE_SESSION2_PAYOUT_EXPECTED),
                       "Unreachable: state was confirmed before signing");
+        /* vault_group_index was used as a group-ingestion cursor during
+         * approve_vault_intent and is left at vault_count.  Reset it to 0
+         * so _validate_payout can use it as the payout-group cursor. */
+        G_vault_context.vault_group_index = 0;
         return true;
     }
 
