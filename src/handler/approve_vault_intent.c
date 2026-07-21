@@ -137,8 +137,8 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
 
 /* -------------------------------------------------------------------------
  * P1=0x02 — key batch TLV streaming
- * Each key arrives as a TLV entry: TAG_KEEPER_PK or TAG_CHALLENGER_PK | 0x20 | key[32].
- * Keepers must all arrive before challengers (tag-enforced ordering).
+ * Each entry: tag[2] len=0x20[1] key[32].  TAG_KEEPER_PK entries precede
+ * TAG_CHALLENGER_PK entries (tag-enforced ordering).
  * ---------------------------------------------------------------------- */
 
 static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {

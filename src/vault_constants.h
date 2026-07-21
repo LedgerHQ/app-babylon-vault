@@ -105,8 +105,5 @@
 /** Exclusive upper bound for payout_timelock. */
 #define VAULT_PAYOUT_TIMELOCK_MAX 4032u
 
-/**
- * P2A anchor output value in satoshis (relay-dust floor, 13.07.2026 spec).
- * Fixed at 240 sats for PegIn Output 2. Replaces the removed pegin_anchor_value TLV field.
- */
+/** P2A anchor output value in satoshis (PegIn Output 2). Floored at relay-dust. */
 #define P2A_ANCHOR_VALUE ((uint64_t) 240u)
