@@ -111,8 +111,8 @@ _PEGIN_CSV_TIMELOCK   = 144
 _PAYOUT_TIMELOCK      = 200
 _HTLC_REFUND_TIMELOCK = 144
 _HTLC_VOUT            = 0
-# P2A anchor value sent in the intent (pegin_anchor_value field, TAG 0x12).
-_PEGIN_ANCHOR_VALUE = 546
+# P2A anchor output value in satoshis — must match P2A_ANCHOR_VALUE in vault_constants.h.
+_PEGIN_ANCHOR_VALUE = 240
 
 # htlc_value must be in [vault_amount + depositor_claim_value + anchor,
 #                         vault_amount + depositor_claim_value + anchor + pegin_max_fee]
@@ -1066,7 +1066,7 @@ def test_sign_psbt_prepegin_no_hashlock(
         cla=CLA_VAULT, ins=INS_APPROVE_VAULT_INTENT,
         p1=P1_SCALARS, p2=P2_UNUSED, data=scalars_tlv,
     )
-    # P1=0x01 (key batch) fails — state is IDLE, not HASH_DERIVED.
+    # P1=0x02 (key batch) fails — state is IDLE, not HASH_DERIVED.
     with pytest.raises(ExceptionRAPDU) as exc:
         client.transport_client.exchange(
             cla=CLA_VAULT, ins=INS_APPROVE_VAULT_INTENT,

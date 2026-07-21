@@ -43,7 +43,6 @@ static vault_intent_t make_n1m1(void) {
     intent.payout_timelock       = 200;
     intent.groups[0].vault_amount          = 100000;
     intent.groups[0].depositor_claim_value = 1000;
-    intent.groups[0].pegin_anchor_value    = 240;
     return intent;
 }
 
@@ -626,8 +625,8 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(intent.groups[0].depositor_claim_value >> (i * 8));
     tx[off++] = (uint8_t) VAULT_P2TR_SCRIPTPUBKEY_LEN;
     memcpy(tx + off, claim_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN); off += VAULT_P2TR_SCRIPTPUBKEY_LEN;
-    /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, intent.groups[0].pegin_anchor_value sats) */
-    { uint64_t v = intent.groups[0].pegin_anchor_value; for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(v >> (i * 8)); }
+    /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, P2A_ANCHOR_VALUE sats) */
+    { uint64_t v = P2A_ANCHOR_VALUE; for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(v >> (i * 8)); }
     tx[off++] = 0x04u; tx[off++] = 0x51u; tx[off++] = 0x02u; tx[off++] = 0x4Eu; tx[off++] = 0x73u;
     /* locktime: 0 */
     tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
@@ -854,7 +853,6 @@ static vault_intent_t make_two_group(void) {
     memset(intent.groups[1].vault_provider_pk, 0x20, 32);
     intent.groups[1].vault_amount          = 200000u;
     intent.groups[1].depositor_claim_value = 2000u;
-    intent.groups[1].pegin_anchor_value    = 480u;
     intent.groups[1].htlc_vout             = 1u;
     return intent;
 }
