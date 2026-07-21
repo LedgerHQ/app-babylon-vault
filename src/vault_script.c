@@ -697,8 +697,7 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     memcpy(tx + off, claim_spk, sizeof(claim_spk));
     off += sizeof(claim_spk);
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
-    for (int i = 0; i < 8; i++)
-        tx[off++] = (uint8_t) (P2A_ANCHOR_VALUE >> (i * 8));
+    for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (P2A_ANCHOR_VALUE >> (i * 8));
     tx[off++] = 4u; /* script length */
     tx[off++] = 0x51u;
     tx[off++] = 0x02u;

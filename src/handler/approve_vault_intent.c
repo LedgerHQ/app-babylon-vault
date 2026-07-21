@@ -184,7 +184,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
             return;
         }
 
-        uint16_t tag = (uint16_t)(((uint16_t) cmd->data[pos] << 8) | cmd->data[pos + 1]);
+        uint16_t tag = (uint16_t) (((uint16_t) cmd->data[pos] << 8) | cmd->data[pos + 1]);
         pos += 2;
         uint8_t klen = cmd->data[pos++];
 
@@ -226,8 +226,9 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
             return;
         }
 
-        vault_key_err_t err =
-            vault_validate_and_store_key(&G_vault_intent, G_approve_intent_state.keys_received, key);
+        vault_key_err_t err = vault_validate_and_store_key(&G_vault_intent,
+                                                           G_approve_intent_state.keys_received,
+                                                           key);
         if (err != VAULT_KEY_OK) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);

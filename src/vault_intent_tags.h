@@ -26,10 +26,14 @@
 
 /* --- P1=0x00 scalar tags (12) ------------------------------------------- */
 
-#define TAG_STRUCTURE_TYPE ((uint16_t) 0x0001) /**< u8    — protocol structure type constant         (1 B)    */
-#define TAG_VERSION        ((uint16_t) 0x0002) /**< u8    — protocol version constant                (1 B)    */
-#define TAG_COIN_TYPE      ((uint16_t) 0x0021) /**< u32   — SLIP-44 coin type                        (4 B BE) */
-#define TAG_BASE_FEE_RATE  ((uint16_t) 0x0100) /**< u64   — base fee rate in sat/vbyte               (8 B BE) */
+#define TAG_STRUCTURE_TYPE \
+    ((uint16_t) 0x0001) /**< u8    — protocol structure type constant         (1 B)    */
+#define TAG_VERSION \
+    ((uint16_t) 0x0002) /**< u8    — protocol version constant                (1 B)    */
+#define TAG_COIN_TYPE \
+    ((uint16_t) 0x0021) /**< u32   — SLIP-44 coin type                        (4 B BE) */
+#define TAG_BASE_FEE_RATE \
+    ((uint16_t) 0x0100) /**< u64   — base fee rate in sat/vbyte               (8 B BE) */
 #define TAG_PEGIN_CSV_TIMELOCK \
     ((uint16_t) 0x0101) /**< u32   — vault UTXO CSV timelock P [72, 1008]      (4 B BE) */
 #define TAG_PAYOUT_TIMELOCK \
@@ -40,9 +44,12 @@
     ((uint16_t) 0x0103) /**< u32   — HTLC refund timelock T_refund [72, 1008]   (4 B BE) */
 #define TAG_DEPOSITOR_DERIVATION_PATH \
     ((uint16_t) 0x0069) /**< u32[] — BIP-86 derivation path, exactly 5 levels  (20 B BE) */
-#define TAG_KEEPER_COUNT     ((uint16_t) 0x0104) /**< u8    — number of keeper keys [1, 32]             (1 B)    */
-#define TAG_CHALLENGER_COUNT ((uint16_t) 0x0105) /**< u8    — number of challenger keys [1, 32]         (1 B)    */
-#define TAG_VAULT_COUNT      ((uint16_t) 0x0106) /**< u8    — number of vault groups [1, 10]            (1 B)    */
+#define TAG_KEEPER_COUNT \
+    ((uint16_t) 0x0104) /**< u8    — number of keeper keys [1, 32]             (1 B)    */
+#define TAG_CHALLENGER_COUNT \
+    ((uint16_t) 0x0105) /**< u8    — number of challenger keys [1, 32]         (1 B)    */
+#define TAG_VAULT_COUNT \
+    ((uint16_t) 0x0106) /**< u8    — number of vault groups [1, 10]            (1 B)    */
 
 /* --- P1=0x01 per-vault group tags (6) ------------------------------------ */
 /* Independent tag namespace from P1=0x00; parsed by vault_tlv_parse_group.  */
