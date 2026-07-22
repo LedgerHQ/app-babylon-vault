@@ -68,6 +68,7 @@ TAG_DEPOSITOR_DERIVATION_PATH = 0x0069
 TAG_KEEPER_COUNT              = 0x0104
 TAG_CHALLENGER_COUNT          = 0x0105
 TAG_VAULT_COUNT               = 0x0106
+TAG_PREPEGIN_MAX_FEE          = 0x010F
 
 # P1=0x02 key batch 2-byte tags — must match src/vault_intent_tags.h
 TAG_KEEPER_PK                 = 0x0107
@@ -331,9 +332,10 @@ def build_intent_tlv(
     depositor_path: List[int],
     keeper_count: int,
     challenger_count: int,
+    prepegin_max_fee: int = 500_000,
     vault_count: int = 1,
 ) -> bytes:
-    """Encode the 12 P1=0x00 scalar intent fields into a TLV payload (v21 2-byte tags).
+    """Encode the 13 P1=0x00 scalar intent fields into a TLV payload (v21 2-byte tags).
 
     Per-vault fields are sent in P1=0x01 group APDUs via build_group_tlv().
     Keys are sent in P1=0x02 batch APDUs, each individually tagged.
@@ -350,7 +352,8 @@ def build_intent_tlv(
         _tlv_path (TAG_DEPOSITOR_DERIVATION_PATH, depositor_path)          +
         _tlv_u8   (TAG_KEEPER_COUNT,              keeper_count)            +
         _tlv_u8   (TAG_CHALLENGER_COUNT,          challenger_count)        +
-        _tlv_u8   (TAG_VAULT_COUNT,               vault_count)
+        _tlv_u8   (TAG_VAULT_COUNT,               vault_count)             +
+        _tlv_u64be(TAG_PREPEGIN_MAX_FEE,          prepegin_max_fee)
     )
 
 

@@ -1,9 +1,11 @@
 """
-Snapshot tests for sign_psbt validation screens added in NAPPS-1375.
-Payout validation tests added in NAPPS-1376.
+Validation and snapshot tests for SIGN_PSBT added in NAPPS-1375/1376/1462.
 
-Screen 3 — Refund transaction review: a pure tapscript spend (has_no_wallet_policy=true)
-that shows "Reclaimed amount" and "Transaction fee" fields.
+Covered screens:
+  Screen 3 — Refund: tapscript spend showing "Reclaimed amount" + "Transaction fee".
+  Screen 4 — Claim: depositor claim leaf showing "Amount spent" + "Transaction fee".
+  Screen 5 — Assert: assert leaf showing "Claim txid" + "Amount" + "Transaction fee".
+  Screen 6 — WC: wrongly-challenged tapscript showing "Reclaimed amount" + "Transaction fee".
 
 Run with --golden_run to generate reference snapshots:
 
@@ -422,6 +424,7 @@ def _build_intent_tlv_for_test(
     prepegin_txid: bytes,
     keeper_pks: Optional[List[bytes]] = None,
     challenger_pks: Optional[List[bytes]] = None,
+    prepegin_max_fee: int = 500_000,
 ) -> bytes:
     if keeper_pks is None:
         keeper_pks = _TEST_KEEPER_PKS
@@ -437,6 +440,7 @@ def _build_intent_tlv_for_test(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(keeper_pks),
         challenger_count=len(challenger_pks),
+        prepegin_max_fee=prepegin_max_fee,
         vault_count=1,
     )
 
@@ -514,6 +518,7 @@ def _setup_s1_state_3vault(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
+        prepegin_max_fee=500_000,
         vault_count=3,
     )
     approve_vault_intent_with_nav(
@@ -676,6 +681,7 @@ def _setup_s2_state_2vault(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
+        prepegin_max_fee=500_000,
         vault_count=2,
     )
     approve_vault_intent_with_nav(
@@ -771,7 +777,7 @@ def test_sign_psbt_refund_screen(
 
     psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    tname = "refund/screen_" + bitcoin_network
+    tname = "screen3_refund/screen_" + bitcoin_network
 
     with pytest.raises(ExceptionRAPDU) as exc:
         if device.is_nano:
@@ -789,7 +795,7 @@ def test_sign_psbt_refund_screen(
 # The intent approval (Screen 2) already bound all vault parameters.
 # ===========================================================================
 
-def test_sign_psbt_prepegin_screen(
+def test_sign_psbt_prepegin(
     client: "RaggerClient",
     navigator: Navigator,
     device: Device,
@@ -938,6 +944,7 @@ def test_sign_psbt_prepegin_op_return_before_htlcs(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
+        prepegin_max_fee=500_000,
         vault_count=2,
     )
     groups_tlv = [
@@ -2111,6 +2118,7 @@ def _setup_signet_payout_state(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_SIGNET_KEEPER_PKS),
         challenger_count=len(_SIGNET_CHALLENGER_PKS),
+        prepegin_max_fee=500_000,
         vault_count=1,
     )
     group_tlv = build_group_tlv(
@@ -2442,6 +2450,7 @@ def test_sign_psbt_payout_3vault_batch(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
+        prepegin_max_fee=500_000,
         vault_count=3,
     )
     uniform_groups = [

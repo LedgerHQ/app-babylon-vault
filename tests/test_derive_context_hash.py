@@ -275,7 +275,7 @@ def test_invalidates_loaded_intent(client: "RaggerClient", navigator: Navigator,
         pegin_csv_timelock=100, payout_timelock=200,
         prepegin_txid=bytes(range(32)), htlc_refund_timelock=144,
         depositor_path=depositor_path(ct),
-        keeper_count=1, challenger_count=1, vault_count=1,
+        keeper_count=1, challenger_count=1, prepegin_max_fee=500_000, vault_count=1,
     )
     group = build_group_tlv(
         htlc_vout=0, vault_provider_pk=TEST_VP_KEY,
@@ -508,7 +508,7 @@ def test_screen_snapshot(client: "RaggerClient", navigator: Navigator,
     ):
         navigator.navigate_and_compare(
             path=ROOT_SCREENSHOT_PATH,
-            test_case_name="derive_context_hash/approve_" + bitcoin_network,
+            test_case_name="screen1_derive_context_hash/approve_" + bitcoin_network,
             instructions=instructions,
             screen_change_before_first_instruction=True,
         )

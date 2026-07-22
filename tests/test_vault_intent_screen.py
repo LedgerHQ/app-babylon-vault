@@ -70,6 +70,7 @@ def _scalars(bitcoin_network: str) -> bytes:
         depositor_path=depositor_path(ct),
         keeper_count=1,
         challenger_count=1,
+        prepegin_max_fee=500_000,
         vault_count=1,
     )
 
@@ -120,7 +121,7 @@ def test_approve_intent_screen(client: "RaggerClient", navigator: Navigator,
         challenger_pks=[_KEY_B],
         groups=[_group()],
         path=ROOT_SCREENSHOT_PATH,
-        test_case_name="vault_intent/approve_" + bitcoin_network,
+        test_case_name="screen2_vault_intent/approve_" + bitcoin_network,
         n_swipes=vault_intent_steps(device, 1, 1),
     )
 
@@ -148,7 +149,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
         ):
             navigator.navigate_and_compare(
                 path=ROOT_SCREENSHOT_PATH,
-                test_case_name="vault_intent/reject_" + bitcoin_network,
+                test_case_name="screen2_vault_intent/reject_" + bitcoin_network,
                 instructions=vault_intent_reject_instructions(device, vault_intent_steps(device, 1, 1)),
                 screen_change_before_first_instruction=True,
             )
@@ -178,6 +179,7 @@ def _scalars_4k3c(bitcoin_network: str) -> bytes:
         depositor_path=depositor_path(ct),
         keeper_count=len(_SKIP_KEEPERS),
         challenger_count=len(_SKIP_CHALLENGERS),
+        prepegin_max_fee=500_000,
         vault_count=1,
     )
 
@@ -223,7 +225,7 @@ def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
     ):
         navigator.navigate_and_compare(
             path=ROOT_SCREENSHOT_PATH,
-            test_case_name="vault_intent/skip_" + bitcoin_network,
+            test_case_name="screen2_vault_intent/skip_" + bitcoin_network,
             instructions=vault_intent_skip_instructions(device),
             screen_change_before_first_instruction=True,
         )

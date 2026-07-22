@@ -80,7 +80,7 @@ def _coin_type(network: str) -> int:
 
 
 def _make_scalars(network: str, **overrides) -> bytes:
-    """Build a valid P1=0x00 TLV scalar payload (v21 2-byte tags, 12 scalar fields)."""
+    """Build a valid P1=0x00 TLV scalar payload (v21 2-byte tags, 13 scalar fields)."""
     ct = _coin_type(network)
     defaults = dict(
         coin_type=ct,
@@ -92,6 +92,7 @@ def _make_scalars(network: str, **overrides) -> bytes:
         depositor_path=depositor_path(ct),
         keeper_count=1,
         challenger_count=1,
+        prepegin_max_fee=500_000,
         vault_count=1,
     )
     defaults.update(overrides)
@@ -136,7 +137,7 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigato
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/1k1c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/1k1c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
 
@@ -232,7 +233,7 @@ def test_max_32_keepers_32_challengers(client: RaggerClient, navigator: Navigato
                                   challenger_pks=_MAX_CHALLENGERS,
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/max_32k32c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/max_32k32c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 32))
 
 
@@ -247,7 +248,7 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=grp,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/reload_1_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/reload_1_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
     # Second load — derive first to reach HASH_DERIVED, then handler invalidates the
     # first session and shows the screen again
@@ -256,7 +257,7 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=grp,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/reload_2_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/reload_2_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
 
@@ -281,7 +282,7 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, n
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/session2_survive_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/session2_survive_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
     # Step 3 — state is INTENT_LOADED; P1=0x01 without a preceding P1=0x00 must fail
@@ -303,7 +304,7 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/reset_session_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/reset_session_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
@@ -642,7 +643,7 @@ def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=groups,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/10vault_1k1c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/10vault_1k1c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 10, 1))
 
 
@@ -662,7 +663,7 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
                                   challenger_pks=_MAX_CHALLENGERS,
                                   groups=groups,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/10vault_32k32c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/10vault_32k32c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 10, 32))
 
 
