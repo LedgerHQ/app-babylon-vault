@@ -5,6 +5,7 @@
 #include "../display.h"
 #include "../globals.h"
 #include "../vault_context.h"
+#include "../vault_intent_tags.h"
 #include "../vault_tlv.h"
 
 #include "../../bitcoin_app_base/src/boilerplate/sw.h"
@@ -13,8 +14,8 @@
 #include <string.h>
 
 #define P1_SCALARS   0x00
-#define P1_GROUP     0x02
-#define P1_KEY_BATCH 0x01
+#define P1_GROUP     0x01
+#define P1_KEY_BATCH 0x02
 
 /* Spec-defined SW for BIP-32 depositor key derivation failure (see docs/apdu.md). */
 #define SW_BIP32_FAIL ((uint16_t) 0x6F00)
@@ -86,15 +87,12 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         return;
     }
 
-    /* vault_provider_pk validation (secp256k1 lift_x) moves to the P1=0x02 group
-     * handler (NAPPS-1442) since the key is now per-vault, not a P1=0x00 scalar. */
-
     G_approve_intent_state.scalars_loaded = true;
     SEND_SW(dc, SW_OK);
 }
 
 /* -------------------------------------------------------------------------
- * P1=0x02 — per-vault group TLV (one APDU per vault)
+ * P1=0x01 — per-vault group TLV (one APDU per vault)
  * ---------------------------------------------------------------------- */
 
 static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd) {
@@ -133,17 +131,14 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
         SEND_SW(dc, SW_INCORRECT_DATA);
         return;
     }
-    /* Propagate the global pegin_anchor_value (parked in groups[0] by the P1=0x00
-     * parser) to each subsequent group.  Full multi-vault loop in NAPPS-1442. */
-    if (idx > 0) {
-        G_vault_intent.groups[idx].pegin_anchor_value = G_vault_intent.groups[0].pegin_anchor_value;
-    }
     G_vault_context.vault_group_index++;
     SEND_SW(dc, SW_OK);
 }
 
 /* -------------------------------------------------------------------------
- * P1=0x01 — key batch streaming
+ * P1=0x02 — key batch TLV streaming
+ * Each entry: tag[2] len=0x20[1] key[32].  TAG_KEEPER_PK entries precede
+ * TAG_CHALLENGER_PK entries (tag-enforced ordering).
  * ---------------------------------------------------------------------- */
 
 static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
@@ -152,16 +147,10 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         return;
     }
 
-    /* F1: all P1=0x02 group APDUs must have arrived before key batching starts. */
+    /* F1: all P1=0x01 group APDUs must have arrived before key batching starts. */
     if (G_vault_context.vault_group_index != G_vault_intent.vault_count) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);
-        return;
-    }
-
-    if (cmd->lc == 0 || cmd->lc % VAULT_XONLY_PUBKEY_LEN != 0) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_WRONG_DATA_LENGTH);
         return;
     }
 
@@ -183,17 +172,49 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         return;
     }
 
-    uint8_t n_keys = cmd->lc / VAULT_XONLY_PUBKEY_LEN;
     uint8_t total_expected = G_vault_intent.keeper_count + G_vault_intent.challenger_count;
 
-    if ((uint16_t) G_approve_intent_state.keys_received + n_keys > total_expected) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return;
-    }
+    /* Parse TLV key entries from this APDU. Each entry: 2B tag | 1B len | 32B key. */
+    size_t pos = 0;
+    while (pos < (size_t) cmd->lc) {
+        /* Need at least 3 bytes for tag (2B) + length (1B). */
+        if (pos + 3 > (size_t) cmd->lc) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
 
-    for (uint8_t i = 0; i < n_keys; i++) {
-        const uint8_t *key = cmd->data + i * VAULT_XONLY_PUBKEY_LEN;
+        uint16_t tag = (uint16_t) (((uint16_t) cmd->data[pos] << 8) | cmd->data[pos + 1]);
+        pos += 2;
+        uint8_t klen = cmd->data[pos++];
+
+        if (klen != VAULT_XONLY_PUBKEY_LEN || pos + klen > (size_t) cmd->lc) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
+        uint8_t keys_rx = G_approve_intent_state.keys_received;
+        if (keys_rx >= total_expected) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
+        /* Tag must match current phase: keepers first, then challengers. */
+        bool expect_keeper = (keys_rx < G_vault_intent.keeper_count);
+        if (expect_keeper && tag != TAG_KEEPER_PK) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+        if (!expect_keeper && tag != TAG_CHALLENGER_PK) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
+        const uint8_t *key = cmd->data + pos;
 
         /* Reject keys that are not valid secp256k1 x-only points. */
         uint8_t tmp_point[65];
@@ -214,6 +235,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
             return;
         }
         G_approve_intent_state.keys_received++;
+        pos += klen;
     }
 
     if (G_approve_intent_state.keys_received < total_expected) {

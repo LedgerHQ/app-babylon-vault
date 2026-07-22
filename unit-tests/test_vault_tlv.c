@@ -36,10 +36,6 @@
 #define TEST_PAYOUT_TIMELOCK      200u    /* (90, 4032) ✓ */
 #define TEST_HTLC_REFUND          144u    /* [72, 1008] ✓ */
 #define TEST_HTLC_VOUT              0u
-#define TEST_PEGIN_ANCHOR_VALUE   VAULT_DUST_LIMIT
-
-/* Old v18 per-vault scalar tag byte — rejected in P1=0x00 since v19. */
-#define TAG_OLD_VAULT_PROVIDER_PK 0x04u
 
 /* m/86'/1'/0'/0/0 — coin type matches BIP44_COIN_TYPE=1 */
 static const uint32_t VALID_PATH[5] = {
@@ -65,16 +61,18 @@ static const uint8_t VALID_TXID[32] = {
 };
 
 /* -------------------------------------------------------------------------
- * TLV builder helpers
+ * TLV builder helpers — 2-byte tag, 1-byte length, N-byte value
  * ---------------------------------------------------------------------- */
 
-static uint8_t *tlv_u8(uint8_t *p, uint8_t tag, uint8_t val) {
-    *p++ = tag; *p++ = 1; *p++ = val;
+static uint8_t *tlv_u8(uint8_t *p, uint16_t tag, uint8_t val) {
+    *p++ = (uint8_t)(tag >> 8); *p++ = (uint8_t)(tag & 0xFF);
+    *p++ = 1; *p++ = val;
     return p;
 }
 
-static uint8_t *tlv_u32be(uint8_t *p, uint8_t tag, uint32_t val) {
-    *p++ = tag; *p++ = 4;
+static uint8_t *tlv_u32be(uint8_t *p, uint16_t tag, uint32_t val) {
+    *p++ = (uint8_t)(tag >> 8); *p++ = (uint8_t)(tag & 0xFF);
+    *p++ = 4;
     *p++ = (val >> 24) & 0xFF;
     *p++ = (val >> 16) & 0xFF;
     *p++ = (val >>  8) & 0xFF;
@@ -82,20 +80,23 @@ static uint8_t *tlv_u32be(uint8_t *p, uint8_t tag, uint32_t val) {
     return p;
 }
 
-static uint8_t *tlv_u64be(uint8_t *p, uint8_t tag, uint64_t val) {
-    *p++ = tag; *p++ = 8;
+static uint8_t *tlv_u64be(uint8_t *p, uint16_t tag, uint64_t val) {
+    *p++ = (uint8_t)(tag >> 8); *p++ = (uint8_t)(tag & 0xFF);
+    *p++ = 8;
     for (int i = 7; i >= 0; i--) *p++ = (val >> (i * 8)) & 0xFF;
     return p;
 }
 
-static uint8_t *tlv_bytes(uint8_t *p, uint8_t tag, const uint8_t *val, uint8_t len) {
-    *p++ = tag; *p++ = len;
+static uint8_t *tlv_bytes(uint8_t *p, uint16_t tag, const uint8_t *val, uint8_t len) {
+    *p++ = (uint8_t)(tag >> 8); *p++ = (uint8_t)(tag & 0xFF);
+    *p++ = len;
     memcpy(p, val, len); p += len;
     return p;
 }
 
-static uint8_t *tlv_path(uint8_t *p, uint8_t tag, const uint32_t *path, int levels) {
-    *p++ = tag; *p++ = (uint8_t)(levels * 4);
+static uint8_t *tlv_path(uint8_t *p, uint16_t tag, const uint32_t *path, int levels) {
+    *p++ = (uint8_t)(tag >> 8); *p++ = (uint8_t)(tag & 0xFF);
+    *p++ = (uint8_t)(levels * 4);
     for (int i = 0; i < levels; i++) {
         uint32_t v = path[i];
         *p++ = (v >> 24) & 0xFF;
@@ -107,7 +108,7 @@ static uint8_t *tlv_path(uint8_t *p, uint8_t tag, const uint32_t *path, int leve
 }
 
 /**
- * Build a complete, valid P1=0x00 TLV payload (13 scalar tags) into @p buf.
+ * Build a complete, valid P1=0x00 TLV payload (12 scalar tags) into @p buf.
  * Returns byte length.
  */
 static size_t build_valid_tlv(uint8_t *buf) {
@@ -123,12 +124,11 @@ static size_t build_valid_tlv(uint8_t *buf) {
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     p = tlv_u8    (p, TAG_KEEPER_COUNT,              1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
-    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,        TEST_PEGIN_ANCHOR_VALUE);
     p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
     return (size_t)(p - buf);
 }
 
-/** Build a complete, valid P1=0x02 group TLV payload (6 group tags) into @p buf. */
+/** Build a complete, valid P1=0x01 group TLV payload (6 group tags) into @p buf. */
 static size_t build_valid_group(uint8_t *buf) {
     uint8_t *p = buf;
     p = tlv_u8    (p, TAG_GRP_HTLC_VOUT,             TEST_HTLC_VOUT);
@@ -140,38 +140,45 @@ static size_t build_valid_group(uint8_t *buf) {
     return (size_t)(p - buf);
 }
 
-/** Replace the value bytes of the first occurrence of @p tag in @p buf. */
-static void patch_tlv_u8(uint8_t *buf, size_t len, uint8_t tag, uint8_t val) {
-    for (size_t i = 0; i + 2 < len; ) {
-        uint8_t t = buf[i];
-        uint8_t l = buf[i + 1];
-        if (t == tag && l == 1) { buf[i + 2] = val; return; }
-        i += 2 + l;
+/* -------------------------------------------------------------------------
+ * Patch helpers — scan 2-byte tags (3B overhead: tag_hi, tag_lo, len)
+ * ---------------------------------------------------------------------- */
+
+/** Replace the value byte of the first occurrence of @p tag (u8 field) in @p buf. */
+static void patch_tlv_u8(uint8_t *buf, size_t len, uint16_t tag, uint8_t val) {
+    uint8_t tag_hi = (uint8_t)(tag >> 8), tag_lo = (uint8_t)(tag & 0xFF);
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint8_t l = buf[i + 2];
+        if (buf[i] == tag_hi && buf[i + 1] == tag_lo && l == 1) {
+            buf[i + 3] = val;
+            return;
+        }
+        i += 3 + l;
     }
 }
 
-static void patch_tlv_u32be(uint8_t *buf, size_t len, uint8_t tag, uint32_t val) {
-    for (size_t i = 0; i + 2 < len; ) {
-        uint8_t t = buf[i];
-        uint8_t l = buf[i + 1];
-        if (t == tag && l == 4) {
-            buf[i+2] = (val>>24)&0xFF; buf[i+3] = (val>>16)&0xFF;
-            buf[i+4] = (val>> 8)&0xFF; buf[i+5] =  val    &0xFF;
+static void patch_tlv_u32be(uint8_t *buf, size_t len, uint16_t tag, uint32_t val) {
+    uint8_t tag_hi = (uint8_t)(tag >> 8), tag_lo = (uint8_t)(tag & 0xFF);
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint8_t l = buf[i + 2];
+        if (buf[i] == tag_hi && buf[i + 1] == tag_lo && l == 4) {
+            buf[i+3] = (val>>24)&0xFF; buf[i+4] = (val>>16)&0xFF;
+            buf[i+5] = (val>> 8)&0xFF; buf[i+6] =  val    &0xFF;
             return;
         }
-        i += 2 + l;
+        i += 3 + l;
     }
 }
 
-static void patch_tlv_u64be(uint8_t *buf, size_t len, uint8_t tag, uint64_t val) {
-    for (size_t i = 0; i + 2 < len; ) {
-        uint8_t t = buf[i];
-        uint8_t l = buf[i + 1];
-        if (t == tag && l == 8) {
-            for (int k = 7; k >= 0; k--) buf[i + 2 + (7-k)] = (val >> (k*8)) & 0xFF;
+static void patch_tlv_u64be(uint8_t *buf, size_t len, uint16_t tag, uint64_t val) {
+    uint8_t tag_hi = (uint8_t)(tag >> 8), tag_lo = (uint8_t)(tag & 0xFF);
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint8_t l = buf[i + 2];
+        if (buf[i] == tag_hi && buf[i + 1] == tag_lo && l == 8) {
+            for (int k = 7; k >= 0; k--) buf[i + 3 + (7-k)] = (val >> (k*8)) & 0xFF;
             return;
         }
-        i += 2 + l;
+        i += 3 + l;
     }
 }
 
@@ -189,7 +196,6 @@ static void test_tlv_valid_minimal(void **state) {
     assert_int_equal(out.vault_count, 1);
     assert_int_equal(out.pegin_csv_timelock, TEST_PEGIN_CSV);
     assert_int_equal(out.payout_timelock, TEST_PAYOUT_TIMELOCK);
-    assert_int_equal(out.groups[0].pegin_anchor_value, TEST_PEGIN_ANCHOR_VALUE);
 }
 
 static void test_tlv_tags_any_order_ok(void **state) {
@@ -209,7 +215,6 @@ static void test_tlv_tags_any_order_ok(void **state) {
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     p = tlv_u8    (p, TAG_KEEPER_COUNT,              1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
-    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,        TEST_PEGIN_ANCHOR_VALUE);
     p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
     /* TAG_COIN_TYPE last — intentionally out of spec-table order */
     p = tlv_u32be (p, TAG_COIN_TYPE,                 BIP44_COIN_TYPE);
@@ -391,34 +396,23 @@ static void test_tlv_empty_payload(void **state) {
     assert_int_equal(vault_tlv_parse(NULL, 0, &out), VAULT_TLV_ERR_MISSING_FIELD);
 }
 
-static void test_tlv_pegin_anchor_dust_boundary(void **state) {
-    (void) state;
-    uint8_t buf[256]; vault_intent_t out;
-    size_t len = build_valid_tlv(buf);
-
-    patch_tlv_u64be(buf, len, TAG_PEGIN_ANCHOR_VALUE, VAULT_DUST_LIMIT - 1);
-    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
-
-    patch_tlv_u64be(buf, len, TAG_PEGIN_ANCHOR_VALUE, VAULT_DUST_LIMIT);
-    assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
-}
-
 static void test_tlv_depositor_path_wrong_purpose(void **state) {
     (void) state;
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     /* Replace path tag value with m/84'/1'/0'/0/0 */
     uint32_t bad_path[5] = { 0x80000000u | 84u, 0x80000000u | 1u, 0x80000000u, 0u, 0u };
-    for (size_t i = 0; i + 2 < len; ) {
-        if (buf[i] == TAG_DEPOSITOR_DERIVATION_PATH) {
-            uint8_t *v = buf + i + 2;
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
+        if (t == TAG_DEPOSITOR_DERIVATION_PATH) {
+            uint8_t *v = buf + i + 3; /* 2B tag + 1B len */
             for (int k = 0; k < 5; k++) {
                 v[k*4+0] = (bad_path[k]>>24)&0xFF; v[k*4+1] = (bad_path[k]>>16)&0xFF;
                 v[k*4+2] = (bad_path[k]>> 8)&0xFF; v[k*4+3] =  bad_path[k]    &0xFF;
             }
             break;
         }
-        i += 2 + buf[i+1];
+        i += 3 + buf[i+2];
     }
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
 }
@@ -429,16 +423,17 @@ static void test_tlv_depositor_path_coin_type_mismatch(void **state) {
     size_t len = build_valid_tlv(buf);
     /* path[1] = coin_type 99 ≠ BIP44_COIN_TYPE */
     uint32_t bad_path[5] = { 0x80000000u|86u, 0x80000000u|99u, 0x80000000u, 0u, 0u };
-    for (size_t i = 0; i + 2 < len; ) {
-        if (buf[i] == TAG_DEPOSITOR_DERIVATION_PATH) {
-            uint8_t *v = buf + i + 2;
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
+        if (t == TAG_DEPOSITOR_DERIVATION_PATH) {
+            uint8_t *v = buf + i + 3;
             for (int k = 0; k < 5; k++) {
                 v[k*4+0] = (bad_path[k]>>24)&0xFF; v[k*4+1] = (bad_path[k]>>16)&0xFF;
                 v[k*4+2] = (bad_path[k]>> 8)&0xFF; v[k*4+3] =  bad_path[k]    &0xFF;
             }
             break;
         }
-        i += 2 + buf[i+1];
+        i += 3 + buf[i+2];
     }
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
 }
@@ -449,16 +444,17 @@ static void test_tlv_depositor_path_account_not_hardened(void **state) {
     size_t len = build_valid_tlv(buf);
     /* path[2] = 0 (not hardened) */
     uint32_t bad_path[5] = { 0x80000000u|86u, 0x80000000u|1u, 0u, 0u, 0u };
-    for (size_t i = 0; i + 2 < len; ) {
-        if (buf[i] == TAG_DEPOSITOR_DERIVATION_PATH) {
-            uint8_t *v = buf + i + 2;
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
+        if (t == TAG_DEPOSITOR_DERIVATION_PATH) {
+            uint8_t *v = buf + i + 3;
             for (int k = 0; k < 5; k++) {
                 v[k*4+0] = (bad_path[k]>>24)&0xFF; v[k*4+1] = (bad_path[k]>>16)&0xFF;
                 v[k*4+2] = (bad_path[k]>> 8)&0xFF; v[k*4+3] =  bad_path[k]    &0xFF;
             }
             break;
         }
-        i += 2 + buf[i+1];
+        i += 3 + buf[i+2];
     }
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
 }
@@ -467,8 +463,11 @@ static void test_tlv_duplicate_tag(void **state) {
     (void) state;
     uint8_t buf[300]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
-    /* Append a duplicate TAG_VERSION */
-    buf[len++] = TAG_VERSION; buf[len++] = 1; buf[len++] = VAULT_PROTOCOL_VERSION;
+    /* Append a duplicate TAG_VERSION (2-byte tag + 1B len + 1B value) */
+    buf[len++] = (uint8_t)(TAG_VERSION >> 8);
+    buf[len++] = (uint8_t)(TAG_VERSION & 0xFF);
+    buf[len++] = 1;
+    buf[len++] = VAULT_PROTOCOL_VERSION;
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_DUPLICATE_TAG);
 }
 
@@ -476,18 +475,21 @@ static void test_tlv_unknown_tag(void **state) {
     (void) state;
     uint8_t buf[300]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
-    buf[len++] = 0xFF; buf[len++] = 1; buf[len++] = 0x00;
+    /* Append an unknown 2-byte tag 0xFFFF */
+    buf[len++] = 0xFF; buf[len++] = 0xFF; buf[len++] = 1; buf[len++] = 0x00;
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_UNKNOWN_TAG);
 }
 
-/* Old v18 per-vault scalar tags (0x04–0x07, 0x09, 0x0D) must be rejected in P1=0x00. */
-static void test_tlv_rejected_per_vault_tag_in_scalar(void **state) {
+/* A per-group tag (valid only in P1=0x01) must be rejected in P1=0x00. */
+static void test_tlv_rejected_group_tag_in_scalar(void **state) {
     (void) state;
     uint8_t buf[300]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
-    /* Append old vault_provider_pk tag (0x04) — rejected by whitelist mask */
-    buf[len++] = TAG_OLD_VAULT_PROVIDER_PK; buf[len++] = 32;
-    memcpy(buf + len, VALID_VP_PK, 32); len += 32;
+    /* Append TAG_GRP_HTLC_VOUT (0x0109) — valid in group phase, unknown in scalar */
+    buf[len++] = (uint8_t)(TAG_GRP_HTLC_VOUT >> 8);
+    buf[len++] = (uint8_t)(TAG_GRP_HTLC_VOUT & 0xFF);
+    buf[len++] = 1;
+    buf[len++] = 0;
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_UNKNOWN_TAG);
 }
 
@@ -507,7 +509,6 @@ static void test_tlv_missing_field(void **state) {
     p = tlv_path  (p, TAG_DEPOSITOR_DERIVATION_PATH, VALID_PATH, 5);
     /* TAG_KEEPER_COUNT omitted */
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
-    p = tlv_u64be (p, TAG_PEGIN_ANCHOR_VALUE,        TEST_PEGIN_ANCHOR_VALUE);
     p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
     assert_int_equal(vault_tlv_parse(buf, (size_t)(p - buf), &out), VAULT_TLV_ERR_MISSING_FIELD);
 }
@@ -517,9 +518,10 @@ static void test_tlv_wrong_field_length(void **state) {
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     /* Corrupt coin_type length from 4 to 3 */
-    for (size_t i = 0; i + 1 < len; ) {
-        if (buf[i] == TAG_COIN_TYPE) { buf[i + 1] = 3; break; }
-        i += 2 + buf[i+1];
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
+        if (t == TAG_COIN_TYPE) { buf[i + 2] = 3; break; }
+        i += 3 + buf[i+2];
     }
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_WRONG_LENGTH);
 }
@@ -529,9 +531,10 @@ static void test_tlv_overflow(void **state) {
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     /* Corrupt prepegin_txid length to extend past buffer end */
-    for (size_t i = 0; i + 1 < len; ) {
-        if (buf[i] == TAG_PREPEGIN_TXID) { buf[i + 1] = 0xFF; break; }
-        i += 2 + buf[i+1];
+    for (size_t i = 0; i + 3 <= len; ) {
+        uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
+        if (t == TAG_PREPEGIN_TXID) { buf[i + 2] = 0xFF; break; }
+        i += 3 + buf[i+2];
     }
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_OVERFLOW);
 }
@@ -771,9 +774,6 @@ int main(void) {
         cmocka_unit_test(test_tlv_vault_count_zero),
         cmocka_unit_test(test_tlv_vault_count_too_large),
 
-        /* vault_tlv_parse — pegin anchor value validation */
-        cmocka_unit_test(test_tlv_pegin_anchor_dust_boundary),
-
         /* vault_tlv_parse — derivation path validation */
         cmocka_unit_test(test_tlv_depositor_path_wrong_purpose),
         cmocka_unit_test(test_tlv_depositor_path_coin_type_mismatch),
@@ -783,7 +783,7 @@ int main(void) {
         cmocka_unit_test(test_tlv_empty_payload),
         cmocka_unit_test(test_tlv_duplicate_tag),
         cmocka_unit_test(test_tlv_unknown_tag),
-        cmocka_unit_test(test_tlv_rejected_per_vault_tag_in_scalar),
+        cmocka_unit_test(test_tlv_rejected_group_tag_in_scalar),
         cmocka_unit_test(test_tlv_missing_field),
         cmocka_unit_test(test_tlv_wrong_field_length),
         cmocka_unit_test(test_tlv_overflow),

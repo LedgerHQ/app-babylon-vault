@@ -34,6 +34,8 @@ from .vault_client import (
     P1_KEY_BATCH,
     P2_UNUSED,
     SW_DENY,
+    TAG_KEEPER_PK,
+    TAG_CHALLENGER_PK,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     build_intent_tlv,
@@ -41,6 +43,7 @@ from .vault_client import (
     approve_vault_intent_with_nav,
     depositor_path,
     derive_for_intent,
+    _ktlv,
 )
 from .instructions import (
     vault_intent_reject_instructions,
@@ -141,7 +144,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
             ins=INS_APPROVE_VAULT_INTENT,
             p1=P1_KEY_BATCH,
             p2=P2_UNUSED,
-            data=_KEY_A + _KEY_B,
+            data=_ktlv(TAG_KEEPER_PK, _KEY_A) + _ktlv(TAG_CHALLENGER_PK, _KEY_B),
         ):
             navigator.navigate_and_compare(
                 path=ROOT_SCREENSHOT_PATH,
@@ -156,7 +159,7 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
 # Skip flow (streaming review): keeper/challenger keys are skippable
 # ---------------------------------------------------------------------------
 
-# 4 keepers + 3 challengers = 7 keys (224 B) — fits a single P1=0x01 key batch and
+# 4 keepers + 3 challengers = 7 keys (245 B) — fits a single P1=0x02 key batch and
 # gives a multi-page keys segment to skip.  TEST_VALID_KEYS is sorted ascending, so
 # each slice is in the strict per-group ascending order the firmware requires.
 _SKIP_KEEPERS = TEST_VALID_KEYS[0:4]
@@ -215,7 +218,8 @@ def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
         ins=INS_APPROVE_VAULT_INTENT,
         p1=P1_KEY_BATCH,
         p2=P2_UNUSED,
-        data=b"".join(_SKIP_KEEPERS + _SKIP_CHALLENGERS),
+        data=(b"".join(_ktlv(TAG_KEEPER_PK, k) for k in _SKIP_KEEPERS) +
+              b"".join(_ktlv(TAG_CHALLENGER_PK, k) for k in _SKIP_CHALLENGERS)),
     ):
         navigator.navigate_and_compare(
             path=ROOT_SCREENSHOT_PATH,

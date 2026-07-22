@@ -22,12 +22,10 @@ typedef enum {
 /**
  * Parse and validate the APPROVE_VAULT_INTENT P1=0x00 TLV scalar payload.
  *
- * Accepts the 13 mandatory scalar tags.  Unknown tags are rejected with
- * VAULT_TLV_ERR_UNKNOWN_TAG.
+ * Accepts the 12 mandatory scalar tags (2-byte tags).  Unknown tags are
+ * rejected with VAULT_TLV_ERR_UNKNOWN_TAG.
  *
- * On success (VAULT_TLV_OK) all 13 scalar fields of @p out are populated.
- * pegin_anchor_value is stored in out->groups[0].pegin_anchor_value for later
- * propagation to all groups by the P1=0x02 handler.
+ * On success (VAULT_TLV_OK) all 12 scalar fields of @p out are populated.
  *
  * On any error @p out is left in an indeterminate state; the caller must
  * discard it (vault_context_invalidate zeros G_vault_intent).
@@ -39,14 +37,12 @@ typedef enum {
 vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t *out);
 
 /**
- * Parse and validate one APPROVE_VAULT_INTENT P1=0x02 per-vault group payload.
+ * Parse and validate one APPROVE_VAULT_INTENT P1=0x01 per-vault group payload.
  *
- * Accepts the 6 mandatory per-vault group tags (TAG_GRP_* namespace).
+ * Accepts the 6 mandatory per-vault group tags (TAG_GRP_* namespace, 2-byte tags).
  * All 6 fields must be present; unknown tags are rejected.
  *
  * On success (VAULT_TLV_OK) all 6 wire fields of @p out are populated.
- * pegin_anchor_value is NOT set here — the caller copies it from the global
- * scalar parsed during P1=0x00.
  *
  * On any error @p out is left in an indeterminate state.
  *

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - NAPPS-1461: v21 protocol alignment — 2-byte TLV tags, P1 phase swap, P2A constant
+
+Aligns the APPROVE_VAULT_INTENT wire format with HLD v21.
+
+### Changed
+
+- **2-byte TLV tags** (`vault_intent_tags.h`, `vault_tlv.c`): all TLV tags are now 2 bytes
+  (big-endian `uint16_t`) on the wire. Scalar tags renumbered per the v21 table (e.g.
+  `coin_type` 0x03→0x21, `base_fee_rate` 0x08→0x0100, etc.). Per-vault group tags move to
+  the 0x0109–0x010E range. Key-batch tags 0x0107/0x0108 are now on the wire (not doc-only).
+- **P1 phase swap** (`approve_vault_intent.c`): per-vault groups now arrive on P1=0x01 (was
+  P1=0x02); key batches on P1=0x02 (was P1=0x01).
+- **Key batch format** (`approve_vault_intent.c`): P1=0x02 keys are now TLV-wrapped
+  (TAG_KEEPER_PK=0x0107 or TAG_CHALLENGER_PK=0x0108), with tag-enforced keeper-before-challenger
+  ordering. Raw packed keys no longer accepted.
+- **`pegin_anchor_value` removed** (`vault_intent.h`, `vault_tlv.c`, all callers): field
+  removed from the TLV and from `vault_group_t`. Replaced by the `P2A_ANCHOR_VALUE = 240`
+  build constant in `vault_constants.h`.
+- **Scalar field count**: 13 → 12 (pegin_anchor_value removed).
+
+---
+
 ## [0.7.0] - NAPPS-1442–1445: Multi-vault end-to-end — P1=0x02 approval, script group-indexing, validation, payout & signing
 
 Completes multi-vault support across the full session flow for `vault_count > 1`.

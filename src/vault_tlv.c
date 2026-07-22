@@ -5,13 +5,13 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "os_utils.h" /* U4BE, U8BE */
+#include "os_utils.h" /* U2BE, U4BE, U8BE */
 
 /* BIP-32 hardened-child bit */
 #define HARDENED 0x80000000u
 
 /* -------------------------------------------------------------------------
- * vault_tlv_parse — P1=0x00 scalar payload (13 mandatory fields)
+ * vault_tlv_parse — P1=0x00 scalar payload (12 mandatory fields)
  * ---------------------------------------------------------------------- */
 
 vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t *out) {
@@ -19,10 +19,11 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
     size_t pos = 0;
 
     while (pos < len) {
-        /* Need at least 2 bytes for tag + length. */
-        if (pos + 2 > len) return VAULT_TLV_ERR_OVERFLOW;
+        /* Need at least 3 bytes for 2-byte tag + 1-byte length. */
+        if (pos + 3 > len) return VAULT_TLV_ERR_OVERFLOW;
 
-        uint8_t tag = data[pos++];
+        uint16_t tag = U2BE(data, pos);
+        pos += 2;
         uint8_t field_len = data[pos++];
 
         /* Reject if value bytes extend past buffer end. */
@@ -137,17 +138,8 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 out->challenger_count = v[0];
                 break;
 
-            case TAG_PEGIN_ANCHOR_VALUE:
-                field_idx = 11;
-                /* Global scalar; propagated to all groups by the P1=0x02 handler.
-                 * Temporarily stored in groups[0].pegin_anchor_value during P1=0x00. */
-                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
-                if (U8BE(v, 0) < VAULT_DUST_LIMIT) return VAULT_TLV_ERR_VALIDATION;
-                out->groups[0].pegin_anchor_value = U8BE(v, 0);
-                break;
-
             case TAG_VAULT_COUNT:
-                field_idx = 12;
+                field_idx = 11;
                 if (field_len != 1) return VAULT_TLV_ERR_WRONG_LENGTH;
                 if (v[0] < 1 || v[0] > VAULT_MAX_VAULTS) return VAULT_TLV_ERR_VALIDATION;
                 out->vault_count = v[0];
@@ -163,7 +155,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
         pos += field_len;
     }
 
-    /* All 13 mandatory scalar fields must be present. */
+    /* All 12 mandatory scalar fields must be present. */
     if (seen_mask != (uint16_t) ((1u << VAULT_INTENT_TAG_COUNT) - 1u))
         return VAULT_TLV_ERR_MISSING_FIELD;
 
@@ -174,7 +166,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 }
 
 /* -------------------------------------------------------------------------
- * vault_tlv_parse_group — P1=0x02 per-vault group payload (6 mandatory fields)
+ * vault_tlv_parse_group — P1=0x01 per-vault group payload (6 mandatory fields)
  * ---------------------------------------------------------------------- */
 
 vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_group_t *out) {
@@ -182,10 +174,11 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_gro
     size_t pos = 0;
 
     while (pos < len) {
-        /* Need at least 2 bytes for tag + length. */
-        if (pos + 2 > len) return VAULT_TLV_ERR_OVERFLOW;
+        /* Need at least 3 bytes for 2-byte tag + 1-byte length. */
+        if (pos + 3 > len) return VAULT_TLV_ERR_OVERFLOW;
 
-        uint8_t tag = data[pos++];
+        uint16_t tag = U2BE(data, pos);
+        pos += 2;
         uint8_t field_len = data[pos++];
 
         /* Reject if value bytes extend past buffer end. */

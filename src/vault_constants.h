@@ -104,3 +104,6 @@
 
 /** Exclusive upper bound for payout_timelock. */
 #define VAULT_PAYOUT_TIMELOCK_MAX 4032u
+
+/** P2A anchor output value in satoshis (PegIn Output 2). Floored at relay-dust. */
+#define P2A_ANCHOR_VALUE ((uint64_t) 240u)

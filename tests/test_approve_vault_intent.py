@@ -36,8 +36,8 @@ from .vault_client import (
     P1_GROUP,
     P1_KEY_BATCH,
     P2_UNUSED,
+    SW_OK,
     SW_INCORRECT_DATA,
-    SW_WRONG_DATA_LENGTH,
     SW_WRONG_P1P2,
     SW_BAD_STATE,
     VAULT_STRUCTURE_TYPE,
@@ -46,11 +46,14 @@ from .vault_client import (
     TAG_COIN_TYPE,
     TAG_PEGIN_CSV_TIMELOCK,
     TAG_KEEPER_COUNT,
+    TAG_KEEPER_PK,
+    TAG_CHALLENGER_PK,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     TEST_INVALID_XONLY_KEY,
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
+    _ktlv,
 )
 
 
@@ -77,7 +80,7 @@ def _coin_type(network: str) -> int:
 
 
 def _make_scalars(network: str, **overrides) -> bytes:
-    """Build a valid P1=0x00 TLV scalar payload (v19: 13 scalar tags, no per-vault fields)."""
+    """Build a valid P1=0x00 TLV scalar payload (v21 2-byte tags, 12 scalar fields)."""
     ct = _coin_type(network)
     defaults = dict(
         coin_type=ct,
@@ -96,7 +99,7 @@ def _make_scalars(network: str, **overrides) -> bytes:
 
 
 def _make_group(**overrides) -> bytes:
-    """Build a valid P1=0x02 group TLV with optional field overrides."""
+    """Build a valid P1=0x01 group TLV with optional field overrides."""
     defaults = dict(
         htlc_vout=0,
         vault_provider_pk=VP_KEY,
@@ -397,8 +400,23 @@ def test_keys_out_of_order(client: RaggerClient, navigator: Navigator,
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        # KEY_B > KEY_A — send in wrong order (B then A)
-        _raw_exchange(client, P1_KEY_BATCH, KEY_B + KEY_A + KEY_C)
+        # KEY_B > KEY_A — send in wrong order (B then A); KEY_C is challenger
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_B) +
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_C))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_wrong_phase_tag_challenger_before_keepers(client: RaggerClient, navigator: Navigator,
+                                                   device: Device, bitcoin_network: str):
+    """TAG_CHALLENGER_PK sent while keepers are still expected must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, _ktlv(TAG_CHALLENGER_PK, KEY_A))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -410,19 +428,36 @@ def test_extra_keys_beyond_count(client: RaggerClient, navigator: Navigator,
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        # 3 keys declared total = 2, send 3
-        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B + KEY_C)
+        # declared total = 2, send 3
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_B) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_C))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_key_batch_not_multiple_of_32(client: RaggerClient, bitcoin_network: str):
-    """P1=0x01 payload not a multiple of 32 bytes must return SW_WRONG_DATA_LENGTH."""
+def test_key_batch_wrong_key_length(client: RaggerClient, navigator: Navigator,
+                                    device: Device, bitcoin_network: str):
+    """P1=0x02 TLV entry with length != 32 must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_KEY_BATCH, b"\xAA" * 31)   # 31 bytes — not multiple of 32
-    assert exc.value.status == SW_WRONG_DATA_LENGTH
+        # TAG_KEEPER_PK with length=31 (wrong, must be 32)
+        _raw_exchange(client, P1_KEY_BATCH, bytes([0x01, 0x07, 0x1F]) + b"\xAA" * 31)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_key_batch_empty_payload(client: RaggerClient, navigator: Navigator,
+                                 device: Device, bitcoin_network: str):
+    """Empty key batch (lc=0) must return SW_OK — firmware treats it as a partial delivery."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    response = _raw_exchange(client, P1_KEY_BATCH, b"")
+    assert response.status == SW_OK
 
 
 def test_key_equals_vault_provider_pk(client: RaggerClient, navigator: Navigator,
@@ -434,7 +469,9 @@ def test_key_equals_vault_provider_pk(client: RaggerClient, navigator: Navigator
     # _make_group() sets vault_provider_pk=VP_KEY by default.
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_KEY_BATCH, VP_KEY + KEY_B)
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, VP_KEY) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_B))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -457,7 +494,9 @@ def test_duplicate_key_across_groups(client: RaggerClient, navigator: Navigator,
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
         # Keeper = KEY_A, Challenger = KEY_A (duplicate)
-        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_A)
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_A))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -469,8 +508,10 @@ def test_invalid_ec_point_keeper_rejected(client: RaggerClient, navigator: Navig
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        # TEST_INVALID_XONLY_KEY = 0xFF * 32 which is >= secp256k1 prime p.
-        _raw_exchange(client, P1_KEY_BATCH, TEST_INVALID_XONLY_KEY + KEY_B)
+        # TEST_INVALID_XONLY_KEY is >= secp256k1 prime p — no valid curve point.
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, TEST_INVALID_XONLY_KEY) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_B))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -482,7 +523,9 @@ def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: N
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_KEY_BATCH, KEY_A + TEST_INVALID_XONLY_KEY)
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, TEST_INVALID_XONLY_KEY))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -507,7 +550,9 @@ def test_depositor_key_collision_as_keeper(client: RaggerClient, navigator: Navi
     # depositor_key as keeper (idx=0, first in group → no lex-order check).
     # KEY_A as challenger: distinct from depositor_key and from VP_KEY.
     with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_KEY_BATCH, depositor_key + KEY_A)
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, depositor_key) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_A))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -527,7 +572,9 @@ def test_depositor_key_collision_as_challenger(client: RaggerClient, navigator: 
     # KEY_A as keeper, depositor_key as challenger (idx=1, first in challenger group
     # → no lex-order check; KEY_A != depositor_key so no duplicate rejection).
     with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_KEY_BATCH, KEY_A + depositor_key)
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, depositor_key))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -554,7 +601,7 @@ def test_derive_initial_clears_scalars_loaded(client: RaggerClient, navigator: N
     # Inject DERIVE_CONTEXT_HASH P1=0x00 — must clear G_approve_intent_state.
     derive_for_intent(client, navigator, device, bitcoin_network)
 
-    # APPROVE_VAULT_INTENT P1=0x01 must now fail because scalars_loaded == false.
+    # APPROVE_VAULT_INTENT P1=0x02 must now fail because scalars_loaded == false.
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
     assert exc.value.status == SW_BAD_STATE
@@ -577,12 +624,12 @@ def test_base_fee_rate_overflow_rejected(client: RaggerClient, bitcoin_network: 
 
 
 # ---------------------------------------------------------------------------
-# P1=0x02 vault-group phase — NAPPS-1442 acceptance criteria
+# P1=0x01 vault-group phase — NAPPS-1442 acceptance criteria
 # ---------------------------------------------------------------------------
 
 def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
                                    device: Device, bitcoin_network: str):
-    """10-vault intent: all 10 P1=0x02 groups accepted in ascending htlc_vout order.
+    """10-vault intent: all 10 P1=0x01 groups accepted in ascending htlc_vout order.
 
     Uses deterministic step counts (not text-based navigation) to avoid the
     navigate_until_text_and_compare race that duplicates a frame when the swipe
@@ -603,8 +650,8 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
                                               device: Device, bitcoin_network: str):
     """10-vault intent with the firmware-maximum 32 keepers + 32 challengers.
 
-    Combines the multi-vault streaming path (P1=0x02 × 10) with the largest possible
-    key set (64 keys in 10 P1=0x01 batches).
+    Combines the multi-vault streaming path (P1=0x01 × 10) with the largest possible
+    key set (64 keys in 10 P1=0x02 batches).
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
     groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
@@ -640,10 +687,10 @@ def test_htlc_vout_equal_rejected(client: RaggerClient, bitcoin_network: str):
 
 
 def test_missing_group_phase_rejected(client: RaggerClient, bitcoin_network: str):
-    """P1=0x01 sent with no prior P1=0x02 groups must return SW_BAD_STATE."""
+    """P1=0x02 sent with no prior P1=0x01 groups must return SW_BAD_STATE."""
     scalars = _make_scalars(bitcoin_network, vault_count=1, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
-    # Skip P1=0x02 entirely — vault_group_index=0, vault_count=1 → mismatch
+    # Skip P1=0x01 entirely — vault_group_index=0, vault_count=1 → mismatch
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
     assert exc.value.status == SW_BAD_STATE
@@ -677,5 +724,7 @@ def test_depositor_path_mismatch_rejected(client: RaggerClient, navigator: Navig
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_B))
     assert exc.value.status == SW_INCORRECT_DATA
