@@ -36,8 +36,8 @@ typedef struct {
 /* Pair count for vault intent display: 9 scalar fields + one entry per key */
 #define VAULT_DISPLAY_PAIRS_COUNT (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
 
-/* Scratch layout for display_transaction / display_prepegin_transaction /
- * display_refund_transaction.  String sizes verified by static asserts in display.c. */
+/* Scratch layout shared by Screen 2–8 transaction display functions.
+ * String sizes verified by static asserts in display.c. */
 #define TX_DISPLAY_MAX_PAIRS       4
 #define TX_DISPLAY_AMOUNT_STR_SIZE 28 /* MAX_AMOUNT_LENGTH + 1 */
 #define TX_DISPLAY_ADDR_STR_SIZE   80 /* MAX_ADDRESS_LENGTH_STR + 1 */
@@ -57,9 +57,9 @@ typedef struct {
 } display_vault_intent_scratch_t;
 
 /**
- * Scratch buffers for display_transaction / display_prepegin_transaction /
- * display_refund_transaction.  All three functions are mutually exclusive and
- * block on io_ui_process(), so they share one union member.
+ * Scratch buffers shared by Screen 2–8 transaction display functions.
+ * All are mutually exclusive and block on io_ui_process(), so they share
+ * one union member.
  *
  * pairs_raw holds the nbgl_layoutTagValue_t array as raw bytes (same pattern as
  * display_vault_intent_scratch_t).  addr_str is written by the caller before
@@ -145,7 +145,7 @@ typedef struct {
  * Each member is live in exactly one handler and is zeroed before use:
  *   - script_scratch  vault_build_* signing hooks
  *   - display         display_vault_intent only (blocks on io_ui_process)
- *   - display_tx      display_transaction / display_prepegin / display_refund
+ *   - display_tx      Screen 2–8 transaction display functions
  *   - derive_ctx      handler_derive_context_hash
  *   - leaf_check      _validate_display_refund leaf-script comparison
  *   - tls             _tap_leaf_script_callback state during refund validation

@@ -26,7 +26,7 @@ _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
                "TX_DISPLAY_ADDR_STR_SIZE too small; update globals.h");
 
 // ---------------------------------------------------------------------------
-// DERIVE_CONTEXT_HASH approval screen
+// Screen 1 — DERIVE_CONTEXT_HASH approval
 // ---------------------------------------------------------------------------
 
 // Separate rejection callback so TYPE_OPERATION reviews show STATUS_TYPE_OPERATION_REJECTED
@@ -69,70 +69,6 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
         SEND_SW(dc, SW_DENY);
         return false;
     }
-    return true;
-}
-
-bool display_transaction(dispatcher_context_t *dc,
-                         int64_t value_spent,
-                         uint64_t magic_input_value,
-                         uint64_t fee) {
-    nbgl_layoutTagValue_t *const tx_pairs =
-        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list;
-
-    uint64_t value_spent_abs = value_spent < 0 ? -value_spent : value_spent;
-    format_sats_amount(COIN_COINID_SHORT, value_spent_abs, G_scratch.display_tx.amount_str);
-    format_sats_amount(COIN_COINID_SHORT, magic_input_value, G_scratch.display_tx.extra_str);
-    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
-
-    int n_pairs = 0;
-    tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-        .item = "Transaction type",
-        .value = "FOO",
-    };
-
-    if (value_spent >= 0) {
-        tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-            .item = "Value spent",
-            .value = G_scratch.display_tx.amount_str,
-        };
-    } else {
-        tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-            .item = "Value received",
-            .value = G_scratch.display_tx.amount_str,
-        };
-    }
-
-    tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-        .item = "Magic value",
-        .value = G_scratch.display_tx.extra_str,
-    };
-
-    tx_pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-        .item = "Fee",
-        .value = G_scratch.display_tx.fee_str,
-    };
-
-    assert(n_pairs <= MAX_N_PAIRS);
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n_pairs;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review transaction\nto a FOO output",
-                       NULL,
-                       "Sign transaction\nto create a FOO output?",
-                       review_choice);
-
-    bool result = io_ui_process(dc);
-    if (!result) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-
     return true;
 }
 
@@ -219,6 +155,198 @@ bool display_refund_transaction(dispatcher_context_t *dc,
                        NULL,
                        "Sign refund\ntransaction?",
                        review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 4 — Claim transaction
+// ---------------------------------------------------------------------------
+
+bool display_claim_transaction(dispatcher_context_t *dc, uint64_t amount_spent, uint64_t fee) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_spent, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Amount spent", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Review Claim\ntransaction",
+                       NULL,
+                       "Sign Claim\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 5 — Assert transaction
+// ---------------------------------------------------------------------------
+
+bool display_assert_transaction(dispatcher_context_t *dc,
+                                const uint8_t *claim_txid,
+                                uint64_t amount_carried,
+                                uint64_t fee) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list;
+
+    /* addr_str (80 B) holds 64-char hex txid + NUL. */
+    format_hex(claim_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
+    format_sats_amount(COIN_COINID_SHORT, amount_carried, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Claim txid", .value = G_scratch.display_tx.addr_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Amount", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Review Assert\ntransaction",
+                       NULL,
+                       "Sign Assert\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 6 — Wrongly Challenged (WC) transaction
+// ---------------------------------------------------------------------------
+
+bool display_wc_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed, uint64_t fee) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Review wrongly\nchallenged tx",
+                       NULL,
+                       "Sign wrongly\nchallenged tx?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 7 — Payout transaction
+// ---------------------------------------------------------------------------
+
+bool display_payout_transaction(dispatcher_context_t *dc,
+                                 uint64_t payout_amount,
+                                 uint64_t fee) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list;
+
+    format_sats_amount(COIN_COINID_SHORT, payout_amount, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Payout amount",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Review payout\ntransaction",
+                       NULL,
+                       "Sign payout\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 8 — Payout finalize (NAPPS-1464)
+// ---------------------------------------------------------------------------
+
+bool display_payout_finalize(dispatcher_context_t *dc) {
+    nbgl_layoutTagValueList_t pair_list = {.nbPairs = 0};
+
+    nbgl_useCaseReview(TYPE_OPERATION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Finalize payout",
+                       NULL,
+                       "Confirm payout\nfinalization?",
+                       derive_context_hash_choice);
 
     bool approved = io_ui_process(dc);
     if (!approved) {

@@ -68,8 +68,6 @@ bool sign_custom_inputs(
     sign_psbt_state_t *st,
     tx_hashes_t *tx_hashes,
     const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)]) {
-    UNUSED(internal_inputs);
-
     vault_state_t state = G_vault_context.state;
     const vault_intent_t *const intent = &G_vault_intent;
 
@@ -161,13 +159,84 @@ bool sign_custom_inputs(
     }
 
     /* -----------------------------------------------------------------------
-     * Payout (SESSION2_PAYOUT_EXPECTED or SESSION2_COMPLETE)
+     * Payout / NoPayout (SESSION2_PAYOUT_EXPECTED or SESSION2_COMPLETE)
      *
-     * Sign Vault UTXO (input 0) with the depositor key.
-     * State and payout_index were already advanced in _validate_payout.
+     * NoPayout (n_inputs==3): sign Input 0 with the depositor NoPayout leaf.
+     * Payout   (n_inputs==2): sign Input 0 with the depositor Vault UTXO leaf.
+     * State and indices were already advanced in the corresponding validator.
      * SESSION2_COMPLETE is reached after the last Payout's _validate_payout runs.
      * ----------------------------------------------------------------------- */
     if (state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED || state == VAULT_STATE_SESSION2_COMPLETE) {
+        /* -------
+         * NoPayout: 3 inputs, 1 output, no wallet policy.
+         * Re-read Input 0's TAP_LEAF_SCRIPT (G_scratch.tls clobbered by display).
+         * Sign with the depositor path using the reconstructed NoPayout leaf hash.
+         * ------- */
+        if (st->has_no_wallet_policy && st->n_inputs == 3 && st->n_outputs == 1) {
+            merkleized_map_commitment_t input_map;
+            if (!vault_read_refund_leaf_script(dc, st, &input_map)) {
+                vault_context_invalidate(&G_vault_context);
+                return false;
+            }
+
+            const uint8_t *leaf    = G_scratch.tls.leaf_script;
+            int             leaf_len = G_scratch.tls.leaf_script_len;
+
+            /* Verify NoPayout leaf shape and that the first key matches the approved
+             * depositor.  The validator already checked this on the same PSBT, but
+             * the signing path must not silently rely on that to remain safe if
+             * validation and signing are ever decoupled. */
+            if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != OP_CHECKSIGVERIFY ||
+                leaf[34] != OP_PUSHBYTES_32 || leaf[67] != OP_CHECKSIG ||
+                memcmp(leaf + 1, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN) != 0) {
+                vault_context_invalidate(&G_vault_context);
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+
+            uint8_t leaf_hash[VAULT_HASH256_LEN];
+            vault_taproot_leaf_hash(leaf, leaf_len, leaf_hash);
+
+            uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+            if (!read_p2tr_witness_utxo(dc, &input_map, NULL, input_spk)) {
+                vault_context_invalidate(&G_vault_context);
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+
+            uint8_t sighash[VAULT_HASH256_LEN];
+            if (!compute_sighash_segwitv1(dc,
+                                          st,
+                                          tx_hashes,
+                                          &input_map,
+                                          0,
+                                          input_spk,
+                                          VAULT_P2TR_SCRIPTPUBKEY_LEN,
+                                          leaf_hash,
+                                          SIGHASH_DEFAULT,
+                                          sighash)) {
+                vault_context_invalidate(&G_vault_context);
+                return false;
+            }
+
+            if (!sign_sighash_schnorr_and_yield(dc,
+                                                st,
+                                                0,
+                                                intent->depositor_path,
+                                                VAULT_DEPOSITOR_PATH_LEN,
+                                                NULL,
+                                                0,
+                                                leaf_hash,
+                                                SIGHASH_DEFAULT,
+                                                sighash)) {
+                vault_context_invalidate(&G_vault_context);
+                return false;
+            }
+
+            return true;
+        }
+
+        /* Payout */
         merkleized_map_commitment_t input_map;
         if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, 0, &input_map) < 0) {
             vault_context_invalidate(&G_vault_context);
@@ -250,21 +319,26 @@ bool sign_custom_inputs(
     }
 
     /* -----------------------------------------------------------------------
-     * Pre-PegIn (SESSION1_PREPEGIN_EXPECTED, has_no_wallet_policy == false):
-     * All inputs are BIP-86 wallet-owned and were already signed by
-     * sign_internal_inputs.  Nothing left to sign here.
+     * Pre-PegIn (SESSION1_PREPEGIN_EXPECTED, has_no_wallet_policy == false,
+     * Input 0 internal): all inputs are BIP-86 wallet-owned and were already
+     * signed by sign_internal_inputs.  Nothing left to sign here.
+     * WC-with-wallet (has_no_wallet_policy == false, Input 0 external) falls
+     * through to the standalone signing section.
      * ----------------------------------------------------------------------- */
-    if (!st->has_no_wallet_policy) {
+    if (!st->has_no_wallet_policy && bitvector_get(internal_inputs, 0)) {
         return true;
     }
 
     /* -----------------------------------------------------------------------
-     * Refund (any state, has_no_wallet_policy == true)
+     * Standalone flows: Refund, Claim (Screen 4), Assert (Screen 5), WC (Screen 6),
+     * and WC-with-wallet (has_no_wallet_policy == false, Input 0 external).
      *
-     * Re-read PSBT_IN_TAP_LEAF_SCRIPT (fills G_scratch.tls), PSBT_IN_WITNESS_UTXO
-     * for the scriptPubKey, and PSBT_IN_TAP_BIP32_DERIVATION for the signing path.
-     * The original reads in _validate_display_refund cannot be reused because
-     * display_refund_transaction clobbers G_scratch.tls via the display_tx union member.
+     * All these leaves share the shape <D> OP_PUSHBYTES_32 ... — the depositor's
+     * x-only key D is always at leaf[1..32].  Re-read PSBT_IN_TAP_LEAF_SCRIPT
+     * (fills G_scratch.tls), PSBT_IN_WITNESS_UTXO for the scriptPubKey, and
+     * PSBT_IN_TAP_BIP32_DERIVATION for the signing path.
+     * The original reads in the validators cannot be reused because the display
+     * functions clobber G_scratch.tls via the display_tx union member.
      * ----------------------------------------------------------------------- */
     {
         merkleized_map_commitment_t input_map;
@@ -277,9 +351,8 @@ bool sign_custom_inputs(
                                 G_scratch.tls.leaf_script_len,
                                 leaf_hash);
 
-        /* Standalone refund has no loaded intent to reconstruct the HTLC spk from;
-         * _validate_display_refund binds it via the taproot control-block commitment
-         * (NUMS internal key + Merkle root verifying against this spk), so a
+        /* No loaded intent for standalone flows; the validator bound the spk via
+         * the taproot control-block commitment (NUMS key + Merkle root), so a
          * structural-only read is sufficient here. */
         uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (!read_p2tr_witness_utxo(dc, &input_map, NULL, input_spk)) {
@@ -287,15 +360,13 @@ bool sign_custom_inputs(
             return false;
         }
 
-        uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];
-        uint32_t csv_value;
-        if (!parse_refund_leaf_script(G_scratch.tls.leaf_script,
-                                      G_scratch.tls.leaf_script_len,
-                                      leaf_key,
-                                      &csv_value)) {
+        /* All supported leaf types open with OP_PUSHBYTES_32 <D-key>. */
+        if (G_scratch.tls.leaf_script_len < 34 || G_scratch.tls.leaf_script[0] != OP_PUSHBYTES_32) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];
+        memcpy(leaf_key, G_scratch.tls.leaf_script + 1, VAULT_XONLY_PUBKEY_LEN);
 
         uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];
         deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;

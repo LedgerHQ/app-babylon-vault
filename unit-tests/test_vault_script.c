@@ -453,10 +453,11 @@ static void test_htlc_leaf0_buf_too_small(void **state) {
 
 static void test_assert0_payout_leaf_claimer_out_of_range(void **state) {
     (void)state;
-    vault_intent_t intent = make_n1m1(); /* keeper_count=1 */
+    /* make_n1m1(): keeper_count=1. Valid range: [0=VP, 1=VK, 2=Depositor]. 3 is out of range. */
+    vault_intent_t intent = make_n1m1();
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     assert_int_equal(vault_build_assert0_payout_leaf(&intent, 0, -1, buf, VAULT_SCRIPT_MAX_LEN), -1);
-    assert_int_equal(vault_build_assert0_payout_leaf(&intent, 0,  2, buf, VAULT_SCRIPT_MAX_LEN), -1);
+    assert_int_equal(vault_build_assert0_payout_leaf(&intent, 0,  3, buf, VAULT_SCRIPT_MAX_LEN), -1);
 }
 
 /* ---------------------------------------------------------------------------

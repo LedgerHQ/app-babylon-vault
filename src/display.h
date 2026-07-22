@@ -21,11 +21,6 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
                                  const uint8_t *app_name,
                                  uint8_t app_name_len);
 
-bool display_transaction(dispatcher_context_t *dc,
-                         int64_t value_spent,
-                         uint64_t magic_input_value,
-                         uint64_t fee);
-
 /**
  * @brief Display the loaded vault intent for user review and approval.
  *
@@ -75,3 +70,61 @@ bool display_refund_transaction(dispatcher_context_t *dc,
                                 uint64_t amount_reclaimed,
                                 uint64_t fee,
                                 const char *refund_address);
+
+/**
+ * @brief Screen 4 — Claim transaction review (depositor-as-claimer).
+ *
+ * @param amount_spent  Output amount sent to the Claim leaf in satoshis.
+ * @param fee           Transaction fee in satoshis.
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_claim_transaction(dispatcher_context_t *dc, uint64_t amount_spent, uint64_t fee);
+
+/**
+ * @brief Screen 5 — Assert transaction review.
+ *
+ * @param claim_txid      32-byte Claim txid (shown as hex); caller must keep valid.
+ * @param amount_carried  Amount carried into the Assert output in satoshis.
+ * @param fee             Transaction fee in satoshis.
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_assert_transaction(dispatcher_context_t *dc,
+                                const uint8_t *claim_txid,
+                                uint64_t amount_carried,
+                                uint64_t fee);
+
+/**
+ * @brief Screen 6 — Wrongly Challenged (WC) transaction review.
+ *
+ * @param amount_reclaimed  Amount reclaimed to the depositor in satoshis.
+ * @param fee               Transaction fee in satoshis.
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_wc_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed, uint64_t fee);
+
+/**
+ * @brief Screen 7 — Payout transaction review.
+ *
+ * Shows the amount paid out and the transaction fee.
+ * Approval gates signing; rejection returns SW_DENY.
+ *
+ * @param payout_amount  Amount paid to the claimer in satoshis (Out0 value).
+ * @param fee            Transaction fee in satoshis.
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee);
+
+/**
+ * @brief Screen 8 — Payout finalize review (NAPPS-1464).
+ *
+ * Confirmation screen presented once all payout transactions in a vault group
+ * have been signed, before the host proceeds with broadcast.
+ *
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_payout_finalize(dispatcher_context_t *dc);

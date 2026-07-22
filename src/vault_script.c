@@ -418,7 +418,8 @@ static int build_app_challengers(const vault_intent_t *intent,
                                  int claimer_idx,
                                  uint8_t out[][VAULT_XONLY_PUBKEY_LEN]) {
     int k = 0;
-    if (claimer_idx == 0) {
+    if (claimer_idx == 0 || claimer_idx == (int) intent->keeper_count + 1) {
+        /* VP or Depositor as claimer: AppChallengers = all VaultKeepers (sorted) */
         for (int i = 0; i < (int) intent->keeper_count; i++) {
             memcpy(out[k++], intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN);
         }
@@ -451,7 +452,7 @@ static int build_app_challengers(const vault_intent_t *intent,
  *         <UC M-of-M>               (intermediate)
  *         <t2> OP_CSV
  *
- * claimer_idx: 0 = VP is claimer; 1..keeper_count = VK_{i-1} is claimer.
+ * claimer_idx: 0 = VP; 1..keeper_count = VK_{i-1}; keeper_count+1 = Depositor.
  * AppChallengers = {VP, VK_1..VK_N} \ {Claimer}, sorted ascending.
  * ----------------------------------------------------------------------- */
 
@@ -461,7 +462,7 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
                                     uint8_t *buf,
                                     int buf_max) {
     if (group_idx < 0 || group_idx >= (int) intent->vault_count) return -1;
-    if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count) return -1;
+    if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count + 1) return -1;
 
     /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.
      * Cannot use G_scratch here — buf already points into it. */
@@ -470,8 +471,13 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
     uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];
     int k = build_app_challengers(intent, group_idx, claimer_idx, _app_challengers);
 
-    const uint8_t *claimer_pk = (claimer_idx == 0) ? intent->groups[group_idx].vault_provider_pk
-                                                   : intent->keeper_pks[claimer_idx - 1];
+    const uint8_t *claimer_pk;
+    if (claimer_idx == 0)
+        claimer_pk = intent->groups[group_idx].vault_provider_pk;
+    else if (claimer_idx == (int) intent->keeper_count + 1)
+        claimer_pk = intent->depositor_pk;
+    else
+        claimer_pk = intent->keeper_pks[claimer_idx - 1];
 
     int off = 0, r;
 
@@ -502,6 +508,42 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
     buf[off++] = OP_CSV;
 
     return off;
+}
+
+/* --------------------------------------------------------------------------
+ * vault_build_nopayout_leaf
+ *
+ * Script: <Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG
+ * Fixed 68 bytes.
+ *
+ * Challengers: indices 0..keeper_count-1 → keeper_pks; indices
+ * keeper_count..keeper_count+challenger_count-1 → challenger_pks.
+ * ----------------------------------------------------------------------- */
+
+int vault_build_nopayout_leaf(const vault_intent_t *intent,
+                              int challenger_idx,
+                              uint8_t *buf,
+                              int buf_max) {
+    int total = (int) intent->keeper_count + (int) intent->challenger_count;
+    if (challenger_idx < 0 || challenger_idx >= total) return -1;
+    if (buf_max < 68) return -1;
+
+    const uint8_t *challenger_pk;
+    if (challenger_idx < (int) intent->keeper_count)
+        challenger_pk = intent->keeper_pks[challenger_idx];
+    else
+        challenger_pk = intent->challenger_pks[challenger_idx - (int) intent->keeper_count];
+
+    int off = 0;
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN);
+    off += 32;
+    buf[off++] = OP_CHECKSIGVERIFY;
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, challenger_pk, VAULT_XONLY_PUBKEY_LEN);
+    off += 32;
+    buf[off++] = OP_CHECKSIG;
+    return off; /* always 68 */
 }
 
 /* ==========================================================================

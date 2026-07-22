@@ -96,7 +96,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 field_idx = 7;
                 if (field_len != 4) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint32_t val = U4BE(v, 0);
-                if (val < VAULT_TIMELOCK_MIN || val > VAULT_TIMELOCK_MAX)
+                if (val < VAULT_TIMELOCK_MIN || val > VAULT_HTLC_REFUND_TIMELOCK_MAX)
                     return VAULT_TLV_ERR_VALIDATION;
                 out->htlc_refund_timelock = (uint16_t) val;
                 break;
@@ -145,6 +145,12 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 out->vault_count = v[0];
                 break;
 
+            case TAG_PREPEGIN_MAX_FEE:
+                field_idx = 12;
+                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                out->prepegin_max_fee = U8BE(v, 0);
+                break;
+
             default:
                 return VAULT_TLV_ERR_UNKNOWN_TAG;
         }
@@ -155,7 +161,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
         pos += field_len;
     }
 
-    /* All 12 mandatory scalar fields must be present. */
+    /* All 13 mandatory scalar fields must be present. */
     if (seen_mask != (uint16_t) ((1u << VAULT_INTENT_TAG_COUNT) - 1u))
         return VAULT_TLV_ERR_MISSING_FIELD;
 
