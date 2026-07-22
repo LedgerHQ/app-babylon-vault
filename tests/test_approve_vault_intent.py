@@ -36,6 +36,7 @@ from .vault_client import (
     P1_GROUP,
     P1_KEY_BATCH,
     P2_UNUSED,
+    SW_OK,
     SW_INCORRECT_DATA,
     SW_WRONG_P1P2,
     SW_BAD_STATE,
@@ -52,12 +53,8 @@ from .vault_client import (
     TEST_INVALID_XONLY_KEY,
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
+    _ktlv,
 )
-
-
-def _ktlv(tag: int, key: bytes) -> bytes:
-    """Encode a 32-byte x-only key as a 2-byte-tag TLV entry."""
-    return bytes([tag >> 8, tag & 0xFF, 32]) + key
 
 
 SCREENSHOT_PATH = Path(__file__).parent.resolve()
@@ -411,6 +408,18 @@ def test_keys_out_of_order(client: RaggerClient, navigator: Navigator,
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_wrong_phase_tag_challenger_before_keepers(client: RaggerClient, navigator: Navigator,
+                                                   device: Device, bitcoin_network: str):
+    """TAG_CHALLENGER_PK sent while keepers are still expected must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, _ktlv(TAG_CHALLENGER_PK, KEY_A))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_extra_keys_beyond_count(client: RaggerClient, navigator: Navigator,
                                  device: Device, bitcoin_network: str):
     """Sending more keys than keeper_count + challenger_count must return SW_INCORRECT_DATA."""
@@ -438,6 +447,17 @@ def test_key_batch_wrong_key_length(client: RaggerClient, navigator: Navigator,
         # TAG_KEEPER_PK with length=31 (wrong, must be 32)
         _raw_exchange(client, P1_KEY_BATCH, bytes([0x01, 0x07, 0x1F]) + b"\xAA" * 31)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_key_batch_empty_payload(client: RaggerClient, navigator: Navigator,
+                                 device: Device, bitcoin_network: str):
+    """Empty key batch (lc=0) must return SW_OK — firmware treats it as a partial delivery."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    response = _raw_exchange(client, P1_KEY_BATCH, b"")
+    assert response.status == SW_OK
 
 
 def test_key_equals_vault_provider_pk(client: RaggerClient, navigator: Navigator,

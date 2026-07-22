@@ -43,11 +43,8 @@ from .vault_client import (
     approve_vault_intent_with_nav,
     depositor_path,
     derive_for_intent,
+    _ktlv,
 )
-
-
-def _ktlv(tag: int, key: bytes) -> bytes:
-    return bytes([tag >> 8, tag & 0xFF, 32]) + key
 from .instructions import (
     vault_intent_reject_instructions,
     vault_intent_skip_instructions,

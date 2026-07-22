@@ -73,6 +73,11 @@ TAG_VAULT_COUNT               = 0x0106
 TAG_KEEPER_PK                 = 0x0107
 TAG_CHALLENGER_PK             = 0x0108
 
+
+def _ktlv(tag: int, key: bytes) -> bytes:
+    """Encode a 32-byte x-only key as a 2-byte-tag TLV entry: tag(2B) | len(1B) | key(32B)."""
+    return bytes([tag >> 8, tag & 0xFF, 32]) + key
+
 # P1=0x01 per-vault group 2-byte tags — must match src/vault_intent_tags.h
 TAG_GRP_HTLC_VOUT             = 0x0109
 TAG_GRP_VAULT_PROVIDER_PK     = 0x010A
