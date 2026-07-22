@@ -37,6 +37,9 @@
 _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
                "AUTH_ANCHOR_SPK_LEN must equal VAULT_P2TR_SCRIPTPUBKEY_LEN for _read_output reuse");
 
+/* Distinct status word for CPFP anchor output scriptPubKey mismatch in payout */
+#define SW_BAD_CPFP_ANCHOR 0xB009u
+
 /* Payout fee bound constants (NAPPS-1376) */
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
@@ -1127,6 +1130,9 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
     const vault_intent_t *intent = &G_vault_intent;
     const uint8_t claimer_idx = G_vault_context.payout_index;
+    const int gi = (int) G_vault_context.vault_group_index;
+
+    ASSERT_GROUP_IDX(dc, intent, gi);
 
     /* Claimer ordering guard: payout_index must be in [0, keeper_count] */
     if (claimer_idx > intent->keeper_count) {
@@ -1162,7 +1168,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * vault_compute_pegin_txid uses G_scratch.script_scratch — call before
      * any use of G_scratch.leaf_check.expected_script (same memory). */
     uint8_t computed_pegin_txid[VAULT_HASH256_LEN];
-    if (!vault_compute_pegin_txid(intent, 0, computed_pegin_txid)) {
+    if (!vault_compute_pegin_txid(intent, gi, computed_pegin_txid)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1226,7 +1232,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * vault_build_vault_utxo_leaf writes directly to buf without touching G_scratch. */
     {
         int leaf_len = vault_build_vault_utxo_leaf(intent,
-                                                   0,
+                                                   gi,
                                                    G_scratch.leaf_check.expected_script,
                                                    VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
@@ -1256,7 +1262,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         if (!_payout_check_witness_utxo(dc,
                                         &input_map,
                                         expected_spk,
-                                        intent->groups[0].vault_amount))
+                                        intent->groups[gi].vault_amount))
             return false;
         if (!_payout_check_single_leaf_script(dc, &input_map, leaf_len, parity)) return false;
     }
@@ -1286,7 +1292,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * Input 0 checks are complete). */
     {
         int leaf_len = vault_build_assert0_payout_leaf(intent,
-                                                       0,
+                                                       gi,
                                                        claimer_idx,
                                                        G_scratch.leaf_check.expected_script,
                                                        VAULT_SCRIPT_MAX_LEN);
@@ -1355,12 +1361,15 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     {
         const uint8_t *out1_pk;
         uint64_t expected_out1_value;
+        bool is_cpfp_anchor;
         if (claimer_idx == 0) {
-            out1_pk = intent->groups[0].vault_provider_pk;
-            expected_out1_value = intent->groups[0].commission_fee;
+            out1_pk = intent->groups[gi].vault_provider_pk;
+            expected_out1_value = intent->groups[gi].commission_fee;
+            is_cpfp_anchor = false;
         } else {
             out1_pk = intent->keeper_pks[claimer_idx - 1]; /* CPFP anchor to claimer */
             expected_out1_value = VAULT_DUST_LIMIT;
+            is_cpfp_anchor = true;
         }
         if (out_value != expected_out1_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1372,7 +1381,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         if (memcmp(out_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
+            SEND_SW(dc, is_cpfp_anchor ? SW_BAD_CPFP_ANCHOR : SW_INCORRECT_DATA);
             return false;
         }
     }
@@ -1393,12 +1402,12 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!_bip86_p2tr_spk(intent->groups[0].vault_provider_pk, expected_spk)) {
+        if (!_bip86_p2tr_spk(intent->groups[gi].vault_provider_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         if (memcmp(out_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
+            SEND_SW(dc, SW_BAD_CPFP_ANCHOR);
             return false;
         }
         if (total_out + out_value < total_out) {
@@ -1410,7 +1419,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
     /* Fee bound: fee = (vault_amount + VAULT_DUST_LIMIT) - total_out
      *   fee <= base_fee_rate * (MAX_PAYOUT_VSIZE_BASE + MAX_PAYOUT_VSIZE_PER_PARTICIPANT*(N+M)) */
-    uint64_t total_in = intent->groups[0].vault_amount + VAULT_DUST_LIMIT;
+    uint64_t total_in = intent->groups[gi].vault_amount + VAULT_DUST_LIMIT;
     if (total_out > total_in) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -1428,19 +1437,21 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * enforced via claimer_idx == payout_index above; the matching signature is
      * produced afterwards in sign_custom_inputs.  A signing failure there calls
      * vault_context_invalidate(), so advancing here cannot leave a half-signed
-     * session behind.  After the last claimer (index == keeper_count) the
-     * session moves to SESSION2_COMPLETE; the final payout's signing runs in
-     * that state, which is expected.  SESSION2_COMPLETE is terminal — under the
-     * realigned spec the host already holds the derived root, so there is no
-     * on-device secret-release step. */
+     * session behind.  After the last claimer of a group, vault_group_index advances
+     * and payout_index resets to 0 for the next group.  SESSION2_COMPLETE is set
+     * only once all vault_count groups have been fully paid out. */
     G_vault_context.payout_index++;
-    if (G_vault_context.payout_index > intent->keeper_count) {
-        if (!vault_context_transition(&G_vault_context,
-                                      VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
-                                      VAULT_STATE_SESSION2_COMPLETE)) {
-            vault_context_invalidate(&G_vault_context);
-            SEND_SW(dc, SW_BAD_STATE);
-            return false;
+    if ((unsigned int) G_vault_context.payout_index > intent->keeper_count) {
+        G_vault_context.payout_index = 0;
+        G_vault_context.vault_group_index++;
+        if ((unsigned int) G_vault_context.vault_group_index >= intent->vault_count) {
+            if (!vault_context_transition(&G_vault_context,
+                                          VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
+                                          VAULT_STATE_SESSION2_COMPLETE)) {
+                vault_context_invalidate(&G_vault_context);
+                SEND_SW(dc, SW_BAD_STATE);
+                return false;
+            }
         }
     }
 

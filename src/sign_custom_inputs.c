@@ -153,6 +153,10 @@ bool sign_custom_inputs(
                                                VAULT_STATE_SESSION2_PEGIN_EXPECTED,
                                                VAULT_STATE_SESSION2_PAYOUT_EXPECTED),
                       "Unreachable: state was confirmed before signing");
+        /* vault_group_index was used as a group-ingestion cursor during
+         * approve_vault_intent and is left at vault_count.  Reset it to 0
+         * so _validate_payout can use it as the payout-group cursor. */
+        G_vault_context.vault_group_index = 0;
         return true;
     }
 
@@ -171,8 +175,19 @@ bool sign_custom_inputs(
             return false;
         }
 
-        int leaf_len =
-            vault_build_vault_utxo_leaf(intent, 0, G_scratch.script_scratch, VAULT_SCRIPT_MAX_LEN);
+        /* _validate_payout advances vault_group_index after the last claimer of each
+         * group and resets payout_index to 0.  Recover the group that was actually
+         * validated and is now being signed: if payout_index is 0 and vault_group_index
+         * is non-zero, the advance already happened — step back by one. */
+        uint8_t sgi = G_vault_context.vault_group_index;
+        if (G_vault_context.payout_index == 0 && sgi > 0) {
+            sgi--;
+        }
+
+        int leaf_len = vault_build_vault_utxo_leaf(intent,
+                                                   sgi,
+                                                   G_scratch.script_scratch,
+                                                   VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -186,7 +201,7 @@ bool sign_custom_inputs(
          * from the approved intent (rebuilds G_scratch.script_scratch, which we
          * are done reading from above). */
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!vault_build_vault_utxo_scriptpubkey(intent, 0, expected_spk)) {
+        if (!vault_build_vault_utxo_scriptpubkey(intent, sgi, expected_spk)) {
             vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
