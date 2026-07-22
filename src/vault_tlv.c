@@ -11,7 +11,7 @@
 #define HARDENED 0x80000000u
 
 /* -------------------------------------------------------------------------
- * vault_tlv_parse — P1=0x00 scalar payload (12 mandatory fields)
+ * vault_tlv_parse — P1=0x00 scalar payload (13 mandatory fields)
  * ---------------------------------------------------------------------- */
 
 vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t *out) {
