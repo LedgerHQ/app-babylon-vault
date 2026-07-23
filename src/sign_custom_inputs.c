@@ -179,8 +179,8 @@ bool sign_custom_inputs(
                 return false;
             }
 
-            const uint8_t *leaf    = G_scratch.tls.leaf_script;
-            int             leaf_len = G_scratch.tls.leaf_script_len;
+            const uint8_t *leaf = G_scratch.tls.leaf_script;
+            int leaf_len = G_scratch.tls.leaf_script_len;
 
             /* Verify NoPayout leaf shape and that the first key matches the approved
              * depositor.  The validator already checked this on the same PSBT, but

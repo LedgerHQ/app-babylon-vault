@@ -185,8 +185,8 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
  * ensures this, so the script buffer is bounded to VAULT_P2TR_SCRIPTPUBKEY_LEN.
  * Returns false and sends SW on any PSBT read or crypto failure. */
 static bool _compute_prepegin_txid(dispatcher_context_t *dc,
-                                    sign_psbt_state_t *st,
-                                    uint8_t txid_out[VAULT_HASH256_LEN]) {
+                                   sign_psbt_state_t *st,
+                                   uint8_t txid_out[VAULT_HASH256_LEN]) {
     if (st->n_inputs >= 0xFD || st->n_outputs >= 0xFD) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -204,7 +204,10 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
         _H(vb, 4);
     }
     /* input count */
-    { uint8_t n = (uint8_t) st->n_inputs; _H(&n, 1); }
+    {
+        uint8_t n = (uint8_t) st->n_inputs;
+        _H(&n, 1);
+    }
 
     for (unsigned int i = 0; i < st->n_inputs; i++) {
         merkleized_map_commitment_t imap;
@@ -214,29 +217,38 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
         }
         /* prev txid (32 bytes, internal byte order) */
         uint8_t txid_buf[VAULT_HASH256_LEN];
-        if (call_get_merkleized_map_value(dc, &imap,
-                                          (uint8_t[]) {PSBT_IN_PREVIOUS_TXID}, 1,
-                                          txid_buf, VAULT_HASH256_LEN) != VAULT_HASH256_LEN) {
+        if (call_get_merkleized_map_value(dc,
+                                          &imap,
+                                          (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                          1,
+                                          txid_buf,
+                                          VAULT_HASH256_LEN) != VAULT_HASH256_LEN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         _H(txid_buf, VAULT_HASH256_LEN);
         /* vout (4 bytes LE, stored as-is in PSBT) */
         uint8_t vout[4];
-        if (call_get_merkleized_map_value(dc, &imap,
-                                          (uint8_t[]) {PSBT_IN_OUTPUT_INDEX}, 1,
-                                          vout, 4) != 4) {
+        if (call_get_merkleized_map_value(dc,
+                                          &imap,
+                                          (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
+                                          1,
+                                          vout,
+                                          4) != 4) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         _H(vout, 4);
         /* scriptSig length = 0x00 (SegWit input) */
-        { uint8_t z = 0; _H(&z, 1); }
+        {
+            uint8_t z = 0;
+            _H(&z, 1);
+        }
         /* sequence (4 bytes LE; absent in PSBT → default 0xFFFFFFFF) */
         uint8_t seq[4] = {0xFF, 0xFF, 0xFF, 0xFF};
         {
-            int res = call_get_merkleized_map_value(dc, &imap,
-                                                    (uint8_t[]) {PSBT_IN_SEQUENCE}, 1, seq, 4);
+            int res =
+                call_get_merkleized_map_value(dc, &imap, (uint8_t[]) {PSBT_IN_SEQUENCE}, 1, seq, 4);
             if (res >= 0 && res != 4) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
@@ -246,7 +258,10 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
     }
 
     /* output count */
-    { uint8_t n = (uint8_t) st->n_outputs; _H(&n, 1); }
+    {
+        uint8_t n = (uint8_t) st->n_outputs;
+        _H(&n, 1);
+    }
 
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         merkleized_map_commitment_t omap;
@@ -256,17 +271,20 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
         }
         /* value (8 bytes LE, stored as-is in PSBT) */
         uint8_t val[8];
-        if (call_get_merkleized_map_value(dc, &omap,
-                                          (uint8_t[]) {PSBT_OUT_AMOUNT}, 1, val, 8) != 8) {
+        if (call_get_merkleized_map_value(dc, &omap, (uint8_t[]) {PSBT_OUT_AMOUNT}, 1, val, 8) !=
+            8) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         _H(val, 8);
         /* script length varint + script (all Pre-PegIn scripts are 34 bytes) */
         uint8_t script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        int slen = call_get_merkleized_map_value(dc, &omap,
-                                                  (uint8_t[]) {PSBT_OUT_SCRIPT}, 1,
-                                                  script, VAULT_P2TR_SCRIPTPUBKEY_LEN);
+        int slen = call_get_merkleized_map_value(dc,
+                                                 &omap,
+                                                 (uint8_t[]) {PSBT_OUT_SCRIPT},
+                                                 1,
+                                                 script,
+                                                 VAULT_P2TR_SCRIPTPUBKEY_LEN);
         if (slen <= 0 || slen > (int) VAULT_P2TR_SCRIPTPUBKEY_LEN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -279,7 +297,10 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
     /* locktime (4 bytes LE) */
     {
         uint32_t lt = st->locktime;
-        uint8_t lb[4] = {(uint8_t) lt, (uint8_t) (lt >> 8), (uint8_t) (lt >> 16), (uint8_t) (lt >> 24)};
+        uint8_t lb[4] = {(uint8_t) lt,
+                         (uint8_t) (lt >> 8),
+                         (uint8_t) (lt >> 16),
+                         (uint8_t) (lt >> 24)};
         _H(lb, 4);
     }
 #undef _H
@@ -288,7 +309,8 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
     uint8_t h1[VAULT_HASH256_LEN];
     CX_CHECK(cx_hash_no_throw(&ctx.header, CX_LAST, NULL, 0, h1, VAULT_HASH256_LEN));
     CX_CHECK(cx_sha256_init_no_throw(&ctx));
-    CX_CHECK(cx_hash_no_throw(&ctx.header, CX_LAST, h1, VAULT_HASH256_LEN, txid_out, VAULT_HASH256_LEN));
+    CX_CHECK(
+        cx_hash_no_throw(&ctx.header, CX_LAST, h1, VAULT_HASH256_LEN, txid_out, VAULT_HASH256_LEN));
 
 end:
     if (error != CX_OK) {
@@ -1526,7 +1548,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     }
     total_out += out_value;
 
-    /* VP only: Out2 = CPFP anchor (VAULT_DUST_LIMIT) to VP's registered address — value only (v22). */
+    /* VP only: Out2 = CPFP anchor (VAULT_DUST_LIMIT) to VP's registered address — value only (v22).
+     */
     if (claimer_idx == 0) {
         if (!_read_output(dc, st->outputs_root, st->n_outputs, 2, out_spk, &out_value)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1595,8 +1618,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     vault_state_t state = G_vault_context.state;
     if (state != VAULT_STATE_SESSION2_PEGIN_EXPECTED &&
-        state != VAULT_STATE_SESSION2_PAYOUT_EXPECTED &&
-        state != VAULT_STATE_SESSION2_COMPLETE) {
+        state != VAULT_STATE_SESSION2_PAYOUT_EXPECTED && state != VAULT_STATE_SESSION2_COMPLETE) {
         SEND_SW(dc, SW_BAD_STATE);
         return false;
     }
@@ -1615,11 +1637,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     int leaf_len = G_scratch.tls.leaf_script_len;
 
     /* NoPayout leaf: <D>(33B) OP_CHECKSIGVERIFY <Cj>(33B) OP_CHECKSIG = 68 bytes */
-    if (leaf_len != 68 ||
-        leaf[0] != OP_PUSHBYTES_32 ||
-        leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
-        leaf[34] != OP_PUSHBYTES_32 ||
-        leaf[67] != (uint8_t) OP_CHECKSIG) {
+    if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
+        leaf[34] != OP_PUSHBYTES_32 || leaf[67] != (uint8_t) OP_CHECKSIG) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1692,9 +1711,9 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     }
 
     /* Cap: vault_count × (keeper_count + challenger_count) */
-    uint16_t cap = (uint16_t) ((uint16_t) intent->vault_count *
-                               ((uint16_t) intent->keeper_count +
-                                (uint16_t) intent->challenger_count));
+    uint16_t cap =
+        (uint16_t) ((uint16_t) intent->vault_count *
+                    ((uint16_t) intent->keeper_count + (uint16_t) intent->challenger_count));
     if (G_vault_context.nopayout_index >= cap) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_BAD_STATE);
@@ -1769,8 +1788,7 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
         }
         uint32_t fingerprint;
         uint32_t path[5];
-        int path_len =
-            parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
+        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
         if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
             !check_bip86_path(path, path_len)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1905,8 +1923,7 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
         }
         uint32_t fingerprint;
         uint32_t path[5];
-        int path_len =
-            parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
+        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
         if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
             !check_bip86_path(path, path_len)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1992,16 +2009,12 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
      *   <D>(32B) OP_CHECKSIGVERIFY OP_SIZE OP_PUSHBYTES_1 0x20 OP_EQUALVERIFY
      *   OP_SHA256 OP_PUSHBYTES_32 <output_label_hash>(32B) OP_EQUAL.
      * The output_label_hash at [40..71] is read as-is; not reconstructed from intent. */
-    if (leaf_len != 73 ||
-        leaf[0] != OP_PUSHBYTES_32 ||
-        leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
-        leaf[34] != (uint8_t) OP_SIZE ||
-        leaf[35] != 0x01u ||  /* OP_PUSHBYTES_1 */
-        leaf[36] != 0x20u ||  /* push value 32 */
-        leaf[37] != 0x88u ||  /* OP_EQUALVERIFY */
-        leaf[38] != 0xa8u ||  /* OP_SHA256 */
-        leaf[39] != OP_PUSHBYTES_32 ||
-        leaf[72] != 0x87u) {  /* OP_EQUAL */
+    if (leaf_len != 73 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
+        leaf[34] != (uint8_t) OP_SIZE || leaf[35] != 0x01u || /* OP_PUSHBYTES_1 */
+        leaf[36] != 0x20u ||                                  /* push value 32 */
+        leaf[37] != 0x88u ||                                  /* OP_EQUALVERIFY */
+        leaf[38] != 0xa8u ||                                  /* OP_SHA256 */
+        leaf[39] != OP_PUSHBYTES_32 || leaf[72] != 0x87u) {   /* OP_EQUAL */
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -2043,8 +2056,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
         }
         uint32_t fingerprint;
         uint32_t path[5];
-        int path_len =
-            parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
+        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
         if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
             !check_bip86_path(path, path_len)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -2152,8 +2164,7 @@ bool validate_and_display_transaction(
     vault_state_t state = G_vault_context.state;
 
     /* PegIn: strictly state-gated */
-    if (state == VAULT_STATE_SESSION2_PEGIN_EXPECTED)
-        return _validate_pegin(dc, st);
+    if (state == VAULT_STATE_SESSION2_PEGIN_EXPECTED) return _validate_pegin(dc, st);
 
     /* Payout or NoPayout: SESSION2_PAYOUT_EXPECTED */
     if (state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED) {
@@ -2191,13 +2202,11 @@ bool validate_and_display_transaction(
     }
 
     /* Claim: <D> OP_CHECKSIG */
-    if (leaf_len == 34 && leaf[33] == (uint8_t) OP_CHECKSIG)
-        return _validate_display_claim(dc, st);
+    if (leaf_len == 34 && leaf[33] == (uint8_t) OP_CHECKSIG) return _validate_display_claim(dc, st);
 
     if (leaf_len > 34 && leaf[33] == (uint8_t) OP_CHECKSIGVERIFY) {
         /* WC: <D> OP_CHECKSIGVERIFY OP_SIZE ... */
-        if (leaf[34] == (uint8_t) OP_SIZE)
-            return _validate_display_wc(dc, st);
+        if (leaf[34] == (uint8_t) OP_SIZE) return _validate_display_wc(dc, st);
         /* Assert: <D> OP_CHECKSIGVERIFY <key> ... OP_CSV */
         if (leaf[34] == OP_PUSHBYTES_32 && (uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_CSV)
             return _validate_display_assert(dc, st);

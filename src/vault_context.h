@@ -38,7 +38,8 @@ typedef enum {
     VAULT_STATE_INTENT_LOADED,
     VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
     VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-    VAULT_STATE_SESSION2_PAYOUT_EXPECTED,  // payout_index tracks claimer (0=VP, 1..N=VK, N+1=Depositor)
+    VAULT_STATE_SESSION2_PAYOUT_EXPECTED,  // payout_index tracks claimer (0=VP, 1..N=VK,
+                                           // N+1=Depositor)
     VAULT_STATE_SESSION2_COMPLETE,
 } vault_state_t;
 

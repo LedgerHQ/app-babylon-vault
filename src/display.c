@@ -295,9 +295,7 @@ bool display_wc_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed,
 // Screen 7 — Payout transaction
 // ---------------------------------------------------------------------------
 
-bool display_payout_transaction(dispatcher_context_t *dc,
-                                 uint64_t payout_amount,
-                                 uint64_t fee) {
+bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list;
@@ -306,8 +304,8 @@ bool display_payout_transaction(dispatcher_context_t *dc,
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Payout amount",
-                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Payout amount", .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
