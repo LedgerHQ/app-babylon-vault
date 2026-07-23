@@ -492,8 +492,9 @@ static bool _validate_prepegin(
         return false;
     }
 
-    /* v22: prepegin_txid is always set; verify the PSBT matches unconditionally. */
-    {
+    /* Session 1 (Pre-PegIn only): intent txid is all-zeros — no binding was committed.
+     * Session 2 (PegIn+Payout): intent txid is non-zero — verify the PSBT matches. */
+    if (memcmp(intent->prepegin_txid, zeros, VAULT_HASH256_LEN) != 0) {
         uint8_t computed_txid[VAULT_HASH256_LEN];
         if (!_compute_prepegin_txid(dc, st, computed_txid)) return false;
         if (memcmp(computed_txid, intent->prepegin_txid, VAULT_HASH256_LEN) != 0) {

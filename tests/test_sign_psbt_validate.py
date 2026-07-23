@@ -490,30 +490,22 @@ def _setup_s1_state_3vault(
     device,
     coin_type: int,
 ) -> List[bytes]:
-    """Derive root + approve 3-vault intent. Returns [hashlock_0, hashlock_1, hashlock_2]."""
+    """Derive root + approve 3-vault Session-1 intent. Returns [hashlock_0, hashlock_1, hashlock_2].
+
+    prepegin_txid is zeros: Session 1 carries no txid binding, so the auto-transition
+    to SESSION2_PEGIN_EXPECTED does not fire.
+    """
     global _DERIVED_ROOT
     _DERIVED_ROOT = derive_context_hash(
         client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
     )
     hashlocks = [vault_hashlock(_DERIVED_ROOT, v) for v in _3V_HTLC_VOUTS]
-    dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
-    group_htlc_outputs = [
-        (
-            _htlc_output(dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
-                         _HTLC_REFUND_TIMELOCK, hashlocks[i])[4],
-            _3V_VAULT_AMOUNTS[i] + _3V_DEPOSITOR_CLAIM_VALUES[i] + _PEGIN_ANCHOR_VALUE + 10_000,
-        )
-        for i in range(3)
-    ]
-    auth_anchor = vault_auth_anchor(_DERIVED_ROOT)
-    tx = _build_prepegin_psbt_multi_vault(group_htlc_outputs, auth_anchor=auth_anchor).tx
-    prepegin_txid = hashlib.sha256(hashlib.sha256(tx.serialize()).digest()).digest()
     scalars_tlv = build_intent_tlv(
         coin_type=coin_type,
         base_fee_rate=_BASE_FEE_RATE,
         pegin_csv_timelock=_PEGIN_CSV_TIMELOCK,
         payout_timelock=_PAYOUT_TIMELOCK,
-        prepegin_txid=prepegin_txid,
+        prepegin_txid=bytes(32),
         htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
@@ -611,16 +603,11 @@ def _setup_s1_state(
     """Derive root + approve intent (Session 1).  Returns the 32-byte hashlock h.
 
     After this call the device is in VAULT_STATE_INTENT_LOADED with htlc_hashlock set.
+    prepegin_txid is zeros: Session 1 carries no txid binding, so the auto-transition
+    to SESSION2_PEGIN_EXPECTED does not fire (see approve_vault_intent.c).
     """
     hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
-    dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
-    _, _, _, _, htlc_spk = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock
-    )
-    auth_anchor = vault_auth_anchor(_DERIVED_ROOT)
-    tx = _build_prepegin_psbt(htlc_spk, auth_anchor=auth_anchor).tx
-    prepegin_txid = hashlib.sha256(hashlib.sha256(tx.serialize()).digest()).digest()
-    scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid)
+    scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
@@ -1015,10 +1002,21 @@ def test_sign_psbt_prepegin_no_state(
     client: "RaggerClient",
     bitcoin_network: str,
 ) -> None:
-    """Pre-PegIn fails with SW_BAD_STATE when no vault session is active."""
+    """Pre-PegIn fails with SW_BAD_STATE when no vault session is active.
+
+    Input 0 must be marked internal (via tap_bip32_paths) so the dispatch router
+    reaches _validate_prepegin and its state guard fires.  Without the internal key
+    the router falls through to _validate_display_wc and the wrong error is returned.
+    """
     coin_type = 0 if bitcoin_network == "main" else 1
     wallet = _standard_taproot_wallet(client, coin_type)
-    psbt = _build_prepegin_psbt(bytes([0x51, 0x20]) + bytes(32))
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
+    psbt = _build_prepegin_psbt(
+        bytes([0x51, 0x20]) + bytes(32),
+        input_internal_key=input_key,
+        input_fingerprint=fingerprint,
+        input_coin_type=coin_type,
+    )
 
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
@@ -2482,10 +2480,12 @@ def test_sign_psbt_payout_3vault_batch(
             _assert_single_schnorr_sig(result, dep_pk)
 
     # SESSION2_COMPLETE is now set; any further payout must be rejected.
+    # The dispatch falls through to the standalone tapscript path in COMPLETE, which
+    # cannot recognise the vault-UTXO leaf shape and returns SW_INCORRECT_DATA.
     extra_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0, htlc_vout=0)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(extra_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    assert exc.value.status == SW_INCORRECT_DATA
 
 
 # ===========================================================================
@@ -2648,8 +2648,8 @@ def test_sign_psbt_prepegin_no_op_return(
     """Valid Pre-PegIn without the auth-anchor OP_RETURN is accepted per v22.
 
     In v22 the OP_RETURN is optional (sign_psbt_validate.c: '(void) anchor_found').
-    The prepegin_txid in the intent is computed from the PSBT without the OP_RETURN,
-    and the device verifies it unconditionally.
+    Session 1 uses zeros for prepegin_txid in the intent, so the device stays in
+    INTENT_LOADED and the txid check is skipped.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -2660,7 +2660,6 @@ def test_sign_psbt_prepegin_no_op_return(
     )
     fingerprint, input_key = _prepegin_input_key(client, coin_type)
 
-    # Build PSBT without OP_RETURN; compute its txid to commit in the intent.
     psbt = _build_prepegin_psbt(
         htlc_spk,
         input_internal_key=input_key,
@@ -2668,9 +2667,8 @@ def test_sign_psbt_prepegin_no_op_return(
         input_coin_type=coin_type,
         auth_anchor=None,  # no OP_RETURN — valid in v22
     )
-    prepegin_txid = hashlib.sha256(hashlib.sha256(psbt.tx.serialize()).digest()).digest()
 
-    scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid)
+    scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
