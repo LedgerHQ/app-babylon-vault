@@ -508,12 +508,24 @@ def _setup_s1_state_3vault(
         client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
     )
     hashlocks = [vault_hashlock(_DERIVED_ROOT, v) for v in _3V_HTLC_VOUTS]
+    dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
+    group_htlc_outputs = [
+        (
+            _htlc_output(dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+                         _HTLC_REFUND_TIMELOCK, hashlocks[i])[4],
+            _3V_VAULT_AMOUNTS[i] + _3V_DEPOSITOR_CLAIM_VALUES[i] + _PEGIN_ANCHOR_VALUE + 10_000,
+        )
+        for i in range(3)
+    ]
+    auth_anchor = vault_auth_anchor(_DERIVED_ROOT)
+    tx = _build_prepegin_psbt_multi_vault(group_htlc_outputs, auth_anchor=auth_anchor).tx
+    prepegin_txid = hashlib.sha256(hashlib.sha256(tx.serialize()).digest()).digest()
     scalars_tlv = build_intent_tlv(
         coin_type=coin_type,
         base_fee_rate=_BASE_FEE_RATE,
         pegin_csv_timelock=_PEGIN_CSV_TIMELOCK,
         payout_timelock=_PAYOUT_TIMELOCK,
-        prepegin_txid=bytes(32),
+        prepegin_txid=prepegin_txid,
         htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
@@ -613,7 +625,14 @@ def _setup_s1_state(
     After this call the device is in VAULT_STATE_INTENT_LOADED with htlc_hashlock set.
     """
     hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
-    scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
+    dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
+    _, _, _, _, htlc_spk = _htlc_output(
+        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock
+    )
+    auth_anchor = vault_auth_anchor(_DERIVED_ROOT)
+    tx = _build_prepegin_psbt(htlc_spk, auth_anchor=auth_anchor).tx
+    prepegin_txid = hashlib.sha256(hashlib.sha256(tx.serialize()).digest()).digest()
+    scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid)
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
@@ -2370,21 +2389,19 @@ def test_sign_psbt_payout_vp_wrong_cpfp_anchor_key(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VP Payout fails with SW_BAD_CPFP_ANCHOR when Out2 scriptPubKey uses the wrong key."""
+    """VP CPFP anchor is value-only in v22; wrong scriptPubKey key is accepted."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
     _setup_payout_state(client, navigator, device, coin_type)
 
     psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
-    # Out2 is the VP CPFP anchor; replace its script with a different (wrong) key.
     wrong_key = TEST_VALID_KEYS[2]
     psbt.tx.vout[2] = CTxOut(VAULT_DUST_LIMIT, _bip86_p2tr_spk(wrong_key))
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_CPFP_ANCHOR
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    assert len(result) >= 1
 
 
 def test_sign_psbt_payout_vk_wrong_cpfp_anchor_key(
@@ -2393,7 +2410,7 @@ def test_sign_psbt_payout_vk_wrong_cpfp_anchor_key(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VK Payout fails with SW_BAD_CPFP_ANCHOR when Out1 scriptPubKey uses the wrong key."""
+    """VK CPFP anchor is value-only in v22; wrong scriptPubKey key is accepted."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
@@ -2404,14 +2421,13 @@ def test_sign_psbt_payout_vk_wrong_cpfp_anchor_key(
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     client.sign_psbt(vp_psbt, dummy_wallet, None)
 
-    # VK payout with a tampered CPFP anchor key in Out1.
+    # VK payout with a tampered CPFP anchor key — accepted in v22 (value-only check).
     vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
     wrong_key = TEST_VALID_KEYS[2]
     vk_psbt.tx.vout[1] = CTxOut(VAULT_DUST_LIMIT, _bip86_p2tr_spk(wrong_key))
 
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(vk_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_CPFP_ANCHOR
+    result = client.sign_psbt(vk_psbt, dummy_wallet, None)
+    assert len(result) >= 1
 
 
 # ===========================================================================

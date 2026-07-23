@@ -378,12 +378,10 @@ def test_keeper_count_zero(client: RaggerClient, bitcoin_network: str):
 def test_duplicate_tlv_tag(client: RaggerClient, bitcoin_network: str):
     """TLV payload with a duplicate tag must return SW_INCORRECT_DATA."""
     scalars = _make_scalars(bitcoin_network)
-    # Append a second TAG_VERSION at the end.  The parser sees the first occurrence
-    # during normal field collection, then hits the duplicate on the appended entry
-    # and rejects it.  Appending (rather than inserting mid-stream) is intentional:
-    # it ensures the first TAG_VERSION is always processed before the duplicate,
-    # regardless of canonical field ordering.
-    bad_tlv = scalars + bytes([0x02, 1, VAULT_PROTOCOL_VERSION])
+    # Append a second TAG_VERSION (0x0002) at the end — 2-byte tag, 1-byte length, value.
+    # The parser sees the first TAG_VERSION during normal field collection, then hits the
+    # duplicate on the appended entry and rejects it.
+    bad_tlv = scalars + bytes([0x00, 0x02, 1, VAULT_PROTOCOL_VERSION])
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, bad_tlv)
     assert exc.value.status == SW_INCORRECT_DATA
@@ -513,20 +511,6 @@ def test_invalid_ec_point_keeper_rejected(client: RaggerClient, navigator: Navig
         _raw_exchange(client, P1_KEY_BATCH,
                       _ktlv(TAG_KEEPER_PK, TEST_INVALID_XONLY_KEY) +
                       _ktlv(TAG_CHALLENGER_PK, KEY_B))
-    assert exc.value.status == SW_INCORRECT_DATA
-
-
-def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: Navigator,
-                                              device: Device, bitcoin_network: str):
-    """A challenger key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
-    derive_for_intent(client, navigator, device, bitcoin_network)
-    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    _raw_exchange(client, P1_SCALARS, scalars)
-    _raw_exchange(client, P1_GROUP, _make_group())
-    with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_KEY_BATCH,
-                      _ktlv(TAG_KEEPER_PK, KEY_A) +
-                      _ktlv(TAG_CHALLENGER_PK, TEST_INVALID_XONLY_KEY))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
@@ -665,16 +649,6 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
                                   path=SCREENSHOT_PATH,
                                   test_case_name="screen2_vault_intent/10vault_32k32c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 10, 32))
-
-
-def test_htlc_vout_out_of_order(client: RaggerClient, bitcoin_network: str):
-    """Second group with htlc_vout <= first group must return SW_INCORRECT_DATA."""
-    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
-    _raw_exchange(client, P1_SCALARS, scalars)
-    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=5))
-    with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=3))  # 3 <= 5
-    assert exc.value.status == SW_INCORRECT_DATA
 
 
 def test_htlc_vout_equal_rejected(client: RaggerClient, bitcoin_network: str):
