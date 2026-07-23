@@ -4,7 +4,7 @@ Snapshot tests for the APPROVE_VAULT_INTENT display screen.
 These tests capture every page of the vault intent review flow as golden images.
 On first run use --golden_run to generate the reference snapshots:
 
-    pytest tests/test_vault_intent_screen.py --golden_run -k flex
+    pytest tests/test_screen2_vault_intent.py --golden_run -k flex
 
 Subsequent runs compare against those goldens automatically.
 

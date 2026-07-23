@@ -367,6 +367,20 @@ def test_pegin_csv_below_min(client: RaggerClient, bitcoin_network: str):
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_htlc_refund_timelock_at_max(client: RaggerClient, bitcoin_network: str):
+    """htlc_refund_timelock = 4320 (maximum per v22) must be accepted."""
+    scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=4320)
+    _raw_exchange(client, P1_SCALARS, scalars)  # must not raise
+
+
+def test_htlc_refund_timelock_over_max(client: RaggerClient, bitcoin_network: str):
+    """htlc_refund_timelock = 4321 (above v22 maximum 4320) must return SW_INCORRECT_DATA."""
+    scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=4321)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_keeper_count_zero(client: RaggerClient, bitcoin_network: str):
     """keeper_count = 0 must return SW_INCORRECT_DATA."""
     scalars = _make_scalars(bitcoin_network, keeper_count=0)
