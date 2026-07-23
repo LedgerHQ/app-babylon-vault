@@ -16,7 +16,7 @@ static void review_choice(bool approved) {
     }
 }
 
-#define MAX_N_PAIRS 4
+#define MAX_N_PAIRS 6
 
 _Static_assert(MAX_N_PAIRS == TX_DISPLAY_MAX_PAIRS,
                "TX_DISPLAY_MAX_PAIRS out of sync with MAX_N_PAIRS");
@@ -24,6 +24,8 @@ _Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= MAX_AMOUNT_LENGTH + 1,
                "TX_DISPLAY_AMOUNT_STR_SIZE too small; update globals.h");
 _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
                "TX_DISPLAY_ADDR_STR_SIZE too small; update globals.h");
+_Static_assert(TX_DISPLAY_TXID_STR_SIZE >= 2 * 32 + 1,
+               "TX_DISPLAY_TXID_STR_SIZE too small for 32-byte hex txid; update globals.h");
 
 // ---------------------------------------------------------------------------
 // Screen 1 — DERIVE_CONTEXT_HASH approval
@@ -127,17 +129,28 @@ bool display_prepegin_transaction(dispatcher_context_t *dc,
 bool display_refund_transaction(dispatcher_context_t *dc,
                                 uint64_t amount_reclaimed,
                                 uint64_t fee,
+                                uint32_t timelock_blocks,
+                                const uint8_t *prepegin_txid,
                                 const char *refund_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list;
 
+    format_hex(prepegin_txid, 32, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    snprintf(G_scratch.display_tx.extra_str,
+             TX_DISPLAY_AMOUNT_STR_SIZE,
+             "%lu blocks",
+             (unsigned long) timelock_blocks);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Pre-PegIn txid",
+                                             .value = G_scratch.display_tx.txid_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount",
                                              .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Refund timelock",
+                                             .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
@@ -168,19 +181,29 @@ bool display_refund_transaction(dispatcher_context_t *dc,
 // Screen 4 — Claim transaction
 // ---------------------------------------------------------------------------
 
-bool display_claim_transaction(dispatcher_context_t *dc, uint64_t amount_spent, uint64_t fee) {
+bool display_claim_transaction(dispatcher_context_t *dc,
+                               uint64_t amount_spent,
+                               uint64_t connector_amount,
+                               uint64_t fee,
+                               const uint8_t *pegin_txid) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list;
 
     format_sats_amount(COIN_COINID_SHORT, amount_spent, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, connector_amount, G_scratch.display_tx.extra_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+    format_hex(pegin_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
 
     int n = 0;
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Amount spent", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Connector amount",
+                                             .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.addr_str};
 
     assert(n <= MAX_N_PAIRS);
 
@@ -211,6 +234,7 @@ bool display_claim_transaction(dispatcher_context_t *dc, uint64_t amount_spent, 
 bool display_assert_transaction(dispatcher_context_t *dc,
                                 const uint8_t *claim_txid,
                                 uint64_t amount_carried,
+                                uint32_t n_outputs,
                                 uint64_t fee) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
@@ -219,6 +243,10 @@ bool display_assert_transaction(dispatcher_context_t *dc,
     /* addr_str (80 B) holds 64-char hex txid + NUL. */
     format_hex(claim_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, amount_carried, G_scratch.display_tx.amount_str);
+    snprintf(G_scratch.display_tx.extra_str,
+             TX_DISPLAY_AMOUNT_STR_SIZE,
+             "%lu outputs",
+             (unsigned long) n_outputs);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
@@ -226,6 +254,8 @@ bool display_assert_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Claim txid", .value = G_scratch.display_tx.addr_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Amount", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Output count",
+                                             .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
@@ -255,7 +285,11 @@ bool display_assert_transaction(dispatcher_context_t *dc,
 // Screen 6 — Wrongly Challenged (WC) transaction
 // ---------------------------------------------------------------------------
 
-bool display_wc_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed, uint64_t fee) {
+bool display_wc_transaction(dispatcher_context_t *dc,
+                            uint64_t amount_reclaimed,
+                            uint64_t wallet_inputs_amount,
+                            uint64_t fee,
+                            const char *wc_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list;
@@ -266,8 +300,16 @@ bool display_wc_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed,
     int n = 0;
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount",
                                              .value = G_scratch.display_tx.amount_str};
+    if (wallet_inputs_amount > 0) {
+        format_sats_amount(COIN_COINID_SHORT,
+                           wallet_inputs_amount,
+                           G_scratch.display_tx.extra_str);
+        tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Wallet inputs",
+                                                 .value = G_scratch.display_tx.extra_str};
+    }
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = wc_address};
 
     assert(n <= MAX_N_PAIRS);
 

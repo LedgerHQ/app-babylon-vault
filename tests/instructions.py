@@ -206,10 +206,11 @@ def sign_psbt_refund_nav(device: Device) -> List[NavInsID]:
 
     Use with sign_psbt_with_nav_and_compare().  Stores all review pages as:
       00000.png — intro ("Review refund transaction")
-      00001.png — content ("Reclaimed amount" + "Transaction fee" + "Reclaim address")
-      00002.png — finish ("Sign refund transaction?")
-      00003.png — reject confirmation dialog
-      00004.png — rejection status
+      00001.png — content ("Pre-PegIn txid" + "Reclaimed amount" + "Refund timelock"
+                           + "Transaction fee" + "Reclaim address") — may span multiple pages
+      ...    — finish ("Sign refund transaction?")
+      ...    — reject confirmation dialog
+      ...    — rejection status
     """
     assert not device.is_nano, "Nano uses sign_psbt_refund_instructions, not flat nav"
     return [
@@ -233,7 +234,7 @@ def sign_psbt_claim_instructions(device: Device) -> Instructions:
 def sign_psbt_claim_nav(device: Device) -> List[NavInsID]:
     """Flat reject-path navigation for Screen 4 (Claim) on touch devices.
 
-    Fields: "Amount spent", "Transaction fee" — 2 fields, expected 1 content page.
+    Fields: "Amount spent", "Connector amount", "Transaction fee", "PegIn txid" — 4 fields.
     Verify step count against first --golden_run if snapshots are wrong.
     """
     assert not device.is_nano, "Nano uses sign_psbt_claim_instructions, not flat nav"
@@ -269,7 +270,7 @@ def sign_psbt_assert_instructions(device: Device) -> Instructions:
 def sign_psbt_assert_nav(device: Device) -> List[NavInsID]:
     """Flat reject-path navigation for Screen 5 (Assert) on touch devices.
 
-    Fields: "Claim txid" (32-byte hex), "Amount", "Transaction fee" — 3 fields.
+    Fields: "Claim txid" (32-byte hex), "Amount", "Output count", "Transaction fee" — 4 fields.
     The long txid field may span an extra page on some devices; verify with --golden_run.
     """
     assert not device.is_nano, "Nano uses sign_psbt_assert_instructions, not flat nav"
@@ -305,7 +306,8 @@ def sign_psbt_wc_instructions(device: Device) -> Instructions:
 def sign_psbt_wc_nav(device: Device) -> List[NavInsID]:
     """Flat reject-path navigation for Screen 6 (WC) on touch devices.
 
-    Fields: "Reclaimed amount", "Transaction fee" — 2 fields, expected 1 content page.
+    Fields: "Reclaimed amount", ["Wallet inputs"], "Transaction fee", "Reclaim address" — 3–4 fields.
+    Verify step count against first --golden_run if snapshots are wrong.
     """
     assert not device.is_nano, "Nano uses sign_psbt_wc_instructions, not flat nav"
     return [

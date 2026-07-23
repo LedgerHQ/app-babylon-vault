@@ -839,6 +839,18 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     }
     uint64_t fee = htlc_value - out_value;
 
+    /* Read the Pre-PegIn txid (Input 0 prevout) for Screen 3 display. */
+    uint8_t prepegin_txid[VAULT_HASH256_LEN];
+    if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                           &input_map,
+                                                           (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                           1,
+                                                           prepegin_txid,
+                                                           VAULT_HASH256_LEN)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
     /* Convert refund output scriptPubKey to address string.
      * Written into G_scratch.display_tx.addr_str — NBGL holds a pointer to it
      * across the blocking io_ui_process() call in display_refund_transaction. */
@@ -851,7 +863,12 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     }
 
     /* SW_DENY already sent by display function on rejection */
-    if (!display_refund_transaction(dc, out_value, fee, G_scratch.display_tx.addr_str)) {
+    if (!display_refund_transaction(dc,
+                                    out_value,
+                                    fee,
+                                    csv_value,
+                                    prepegin_txid,
+                                    G_scratch.display_tx.addr_str)) {
         return false;
     }
     return true;
@@ -1861,7 +1878,23 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     }
     uint64_t fee = input_value - st->outputs.total_amount;
 
-    if (!display_claim_transaction(dc, input_value, fee)) return false;
+    /* connector_amount = Out0 value = total outputs minus the VAULT_DUST_LIMIT CPFP anchor */
+    uint64_t connector_amount = st->outputs.total_amount - VAULT_DUST_LIMIT;
+
+    /* Read PegIn txid (Input 0 prevout) — vault reference shown on Screen 4. */
+    uint8_t pegin_txid[VAULT_HASH256_LEN];
+    if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                           &input_map,
+                                                           (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                           1,
+                                                           pegin_txid,
+                                                           VAULT_HASH256_LEN)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    if (!display_claim_transaction(dc, input_value, connector_amount, fee, pegin_txid))
+        return false;
     return true;
 }
 
@@ -1976,7 +2009,8 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
     }
     uint64_t fee = st->inputs_total_amount - st->outputs.total_amount;
 
-    if (!display_assert_transaction(dc, claim_txid, amount_carried, fee)) return false;
+    if (!display_assert_transaction(dc, claim_txid, amount_carried, (uint32_t) st->n_outputs, fee))
+        return false;
     return true;
 }
 
@@ -2079,7 +2113,8 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
         }
     }
 
-    /* WITNESS_UTXO: verify taproot commitment */
+    /* WITNESS_UTXO: verify taproot commitment and extract the WC UTXO value. */
+    uint64_t wc_utxo_value;
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -2097,10 +2132,11 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        wc_utxo_value = read_u64_le(witness_utxo, 0);
         if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
     }
 
-    /* Output 0: BIP-86 P2TR(D) */
+    /* Output 0: BIP-86 P2TR(D) — also convert to address for display. */
     uint64_t out0_value;
     {
         uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
@@ -2113,6 +2149,15 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        /* Convert verified output to bech32m address for display.
+         * NBGL holds the pointer across io_ui_process in display_wc_transaction. */
+        if (get_script_address(out_spk,
+                               VAULT_P2TR_SCRIPTPUBKEY_LEN,
+                               G_scratch.display_tx.addr_str,
+                               sizeof(G_scratch.display_tx.addr_str)) < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
     }
 
     if (st->inputs_total_amount < out0_value) {
@@ -2121,7 +2166,16 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
     }
     uint64_t fee = st->inputs_total_amount - out0_value;
 
-    if (!display_wc_transaction(dc, out0_value, fee)) return false;
+    /* Wallet inputs are any counted inputs beyond the WC UTXO itself. */
+    uint64_t wallet_inputs_amount =
+        (st->inputs_total_amount > wc_utxo_value) ? st->inputs_total_amount - wc_utxo_value : 0;
+
+    if (!display_wc_transaction(dc,
+                                out0_value,
+                                wallet_inputs_amount,
+                                fee,
+                                G_scratch.display_tx.addr_str))
+        return false;
     return true;
 }
 

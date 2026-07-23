@@ -38,9 +38,10 @@ typedef struct {
 
 /* Scratch layout shared by Screen 2–8 transaction display functions.
  * String sizes verified by static asserts in display.c. */
-#define TX_DISPLAY_MAX_PAIRS       4
+#define TX_DISPLAY_MAX_PAIRS       6
 #define TX_DISPLAY_AMOUNT_STR_SIZE 28 /* MAX_AMOUNT_LENGTH + 1 */
 #define TX_DISPLAY_ADDR_STR_SIZE   80 /* MAX_ADDRESS_LENGTH_STR + 1 */
+#define TX_DISPLAY_TXID_STR_SIZE   65 /* 32-byte txid as 64 hex chars + NUL */
 
 /**
  * Scratch buffers for display_vault_intent.  Lives in G_scratch.display for the
@@ -62,8 +63,10 @@ typedef struct {
  * one union member.
  *
  * pairs_raw holds the nbgl_layoutTagValue_t array as raw bytes (same pattern as
- * display_vault_intent_scratch_t).  addr_str is written by the caller before
- * invoking the display function; NBGL holds a pointer to it across io_ui_process.
+ * display_vault_intent_scratch_t).  addr_str and txid_str are written by the
+ * caller before invoking the display function; NBGL holds pointers to them
+ * across io_ui_process.  txid_str is used when a screen needs both a txid and
+ * an address (Screen 3), leaving addr_str free for the bech32m address.
  */
 typedef struct {
     uint8_t pairs_raw[TX_DISPLAY_MAX_PAIRS * VAULT_DISPLAY_PAIR_SIZE];
@@ -71,6 +74,7 @@ typedef struct {
     char fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
     char extra_str[TX_DISPLAY_AMOUNT_STR_SIZE];
     char addr_str[TX_DISPLAY_ADDR_STR_SIZE];
+    char txid_str[TX_DISPLAY_TXID_STR_SIZE];
 } display_tx_scratch_t;
 
 /**

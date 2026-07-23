@@ -36,6 +36,7 @@ from .vault_client import SW_DENY, sign_psbt_with_nav_and_compare
 from .instructions import sign_psbt_claim_instructions, sign_psbt_claim_nav
 from .test_sign_psbt_validate import (
     _NoWalletPolicy,
+    _bip86_p2tr_spk,
     _tapleaf_hash,
     HARDENED,
     VAULT_NUMS_XONLY,
@@ -48,7 +49,6 @@ ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
 def _build_claim_psbt(
     fingerprint: bytes,
     leaf_key: bytes,
-    out_key: bytes,
     coin_type: int,
     input_value: int = 1_200_000,
     connector_value: int = 600_000,
@@ -59,6 +59,7 @@ def _build_claim_psbt(
              P2TR with NUMS internal key.  D is verified via TAP_BIP32_DERIVATION.
     Output 0: ClaimAssertConnector — host-provided; not checked by the device.
     Output 1: BIP-86 P2TR(D) CPFP anchor, value = VAULT_DUST_LIMIT.
+              The device derives this key from D (leaf_key), not a separate out key.
     """
     claim_leaf = bytes([0x20]) + leaf_key + bytes([0xAC])  # 34 bytes
     leaf_hash = _tapleaf_hash(claim_leaf)
@@ -66,8 +67,7 @@ def _build_claim_psbt(
     claim_spk = bytes([0x51, 0x20]) + tweaked
     control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY
 
-    _, bip86_out = taproot_tweak_pubkey(out_key, b'')
-    cpfp_spk = bytes([0x51, 0x20]) + bip86_out
+    cpfp_spk = _bip86_p2tr_spk(leaf_key)
 
     dummy_connector_spk = bytes([0x51, 0x20]) + bytes(32)
 
@@ -117,11 +117,8 @@ def test_sign_psbt_claim_screen(
     leaf_key = ExtendedKey.deserialize(
         client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
     ).pubkey[1:]
-    out_key = ExtendedKey.deserialize(
-        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/1", display=False)
-    ).pubkey[1:]
 
-    psbt = _build_claim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     tname = "screen4_claim/screen_" + bitcoin_network
 

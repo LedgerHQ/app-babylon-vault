@@ -56,36 +56,43 @@ bool display_prepegin_transaction(dispatcher_context_t *dc,
 /**
  * @brief Screen 3 — Refund transaction review.
  *
- * Shows the amount reclaimed, transaction fee, and the destination (reclaim) address.
- * Approval gates signing; rejection returns SW_DENY.
- *
- * @param amount_reclaimed  Amount returned to the depositor in satoshis.
- * @param fee               Transaction fee in satoshis.
- * @param refund_address    NUL-terminated bech32m address string; caller must keep
- *                          the pointer valid until this function returns.
+ * @param amount_reclaimed   Amount returned to the depositor in satoshis.
+ * @param fee                Transaction fee in satoshis.
+ * @param timelock_blocks    Refund timelock from the leaf script (block count).
+ * @param prepegin_txid      32-byte Pre-PegIn txid (shown as hex); caller must keep valid.
+ * @param refund_address     NUL-terminated bech32m address; caller must keep valid.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
 bool display_refund_transaction(dispatcher_context_t *dc,
                                 uint64_t amount_reclaimed,
                                 uint64_t fee,
+                                uint32_t timelock_blocks,
+                                const uint8_t *prepegin_txid,
                                 const char *refund_address);
 
 /**
  * @brief Screen 4 — Claim transaction review (depositor-as-claimer).
  *
- * @param amount_spent  Output amount sent to the Claim leaf in satoshis.
- * @param fee           Transaction fee in satoshis.
+ * @param amount_spent       PegIn UTXO value consumed (Dcv) in satoshis.
+ * @param connector_amount   Output 0 value locked into the ClaimAssertConnector, satoshis.
+ * @param fee                Transaction fee in satoshis.
+ * @param pegin_txid         32-byte PegIn txid (vault reference, shown as hex); caller keeps valid.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
-bool display_claim_transaction(dispatcher_context_t *dc, uint64_t amount_spent, uint64_t fee);
+bool display_claim_transaction(dispatcher_context_t *dc,
+                               uint64_t amount_spent,
+                               uint64_t connector_amount,
+                               uint64_t fee,
+                               const uint8_t *pegin_txid);
 
 /**
  * @brief Screen 5 — Assert transaction review.
  *
  * @param claim_txid      32-byte Claim txid (shown as hex); caller must keep valid.
  * @param amount_carried  Amount carried into the Assert output in satoshis.
+ * @param n_outputs       Number of outputs in the Assert transaction.
  * @param fee             Transaction fee in satoshis.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
@@ -93,17 +100,24 @@ bool display_claim_transaction(dispatcher_context_t *dc, uint64_t amount_spent, 
 bool display_assert_transaction(dispatcher_context_t *dc,
                                 const uint8_t *claim_txid,
                                 uint64_t amount_carried,
+                                uint32_t n_outputs,
                                 uint64_t fee);
 
 /**
  * @brief Screen 6 — Wrongly Challenged (WC) transaction review.
  *
- * @param amount_reclaimed  Amount reclaimed to the depositor in satoshis.
- * @param fee               Transaction fee in satoshis.
+ * @param amount_reclaimed     Amount reclaimed to the depositor in satoshis.
+ * @param wallet_inputs_amount Extra wallet input value contributed for fees (0 if none).
+ * @param fee                  Transaction fee in satoshis.
+ * @param wc_address           NUL-terminated bech32m reclaim address; caller keeps valid.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
-bool display_wc_transaction(dispatcher_context_t *dc, uint64_t amount_reclaimed, uint64_t fee);
+bool display_wc_transaction(dispatcher_context_t *dc,
+                            uint64_t amount_reclaimed,
+                            uint64_t wallet_inputs_amount,
+                            uint64_t fee,
+                            const char *wc_address);
 
 /**
  * @brief Screen 7 — Payout transaction review.
