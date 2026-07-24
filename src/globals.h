@@ -33,8 +33,9 @@ typedef struct {
 /* sizeof(nbgl_layoutTagValue_t) — verified at compile time in display.c */
 #define VAULT_DISPLAY_PAIR_SIZE 16
 
-/* Pair count for vault intent display: 9 scalar fields + one entry per key */
-#define VAULT_DISPLAY_PAIRS_COUNT (9 + VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS)
+/* Maximum pair count for the scalar-fields segment of the vault intent review.
+ * Key pairs are formatted on demand via callback; they are not stored here. */
+#define VAULT_SCALAR_PAIRS_MAX 9
 
 /* Scratch layout shared by Screen 2–8 transaction display functions.
  * String sizes verified by static asserts in display.c. */
@@ -43,18 +44,36 @@ typedef struct {
 #define TX_DISPLAY_ADDR_STR_SIZE   80 /* MAX_ADDRESS_LENGTH_STR + 1 */
 #define TX_DISPLAY_TXID_STR_SIZE   65 /* 32-byte txid as 64 hex chars + NUL */
 
+/*
+ * Number of independent key-pair slots in display_vault_intent_scratch_t.
+ *
+ * nbgl_layoutAddTagValueList() stores pair->item and pair->value as raw pointers
+ * in text-area objects, then processes all pairs in a loop before rendering.
+ * If the callback always returns the same pointer, each successive call overwrites
+ * the previous pair's strings.  Using VAULT_KEY_PAIR_SLOTS distinct slots (indexed
+ * by pairIndex % VAULT_KEY_PAIR_SLOTS) ensures each live pair has its own buffer.
+ * 4 slots safely covers the maximum number of pairs NBGL lays out per page across
+ * all supported devices (Nano S+ fits at most 2 key-length pairs per page).
+ */
+#define VAULT_KEY_PAIR_SLOTS 4
+
 /**
  * Scratch buffers for display_vault_intent.  Lives in G_scratch.display for the
  * duration of the blocking io_ui_process() call.
  *
- * vault_pairs_raw holds the nbgl_layoutTagValue_t array as raw bytes to avoid
+ * vault_pairs_raw holds the scalar nbgl_layoutTagValue_t array as raw bytes to avoid
  * pulling NBGL headers into globals.h.  display.c asserts sizeof(nbgl_layoutTagValue_t)
  * == VAULT_DISPLAY_PAIR_SIZE and casts the pointer before use.
+ *
+ * Key pairs (keepers + challengers) are formatted on demand by _vault_key_pair_callback()
+ * into key_str[slot] / key_label[slot], returned via key_pair_raw[slot].  The slot is
+ * pairIndex % VAULT_KEY_PAIR_SLOTS, giving each concurrently live pair a distinct buffer.
  */
 typedef struct {
-    uint8_t vault_pairs_raw[VAULT_DISPLAY_PAIRS_COUNT * VAULT_DISPLAY_PAIR_SIZE];
-    char key_strs[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_HEX_KEY_STR_SIZE];
-    char key_labels[VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS][VAULT_KEY_LABEL_SIZE];
+    uint8_t vault_pairs_raw[VAULT_SCALAR_PAIRS_MAX * VAULT_DISPLAY_PAIR_SIZE];
+    char    key_str[VAULT_KEY_PAIR_SLOTS][VAULT_HEX_KEY_STR_SIZE];
+    char    key_label[VAULT_KEY_PAIR_SLOTS][VAULT_KEY_LABEL_SIZE];
+    uint8_t key_pair_raw[VAULT_KEY_PAIR_SLOTS][VAULT_DISPLAY_PAIR_SIZE];
 } display_vault_intent_scratch_t;
 
 /**
@@ -80,17 +99,19 @@ typedef struct {
 /**
  * Scratch buffer pair for _validate_display_refund leaf-script verification.
  *
- * expected_script aliases script_scratch (offset 0) — vault_build_htlc_leaf0 writes
- * there as usual.  actual_buf reuses the tail bytes of display_vault_intent_scratch_t
- * that are idle during validation (display_vault_intent blocks on io_ui_process and
- * therefore cannot overlap with any validation call).
+ * expected_script aliases script_scratch (union offset 0) — vault_build_htlc_leaf0
+ * writes there as usual.  actual_buf starts at union offset VAULT_SCRIPT_MAX_LEN and
+ * holds, in sequence: the reconstructed Leaf 1, the PSBT TAP_LEAF_SCRIPT value
+ * (leaf0 bytes + version byte, up to _VAULT_MAX_LEAF0_WITH_VERSION bytes), and tap
+ * leaf script values read by _tap_leaf_script_callback.  All three require up to
+ * VAULT_SCRIPT_MAX_LEN bytes; a compile-time assertion in globals.c verifies this.
  *
- * sizeof(refund_leaf_check_t) < sizeof(display_vault_intent_scratch_t), so adding it to
- * the union does not increase the union size.
+ * After the key-display callback refactor, refund_leaf_check_t (5120 B) is the union
+ * size dominator, replacing display_vault_intent_scratch_t (now 239 B).
  */
 typedef struct {
     uint8_t expected_script[VAULT_SCRIPT_MAX_LEN];
-    uint8_t actual_buf[sizeof(display_vault_intent_scratch_t) - VAULT_SCRIPT_MAX_LEN];
+    uint8_t actual_buf[VAULT_SCRIPT_MAX_LEN];
 } refund_leaf_check_t;
 
 /**
@@ -144,21 +165,69 @@ typedef struct {
 } derive_context_hash_scratch_t;
 
 /**
+ * Scratch for sign_custom_inputs() standalone branch (Refund, Claim, Assert, WC).
+ *
+ * This struct lives in G_scratch as a union member alongside tap_leaf_script_state_t
+ * (tls).  Fields are intentionally ordered so that each write clobbers only tls bytes
+ * that are already fully consumed, allowing all locals except input_map to be moved
+ * off the stack.  Access ordering (enforced in sign_custom_inputs.c):
+ *
+ *   leaf_hash  [0..31]:  written by vault_taproot_leaf_hash() after
+ *                        vault_read_refund_leaf_script() returns; clobbers
+ *                        tls.found (0), tls.ambiguous (1),
+ *                        tls.control_block[0..29] (2..31) — all dead.
+ *   leaf_key   [32..63]: written after reading tls.leaf_script[0] and [1..32];
+ *                        clobbers tls.control_block[30..62] — dead.
+ *   input_spk  [64..97]: written by read_p2tr_witness_utxo() only after the
+ *                        tls.leaf_script_len check and leaf_key copy are done;
+ *                        clobbers tls.control_block_len (67) and
+ *                        tls.leaf_script[0..29] (68..97) — dead.
+ *   deriv_key … sighash: written only after tls is completely consumed.
+ *
+ * input_map (merkleized_map_commitment_t, 72 B) is passed as output to
+ * vault_read_refund_leaf_script(), which also writes G_scratch.tls in the same
+ * call; it therefore cannot reside in this struct and stays on the caller's stack.
+ *
+ * _Static_asserts in sign_custom_inputs.c verify the layout assumptions.
+ */
+typedef struct {
+    uint8_t leaf_hash[VAULT_HASH256_LEN];            /* [0..31]   */
+    uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];        /* [32..63]  */
+    uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN]; /* [64..97]  */
+    uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];  /* [98..130] */
+    /* 1B n_hashes + 2×32B leaf_hashes + 4B fingerprint + path */
+    uint8_t deriv_val[1 + 2 * VAULT_HASH256_LEN + 4 + VAULT_STANDALONE_PATH_LEN * 4]; /* [131..219] */
+    uint32_t sign_path[VAULT_STANDALONE_PATH_LEN];  /* [220..239] */
+    uint8_t xpub_bytes[78]; /* sizeof(serialized_extended_pubkey_t) */     /* [240..317] */
+    uint8_t sighash[VAULT_HASH256_LEN];              /* [318..349] */
+} sign_standalone_scratch_t;
+
+/**
  * Mutually-exclusive scratch union.
  *
  * Each member is live in exactly one handler and is zeroed before use:
- *   - script_scratch  vault_build_* signing hooks
- *   - display         display_vault_intent only (blocks on io_ui_process)
- *   - display_tx      Screen 2–8 transaction display functions
- *   - derive_ctx      handler_derive_context_hash
- *   - leaf_check      _validate_display_refund leaf-script comparison
- *   - tls             _tap_leaf_script_callback state during refund validation
+ *   - script_scratch    vault_build_* signing hooks
+ *   - display           display_vault_intent only (blocks on io_ui_process)
+ *   - display_tx        Screen 2–8 transaction display functions
+ *   - derive_ctx        handler_derive_context_hash
+ *   - leaf_check        _validate_display_refund leaf-script comparison
+ *   - tls               _tap_leaf_script_callback state during refund validation
+ *   - sign_standalone   standalone signing branch of sign_custom_inputs()
  *
  * Timing is non-overlapping: tls is populated by the callback inside
  * call_get_merkleized_map_with_callback (step 5), then consumed through
  * step 10; leaf_check.actual_buf is first written at step 11 — safe.
  * display_tx is written (addr_str) and then read (io_ui_process) only after
  * tls and leaf_check are fully consumed.
+ *
+ * sign_standalone aliases tls byte-by-byte with access-order discipline
+ * (see sign_standalone_scratch_t comment above); it does not increase the
+ * union size.
+ *
+ * Size dominator: refund_leaf_check_t at 2 × VAULT_SCRIPT_MAX_LEN = 5120 B.
+ * display (display_vault_intent_scratch_t) is now ~524 B — key strings are
+ * generated on demand by _vault_key_pair_callback() into VAULT_KEY_PAIR_SLOTS
+ * ring-buffer slots rather than pre-formatted for all keys.
  *
  * approve_intent_state_t is intentionally NOT in this union.  Its boolean guard
  * at the first byte (scalars_loaded) would, if it were a union member, be aliased
@@ -173,6 +242,7 @@ typedef union {
     derive_context_hash_scratch_t derive_ctx;
     refund_leaf_check_t leaf_check;
     tap_leaf_script_state_t tls;
+    sign_standalone_scratch_t sign_standalone;
 } vault_scratch_t;
 
 extern vault_scratch_t G_scratch;

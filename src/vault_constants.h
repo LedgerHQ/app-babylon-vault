@@ -77,6 +77,9 @@
 /** Maximum depth of a BIP-32 derivation path (number of levels). */
 #define VAULT_MAX_PATH_DEPTH 10u
 
+/** BIP-86 path depth for standalone signing (m/86'/coin_type'/0'/change/index). */
+#define VAULT_STANDALONE_PATH_LEN 5u
+
 /** Compressed SEC1 public key length: 1-byte parity prefix + 32-byte x-coordinate. */
 #define VAULT_COMPRESSED_PUBKEY_LEN 33u
 

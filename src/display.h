@@ -33,27 +33,6 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
 bool display_vault_intent(dispatcher_context_t *dc);
 
 /**
- * @brief Screen 2 — Pre-PegIn transaction review.
- *
- * Shows vault amount, depositor claim value, fee, and HTLC output address.
- * Approval gates signing; rejection returns SW_DENY.
- *
- * @param vault_amount          Vault amount in satoshis.
- * @param depositor_claim_value Depositor claim value in satoshis (shown so the user
- *                              sees the full funds committed to the HTLC).
- * @param fee                   Transaction fee in satoshis.
- * @param htlc_address          NUL-terminated bech32 address string; caller must keep
- *                              the pointer valid until this function returns.
- * @return true   User approved.
- * @return false  User rejected (SW_DENY already sent).
- */
-bool display_prepegin_transaction(dispatcher_context_t *dc,
-                                  uint64_t vault_amount,
-                                  uint64_t depositor_claim_value,
-                                  uint64_t fee,
-                                  const char *htlc_address);
-
-/**
  * @brief Screen 3 — Refund transaction review.
  *
  * @param amount_reclaimed   Amount returned to the depositor in satoshis.

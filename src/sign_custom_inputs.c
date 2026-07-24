@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "ledger_assert.h"
@@ -29,6 +30,29 @@
 #define _MAX_WITNESS_UTXO_LEN (_WU_SCRIPT_OFF + VAULT_P2TR_SCRIPTPUBKEY_LEN)
 /* 1B n_hashes + up to 2×32B leaf_hashes + 4B fingerprint + 5*4B path */
 #define _MAX_TAP_BIP32_DERIV_LEN (1 + 2 * 32 + 4 + 5 * 4)
+
+/*
+ * Verify sign_standalone_scratch_t layout assumptions used for tls aliasing.
+ * If any assert fires, review the field ordering rules in sign_standalone_scratch_t's
+ * comment in globals.h.
+ */
+_Static_assert(offsetof(tap_leaf_script_state_t, leaf_script) == 68,
+               "sign_standalone aliasing: tls.leaf_script offset must be 68");
+_Static_assert(offsetof(sign_standalone_scratch_t, leaf_hash) == 0,
+               "sign_standalone layout changed: leaf_hash must be first");
+_Static_assert(offsetof(sign_standalone_scratch_t, leaf_key) == VAULT_HASH256_LEN,
+               "sign_standalone layout changed: leaf_key must be at offset 32");
+_Static_assert(offsetof(sign_standalone_scratch_t, input_spk) == 2 * VAULT_XONLY_PUBKEY_LEN,
+               "sign_standalone layout changed: input_spk must be at offset 64");
+/* input_spk must start before tls.leaf_script so writes to input_spk[0..3] only
+ * hit dead control_block/control_block_len bytes (offsets 64-67), not leaf_script. */
+_Static_assert(offsetof(sign_standalone_scratch_t, input_spk) <
+               offsetof(tap_leaf_script_state_t, leaf_script),
+               "sign_standalone aliasing: input_spk must start before tls.leaf_script");
+_Static_assert(sizeof(G_scratch.sign_standalone.xpub_bytes) == sizeof(serialized_extended_pubkey_t),
+               "sign_standalone.xpub_bytes size must match serialized_extended_pubkey_t");
+_Static_assert(sizeof(sign_standalone_scratch_t) <= sizeof(vault_scratch_t),
+               "sign_standalone_scratch_t must fit within vault_scratch_t");
 
 /*
  * Read PSBT_IN_WITNESS_UTXO for input 0 of `input_map` and require it to be a
@@ -341,53 +365,69 @@ bool sign_custom_inputs(
      * functions clobber G_scratch.tls via the display_tx union member.
      * ----------------------------------------------------------------------- */
     {
+        /* input_map stays on the stack: vault_read_refund_leaf_script() writes
+         * both G_scratch.tls and *input_map_out in the same call, so input_map
+         * cannot alias any G_scratch union member. */
         merkleized_map_commitment_t input_map;
         if (!vault_read_refund_leaf_script(dc, st, &input_map)) {
             return false;
         }
 
-        uint8_t leaf_hash[VAULT_HASH256_LEN];
+        /* Phase 1: consume G_scratch.tls and populate G_scratch.sign_standalone.
+         * Each write targets bytes already dead in tls — see sign_standalone_scratch_t
+         * in globals.h for the byte-by-byte aliasing map. */
+
+        /* leaf_hash [0..31]: clobbers tls.found/ambiguous/control_block[0..29] — dead. */
         vault_taproot_leaf_hash(G_scratch.tls.leaf_script,
                                 G_scratch.tls.leaf_script_len,
-                                leaf_hash);
+                                G_scratch.sign_standalone.leaf_hash);
 
-        /* No loaded intent for standalone flows; the validator bound the spk via
-         * the taproot control-block commitment (NUMS key + Merkle root), so a
-         * structural-only read is sufficient here. */
-        uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!read_p2tr_witness_utxo(dc, &input_map, NULL, input_spk)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        /* All supported leaf types open with OP_PUSHBYTES_32 <D-key>. */
+        /* Read tls.leaf_script_len (offset 2628) and tls.leaf_script[0] (offset 68)
+         * before any write reaches those offsets. */
         if (G_scratch.tls.leaf_script_len < 34 || G_scratch.tls.leaf_script[0] != OP_PUSHBYTES_32) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];
-        memcpy(leaf_key, G_scratch.tls.leaf_script + 1, VAULT_XONLY_PUBKEY_LEN);
 
-        uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];
-        deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
-        memcpy(deriv_key + 1, leaf_key, VAULT_XONLY_PUBKEY_LEN);
+        /* leaf_key [32..63]: clobbers tls.control_block[30..62] — dead.
+         * Source tls.leaf_script[1..32] is at offsets [69..100], past dst [32..63]. */
+        memcpy(G_scratch.sign_standalone.leaf_key, G_scratch.tls.leaf_script + 1, VAULT_XONLY_PUBKEY_LEN);
 
-        uint8_t deriv_val[_MAX_TAP_BIP32_DERIV_LEN];
+        /* tls is fully consumed.  input_spk [64..97] now clobbers tls.control_block_len
+         * (offset 67) and tls.leaf_script[0..29] (offsets 68..97) — all dead. */
+
+        /* No loaded intent for standalone flows; the validator bound the spk via
+         * the taproot control-block commitment (NUMS key + Merkle root), so a
+         * structural-only read is sufficient here. */
+        if (!read_p2tr_witness_utxo(dc, &input_map, NULL, G_scratch.sign_standalone.input_spk)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        /* Phase 2: tls is dead; use G_scratch.sign_standalone for all remaining state. */
+
+        G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
+        memcpy(G_scratch.sign_standalone.deriv_key + 1,
+               G_scratch.sign_standalone.leaf_key,
+               VAULT_XONLY_PUBKEY_LEN);
+
         int deriv_len = call_get_merkleized_map_value(dc,
                                                       &input_map,
-                                                      deriv_key,
-                                                      sizeof(deriv_key),
-                                                      deriv_val,
-                                                      sizeof(deriv_val));
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      sizeof(G_scratch.sign_standalone.deriv_key),
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
         if (deriv_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
         uint32_t fingerprint;
-        uint32_t sign_path[5];
-        int path_len =
-            parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, sign_path, 5);
+        int path_len = parse_tap_bip32_deriv_value(G_scratch.sign_standalone.deriv_val,
+                                                    deriv_len,
+                                                    &fingerprint,
+                                                    G_scratch.sign_standalone.sign_path,
+                                                    VAULT_STANDALONE_PATH_LEN);
         if (path_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -405,48 +445,50 @@ bool sign_custom_inputs(
          * the leaf_key embedded in the refund script, so a refactor that ever
          * decouples validation from signing cannot turn this into a key-confusion
          * signing oracle. */
-        if (!check_bip86_path(sign_path, path_len)) {
+        if (!check_bip86_path(G_scratch.sign_standalone.sign_path, path_len)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        serialized_extended_pubkey_t xpub;
-        if (get_extended_pubkey_at_path(sign_path,
+        serialized_extended_pubkey_t *xpub =
+            (serialized_extended_pubkey_t *) G_scratch.sign_standalone.xpub_bytes;
+        if (get_extended_pubkey_at_path(G_scratch.sign_standalone.sign_path,
                                         (uint8_t) path_len,
                                         BIP32_PUBKEY_VERSION,
-                                        &xpub) != 0) {
+                                        xpub) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         /* compressed_pubkey[0] is 0x02/0x03; x-only key is bytes [1..32] */
-        if (memcmp(xpub.compressed_pubkey + 1, leaf_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (memcmp(xpub->compressed_pubkey + 1,
+                   G_scratch.sign_standalone.leaf_key,
+                   VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
-        uint8_t sighash[VAULT_HASH256_LEN];
         if (!compute_sighash_segwitv1(dc,
                                       st,
                                       tx_hashes,
                                       &input_map,
                                       0,
-                                      input_spk,
+                                      G_scratch.sign_standalone.input_spk,
                                       VAULT_P2TR_SCRIPTPUBKEY_LEN,
-                                      leaf_hash,
+                                      G_scratch.sign_standalone.leaf_hash,
                                       SIGHASH_DEFAULT,
-                                      sighash)) {
+                                      G_scratch.sign_standalone.sighash)) {
             return false; /* SW already sent by callee */
         }
 
         if (!sign_sighash_schnorr_and_yield(dc,
                                             st,
                                             0,
-                                            sign_path,
+                                            G_scratch.sign_standalone.sign_path,
                                             (size_t) path_len,
                                             NULL,
                                             0,
-                                            leaf_hash,
+                                            G_scratch.sign_standalone.leaf_hash,
                                             SIGHASH_DEFAULT,
-                                            sighash)) {
+                                            G_scratch.sign_standalone.sighash)) {
             return false; /* SW already sent by callee */
         }
 

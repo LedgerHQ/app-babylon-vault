@@ -32,7 +32,7 @@ from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
 from test_utils.taproot import taproot_tweak_pubkey
 
-from .vault_client import SW_DENY, sign_psbt_with_nav_and_compare
+from .vault_client import SW_DENY, SW_INCORRECT_DATA, sign_psbt_with_nav_and_compare
 from .instructions import sign_psbt_claim_instructions, sign_psbt_claim_nav
 from .test_sign_psbt_validate import (
     _NoWalletPolicy,
@@ -130,3 +130,199 @@ def test_sign_psbt_claim_screen(
             sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
                                            testname=tname, nav_instructions=sign_psbt_claim_nav(device))
     assert exc.value.status == SW_DENY
+
+
+# ===========================================================================
+# Screen 4 — Claim: error-path tests
+# ===========================================================================
+
+def _claim_keys(client: "RaggerClient", bitcoin_network: str):
+    """Return (fingerprint, leaf_key, coin_type) for the standard Claim key."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    fingerprint = client.get_master_fingerprint()
+    leaf_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey[1:]
+    return fingerprint, leaf_key, coin_type
+
+
+def test_sign_psbt_claim_wrong_version(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when nVersion < 2."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.nVersion = 1
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_nonzero_locktime(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when nLockTime != 0."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.nLockTime = 1
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_sighash_all(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when PSBT_IN_SIGHASH_TYPE is set to SIGHASH_ALL (1); only DEFAULT accepted."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.inputs[0].sighash = 1  # SIGHASH_ALL
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_extra_input(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when n_inputs != 1."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.vin.append(CTxIn())
+    psbt.inputs.append(PartiallySignedInput(0))
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_wrong_output_count(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when n_outputs != 2 (CPFP anchor output missing)."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.vout = [psbt.tx.vout[0]]
+    psbt.outputs = [psbt.outputs[0]]
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_wrong_fingerprint(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when TAP_BIP32_DERIVATION fingerprint belongs to a foreign device."""
+    _, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    wrong_fingerprint = b'\xff\xff\xff\xff'
+    psbt = _build_claim_psbt(wrong_fingerprint, leaf_key, coin_type)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_non_bip86_path(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when the derivation path is not a BIP-86 path (m/44' instead of m/86')."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    claim_leaf = bytes([0x20]) + leaf_key + bytes([0xAC])
+    leaf_hash = _tapleaf_hash(claim_leaf)
+    psbt.inputs[0].tap_bip32_paths = {
+        leaf_key: (
+            {leaf_hash},
+            KeyOriginInfo(fingerprint, [HARDENED | 44, HARDENED | coin_type, HARDENED | 0, 0, 0]),
+        )
+    }
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_foreign_key(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when the leaf D key is not derived from this device's seed."""
+    fingerprint, _, coin_type = _claim_keys(client, bitcoin_network)
+    foreign_key = bytes([0xBB] * 32)  # not a device key
+    psbt = _build_claim_psbt(fingerprint, foreign_key, coin_type)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_tampered_control_block(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when the taproot control block internal key is not VAULT_NUMS_XONLY."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    (leaf_bytes, leaf_ver), _ = next(iter(psbt.inputs[0].tap_scripts.items()))
+    wrong_cb = bytes([0xC0]) + bytes([0x01] * 32)
+    psbt.inputs[0].tap_scripts = {(leaf_bytes, leaf_ver): {wrong_cb}}
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_cpfp_wrong_value(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when Out1 (CPFP anchor) value differs from VAULT_DUST_LIMIT."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.vout[1].nValue = VAULT_DUST_LIMIT + 1
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_cpfp_wrong_spk(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when Out1 scriptPubKey is not BIP-86 P2TR(D)."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.vout[1].scriptPubKey = bytes([0x51, 0x20]) + bytes(32)  # wrong key
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_claim_output_equals_input(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when total outputs equal the input value (zero fee disallowed)."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    input_value = 1_000_000
+    # connector_value set so total_out == input_value (the >= check fires)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type,
+                              input_value=input_value,
+                              connector_value=input_value - VAULT_DUST_LIMIT)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA

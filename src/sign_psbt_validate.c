@@ -1787,50 +1787,10 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
         }
     }
 
-    /* Verify D key via BIP-32 derivation path in Input 0 */
-    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN]; /* BIP-86 P2TR(D) for output check */
-    {
-        uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];
-        deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
-        memcpy(deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
-        uint8_t deriv_val[MAX_TAP_BIP32_DERIV_VALUE_LEN];
-        int deriv_len = call_get_merkleized_map_value(dc,
-                                                      &input_map,
-                                                      deriv_key,
-                                                      sizeof(deriv_key),
-                                                      deriv_val,
-                                                      sizeof(deriv_val));
-        if (deriv_len < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint32_t fingerprint;
-        uint32_t path[5];
-        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
-        if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
-            !check_bip86_path(path, path_len)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        serialized_extended_pubkey_t xpub;
-        if (get_extended_pubkey_at_path(path, (uint8_t) path_len, BIP32_PUBKEY_VERSION, &xpub) !=
-            0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (memcmp(xpub.compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        /* Compute BIP-86 tweaked key for output verification */
-        uint8_t bip86_parity;
-        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
-
-    /* WITNESS_UTXO: read value and verify taproot commitment */
+    /* WITNESS_UTXO: read value and verify taproot commitment first.
+     * _refund_verify_taproot_commitment reads G_scratch.tls.control_block and
+     * .leaf_script, fully consuming tls.  After this block, G_scratch.sign_standalone
+     * is free for the BIP32 locals (xpub, deriv_val) to save ~200 B of stack. */
     uint64_t input_value;
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
@@ -1850,8 +1810,56 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        /* This reuses G_scratch.tls.control_block for the NUMS verification */
         if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
+    }
+
+    /* Verify D key via BIP-32 derivation path in Input 0.
+     * G_scratch.tls is consumed above; use G_scratch.sign_standalone for the large
+     * buffers (xpub 78 B, deriv_val 89 B) to keep them off the call stack. */
+    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN]; /* BIP-86 P2TR(D) for output check */
+    {
+        G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
+        memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
+        int deriv_len =
+            call_get_merkleized_map_value(dc,
+                                          &input_map,
+                                          G_scratch.sign_standalone.deriv_key,
+                                          1 + VAULT_XONLY_PUBKEY_LEN,
+                                          G_scratch.sign_standalone.deriv_val,
+                                          sizeof(G_scratch.sign_standalone.deriv_val));
+        if (deriv_len < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint32_t fingerprint;
+        int path_len = parse_tap_bip32_deriv_value(G_scratch.sign_standalone.deriv_val,
+                                                   deriv_len,
+                                                   &fingerprint,
+                                                   G_scratch.sign_standalone.sign_path,
+                                                   VAULT_STANDALONE_PATH_LEN);
+        if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
+            !check_bip86_path(G_scratch.sign_standalone.sign_path, path_len)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        serialized_extended_pubkey_t *xpub =
+            (serialized_extended_pubkey_t *) G_scratch.sign_standalone.xpub_bytes;
+        if (get_extended_pubkey_at_path(G_scratch.sign_standalone.sign_path,
+                                        (uint8_t) path_len,
+                                        BIP32_PUBKEY_VERSION,
+                                        xpub) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (memcmp(xpub->compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t bip86_parity;
+        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
     }
 
     /* Output 1: value == VAULT_DUST_LIMIT, script == BIP-86 P2TR(D) */
@@ -1908,6 +1916,10 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
  * ---------------------------------------------------------------------- */
 
 static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t *st) {
+    if (st->n_inputs != 1) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     if (st->tx_version < 2 || st->locktime != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -1920,7 +1932,7 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
 
     /* Open Input 0 map */
     merkleized_map_commitment_t input_map;
-    if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, 0, &input_map) < 0) {
+    if (call_get_merkleized_map(dc, st->inputs_root, 1, 0, &input_map) < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1939,37 +1951,71 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
         }
     }
 
-    /* Verify D key via BIP-32 derivation in Input 0 */
+    /* WITNESS_UTXO: verify taproot commitment and extract amount_carried.
+     * Must execute before the BIP-32 block below, which clobbers G_scratch.tls via
+     * G_scratch.sign_standalone.  G_scratch.tls (populated by the dispatcher) is
+     * still intact here, so _refund_verify_taproot_commitment can read the control
+     * block and leaf script it needs. */
+    uint64_t amount_carried;
     {
-        uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];
-        deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
-        memcpy(deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
-        uint8_t deriv_val[MAX_TAP_BIP32_DERIV_VALUE_LEN];
-        int deriv_len = call_get_merkleized_map_value(dc,
-                                                      &input_map,
-                                                      deriv_key,
-                                                      sizeof(deriv_key),
-                                                      deriv_val,
-                                                      sizeof(deriv_val));
+        uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
+        int wu_len = call_get_merkleized_map_value(dc,
+                                                   &input_map,
+                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
+                                                   1,
+                                                   witness_utxo,
+                                                   sizeof(witness_utxo));
+        if (wu_len < 9) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t spk_len = witness_utxo[8];
+        if (wu_len != 9 + spk_len || spk_len != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
+        amount_carried = read_u64_le(witness_utxo, 0);
+    }
+
+    /* Verify D key via BIP-32 derivation in Input 0.
+     * tls is consumed after the WITNESS_UTXO block above; use G_scratch.sign_standalone
+     * for the large buffers (xpub 78 B, deriv_val 89 B) to keep them off the stack. */
+    {
+        G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
+        memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
+        int deriv_len =
+            call_get_merkleized_map_value(dc,
+                                          &input_map,
+                                          G_scratch.sign_standalone.deriv_key,
+                                          1 + VAULT_XONLY_PUBKEY_LEN,
+                                          G_scratch.sign_standalone.deriv_val,
+                                          sizeof(G_scratch.sign_standalone.deriv_val));
         if (deriv_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         uint32_t fingerprint;
-        uint32_t path[5];
-        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
+        int path_len = parse_tap_bip32_deriv_value(G_scratch.sign_standalone.deriv_val,
+                                                   deriv_len,
+                                                   &fingerprint,
+                                                   G_scratch.sign_standalone.sign_path,
+                                                   VAULT_STANDALONE_PATH_LEN);
         if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
-            !check_bip86_path(path, path_len)) {
+            !check_bip86_path(G_scratch.sign_standalone.sign_path, path_len)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        serialized_extended_pubkey_t xpub;
-        if (get_extended_pubkey_at_path(path, (uint8_t) path_len, BIP32_PUBKEY_VERSION, &xpub) !=
-            0) {
+        serialized_extended_pubkey_t *xpub =
+            (serialized_extended_pubkey_t *) G_scratch.sign_standalone.xpub_bytes;
+        if (get_extended_pubkey_at_path(G_scratch.sign_standalone.sign_path,
+                                        (uint8_t) path_len,
+                                        BIP32_PUBKEY_VERSION,
+                                        xpub) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (memcmp(xpub.compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (memcmp(xpub->compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1985,23 +2031,6 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
                                                            VAULT_HASH256_LEN)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
-    }
-
-    /* Read Input 0 WITNESS_UTXO value (amount carried by the ClaimAssertConnector) */
-    uint64_t amount_carried;
-    {
-        uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
-        int wu_len = call_get_merkleized_map_value(dc,
-                                                   &input_map,
-                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                                   1,
-                                                   witness_utxo,
-                                                   sizeof(witness_utxo));
-        if (wu_len < 8) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        amount_carried = read_u64_le(witness_utxo, 0);
     }
 
     if (st->inputs_total_amount < st->outputs.total_amount) {
@@ -2262,8 +2291,9 @@ bool validate_and_display_transaction(
     if (leaf_len > 34 && leaf[33] == (uint8_t) OP_CHECKSIGVERIFY) {
         /* WC: <D> OP_CHECKSIGVERIFY OP_SIZE ... */
         if (leaf[34] == (uint8_t) OP_SIZE) return _validate_display_wc(dc, st);
-        /* Assert: <D> OP_CHECKSIGVERIFY <key> ... OP_CSV */
-        if (leaf[34] == OP_PUSHBYTES_32 && (uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_CSV)
+        /* Assert: exactly 68 bytes, <D> OP_CHECKSIGVERIFY <key>(32B) OP_CSV */
+        if (leaf_len == 68 && leaf[34] == OP_PUSHBYTES_32 &&
+            (uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_CSV)
             return _validate_display_assert(dc, st);
         /* Refund: <D> OP_CHECKSIGVERIFY <T> OP_CSV */
         if ((uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_CSV)
