@@ -292,7 +292,56 @@ bool display_wc_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
-// Screen 7 — Payout transaction
+// Screen 7 — PoP (Register ETH address)
+// ---------------------------------------------------------------------------
+
+bool display_pop_transaction(dispatcher_context_t *dc,
+                             const char *eth_addr,
+                             const char *chain_id,
+                             const char *registry) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list = {0};
+
+    // addr_str (80 B): ETH address (42 chars + NUL fits within 80 B)
+    strlcpy(G_scratch.display_tx.addr_str, eth_addr, TX_DISPLAY_ADDR_STR_SIZE);
+    // extra_str (TX_DISPLAY_AMOUNT_STR_SIZE B): chain ID (≤20 decimal digits + NUL)
+    strlcpy(G_scratch.display_tx.extra_str, chain_id, TX_DISPLAY_AMOUNT_STR_SIZE);
+    // txid_str (65 B): registry address (42 chars + NUL fits within 65 B)
+    strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "ETH address",
+                                             .value = G_scratch.display_tx.addr_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Chain ID",
+                                             .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry contract",
+                                             .value = G_scratch.display_tx.txid_str};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Register ETH\naddress",
+                       NULL,
+                       "Register ETH\naddress?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 8 — Payout transaction
 // ---------------------------------------------------------------------------
 
 bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee) {

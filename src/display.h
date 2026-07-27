@@ -99,7 +99,24 @@ bool display_wc_transaction(dispatcher_context_t *dc,
                             const char *wc_address);
 
 /**
- * @brief Screen 7 — Payout transaction review.
+ * @brief Screen 7 — PoP (BIP-322 proof-of-possession) review.
+ *
+ * Shows the three human-readable fields from the PoP message and asks the user
+ * to confirm "Register ETH address" before the device signs the to_sign PSBT.
+ *
+ * @param eth_addr   NUL-terminated Ethereum address ("0x" + 40 lowercase hex).
+ * @param chain_id   NUL-terminated decimal chain ID string.
+ * @param registry   NUL-terminated registry contract address ("0x" + 40 lowercase hex).
+ * @return true   User approved.
+ * @return false  User rejected (SW_DENY already sent).
+ */
+bool display_pop_transaction(dispatcher_context_t *dc,
+                             const char *eth_addr,
+                             const char *chain_id,
+                             const char *registry);
+
+/**
+ * @brief Screen 8 — Payout transaction review.
  *
  * Shows the amount paid out and the transaction fee.
  * Approval gates signing; rejection returns SW_DENY.

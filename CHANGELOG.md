@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - NAPPS-1463: BIP-322 proof-of-possession signing (Screen 7)
+
+Adds Screen 7 — the depositor proves ownership of their Ethereum address by
+signing a BIP-322 `bip322-simple` to_sign PSBT before registering with the
+Babylon Vault contract.
+
+### Added
+
+- **Screen 7 — Register ETH address** (`_validate_display_pop`, `display_pop_transaction`):
+  standalone flow identified by `tx_version == 0`. Parses and displays the PoP
+  message (`<eth_addr>:<chain_id>:pegin:<registry>`) as ETH address, Chain ID,
+  and Registry contract fields. Validates BIP-86 key derivation and tweaked-key
+  commitment, verifies the to_sign prevout against the computed BIP-322 to_spend
+  txid, and enforces value=0 / OP_RETURN output.
+- `src/bip322.h` / `src/bip322.c`: PoP message parser (`bip322_parse_pop_message`)
+  and BIP-322 to_spend txid computation (`bip322_compute_to_spend_txid`).
+- Ragger golden-snapshot and error-path tests for Screen 7 (`tests/test_screen7_pop.py`).
+
 ## [0.9.0] - NAPPS-1462: depositor-as-claimer NoPayout screens, v22 protocol alignment
 
 Adds standalone Claim (Screen 4), Assert (Screen 5), and WronglyChallenged (Screen 6) flows
