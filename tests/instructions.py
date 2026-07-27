@@ -179,7 +179,7 @@ def sign_psbt_refund_approve_instructions(device: Device) -> Instructions:
     Touch devices should use sign_psbt_refund_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
 
 
@@ -201,7 +201,7 @@ def sign_psbt_claim_approve_instructions(device: Device) -> Instructions:
     Touch devices should use sign_psbt_claim_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
 
 
@@ -225,14 +225,13 @@ def sign_psbt_claim_approve_nav(device: Device) -> List[NavInsID]:
         ]
 
 
-
 def sign_psbt_assert_approve_instructions(device: Device) -> Instructions:
     """Approve-path Instructions for Screen 5 (Assert) — Nano devices only.
 
     Touch devices should use sign_psbt_assert_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
 
 
@@ -262,7 +261,7 @@ def sign_psbt_wc_approve_instructions(device: Device) -> Instructions:
     Touch devices should use sign_psbt_wc_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
 
 
