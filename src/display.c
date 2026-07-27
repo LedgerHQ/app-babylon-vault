@@ -10,10 +10,10 @@
 #include "nbgl_use_case.h"
 
 static void review_choice(bool approved) {
-    set_ux_flow_response(approved);  // sets the return value of io_ui_process
-    if (!approved) {
-        nbgl_useCaseReviewStatus(STATUS_TYPE_TRANSACTION_REJECTED, ui_menu_main);
-    }
+    set_ux_flow_response(approved);
+    nbgl_useCaseReviewStatus(
+        approved ? STATUS_TYPE_TRANSACTION_SIGNED : STATUS_TYPE_TRANSACTION_REJECTED,
+        ui_menu_main);
 }
 
 #define MAX_N_PAIRS 6

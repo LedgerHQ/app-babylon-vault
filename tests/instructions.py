@@ -173,149 +173,97 @@ def derive_context_hash_reject_nav(device: Device) -> Tuple[NavInsID, List[NavIn
             "^Allow derivation\\?$")
 
 
-def vault_intent_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
-    """Return (navigate_instruction, validation_instructions, search_text) to reject.
+def sign_psbt_refund_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 3 (Refund) — Nano devices only.
 
-    On touch: navigate to "Hold to sign", tap Reject, confirm, dismiss rejection status.
-    On Nano:  navigate until "Reject operation", both-click to confirm.
-    """
-    if device.is_nano:
-        return (NavInsID.RIGHT_CLICK,
-                [NavInsID.BOTH_CLICK],
-                r"^Reject operation$")
-    return (NavInsID.SWIPE_CENTER_TO_LEFT,
-            [NavInsID.USE_CASE_REVIEW_REJECT,
-             NavInsID.USE_CASE_CHOICE_CONFIRM,
-             NavInsID.USE_CASE_STATUS_DISMISS],
-            "^Hold to sign$")
-
-
-def sign_psbt_refund_instructions(device: Device) -> Instructions:
-    """Reject-path Instructions for Screen 3 (Refund) — Nano devices only.
-
-    Touch devices should use sign_psbt_refund_nav() with sign_psbt_with_nav_and_compare()
-    instead, which stores all screenshots in a single folder as numbered PNGs.
+    Touch devices should use sign_psbt_refund_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
 
 
-def sign_psbt_refund_nav(device: Device) -> List[NavInsID]:
-    """Flat navigation for Screen 3 (Refund) on touch devices.
-
-    Use with sign_psbt_with_nav_and_compare().  Stores all review pages as:
-      00000.png — intro ("Review refund transaction")
-      00001.png — content ("Pre-PegIn txid" + "Reclaimed amount" + "Refund timelock"
-                           + "Transaction fee" + "Reclaim address") — may span multiple pages
-      ...    — finish ("Sign refund transaction?")
-      ...    — reject confirmation dialog
-      ...    — rejection status
-    """
-    assert not device.is_nano, "Nano uses sign_psbt_refund_instructions, not flat nav"
+def sign_psbt_refund_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 3 (Refund) on touch devices."""
+    assert not device.is_nano, "Nano uses sign_psbt_refund_approve_instructions, not flat nav"
     return [
-        NavInsID.USE_CASE_REVIEW_TAP,     # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,     # content → finish
-        NavInsID.USE_CASE_REVIEW_REJECT,  # finish → reject dialog
-        NavInsID.USE_CASE_CHOICE_CONFIRM, # confirm rejection
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
     ]
 
 
-def sign_psbt_claim_instructions(device: Device) -> Instructions:
-    """Reject-path Instructions for Screen 4 (Claim) — Nano devices only.
+def sign_psbt_claim_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 4 (Claim) — Nano devices only.
 
-    Touch devices should use sign_psbt_claim_nav() instead.
+    Touch devices should use sign_psbt_claim_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
-
-
-def sign_psbt_claim_nav(device: Device) -> List[NavInsID]:
-    """Flat reject-path navigation for Screen 4 (Claim) on touch devices.
-
-    Fields: "Amount spent", "Connector amount", "Transaction fee", "PegIn txid" — 4 fields.
-    Verify step count against first --golden_run if snapshots are wrong.
-    """
-    assert not device.is_nano, "Nano uses sign_psbt_claim_instructions, not flat nav"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,     # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,     # content → finish
-        NavInsID.USE_CASE_REVIEW_REJECT,  # finish → reject dialog
-        NavInsID.USE_CASE_CHOICE_CONFIRM, # confirm rejection
-    ]
 
 
 def sign_psbt_claim_approve_nav(device: Device) -> List[NavInsID]:
     """Flat approve-path navigation for Screen 4 (Claim) on touch devices."""
     assert not device.is_nano, "Nano uses Instructions-based navigation"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
-        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
-        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
-    ]
+    if device.name == "stax":
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
+    else:
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
 
 
-def sign_psbt_assert_instructions(device: Device) -> Instructions:
-    """Reject-path Instructions for Screen 5 (Assert) — Nano devices only.
 
-    Touch devices should use sign_psbt_assert_nav() instead.
+def sign_psbt_assert_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 5 (Assert) — Nano devices only.
+
+    Touch devices should use sign_psbt_assert_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
-
-
-def sign_psbt_assert_nav(device: Device) -> List[NavInsID]:
-    """Flat reject-path navigation for Screen 5 (Assert) on touch devices.
-
-    Fields: "Claim txid" (32-byte hex), "Amount", "Output count", "Transaction fee" — 4 fields.
-    The long txid field may span an extra page on some devices; verify with --golden_run.
-    """
-    assert not device.is_nano, "Nano uses sign_psbt_assert_instructions, not flat nav"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,     # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,     # content → finish
-        NavInsID.USE_CASE_REVIEW_REJECT,  # finish → reject dialog
-        NavInsID.USE_CASE_CHOICE_CONFIRM, # confirm rejection
-    ]
 
 
 def sign_psbt_assert_approve_nav(device: Device) -> List[NavInsID]:
     """Flat approve-path navigation for Screen 5 (Assert) on touch devices."""
     assert not device.is_nano, "Nano uses Instructions-based navigation"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
-        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
-        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
-    ]
+    if device.name == "stax":
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
+    else:
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
 
 
-def sign_psbt_wc_instructions(device: Device) -> Instructions:
-    """Reject-path Instructions for Screen 6 (Wrongly Challenged) — Nano devices only.
+def sign_psbt_wc_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 6 (WC) — Nano devices only.
 
-    Touch devices should use sign_psbt_wc_nav() instead.
+    Touch devices should use sign_psbt_wc_approve_nav() instead.
     """
     instructions = Instructions(device)
-    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    instructions.new_request("Accept", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
-
-
-def sign_psbt_wc_nav(device: Device) -> List[NavInsID]:
-    """Flat reject-path navigation for Screen 6 (WC) on touch devices.
-
-    Fields: "Reclaimed amount", ["Wallet inputs"], "Transaction fee", "Reclaim address" — 3–4 fields.
-    Verify step count against first --golden_run if snapshots are wrong.
-    """
-    assert not device.is_nano, "Nano uses sign_psbt_wc_instructions, not flat nav"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,     # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,     # content → finish
-        NavInsID.USE_CASE_REVIEW_REJECT,  # finish → reject dialog
-        NavInsID.USE_CASE_CHOICE_CONFIRM, # confirm rejection
-    ]
 
 
 def sign_psbt_wc_approve_nav(device: Device) -> List[NavInsID]:
