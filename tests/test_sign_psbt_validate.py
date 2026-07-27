@@ -4,9 +4,9 @@ Silent-flow validation tests for SIGN_PSBT (NAPPS-1375/1376/1462).
 Covers Pre-PegIn, PegIn, Payout, NoPayout, and Refund validation (no display).
 Screen-capture tests live in the corresponding test_screen*.py files:
   test_screen3_refund.py  — Screen 3 (Refund)
-  test_screen4_claim.py   — Screen 4 (Claim)    [future]
-  test_screen5_assert.py  — Screen 5 (Assert)   [future]
-  test_screen6_wc.py      — Screen 6 (WC)       [future]
+  test_screen4_claim.py  — Screen 4 (Claim)
+  test_screen5_assert.py — Screen 5 (Assert)
+  test_screen6_wc.py     — Screen 6 (WC)
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from .vault_client import (
     SW_BAD_STATE,
     SW_BAD_CPFP_ANCHOR,
     SW_INCORRECT_DATA,
+    SW_PREPEGIN_TXID_MISMATCH,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
     P1_SCALARS,
@@ -246,9 +247,10 @@ def _build_prepegin_psbt(
     """Pre-PegIn PSBTv0: HTLC output at htlc_vout, plus the mandatory auth-anchor
     OP_RETURN when auth_anchor is given.
 
-    The device now requires the shared OP_RETURN = "OP_RETURN <SHA256(authAnchor)>"
-    (= 0x6A 0x20 || auth_anchor); pass auth_anchor=vault_auth_anchor(root) for the
-    happy path. Negative tests that reject before the output policy may omit it.
+    The device accepts an optional OP_RETURN = "OP_RETURN <SHA256(authAnchor)>"
+    (= 0x6A 0x20 || auth_anchor); pass auth_anchor=vault_auth_anchor(root) to include
+    it.  Since v22 it is no longer mandatory — the mandatory anchor is now a
+    Depositor BIP-86 output.
 
     When input_internal_key and input_fingerprint are provided the input is a
     proper BIP-86 key-path P2TR UTXO (required for the 'all inputs internal'
@@ -1108,6 +1110,40 @@ def test_sign_psbt_prepegin_htlc_value_too_low(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_prepegin_txid_mismatch(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Pre-PegIn returns SW_PREPEGIN_TXID_MISMATCH when computed txid != intent prepegin_txid.
+
+    Session 2 loads an intent with prepegin_txid = _PREPEGIN_TXID = bytes(range(32)).
+    The submitted Pre-PegIn PSBT is structurally valid but its double-SHA256 txid
+    does not equal the intent's prepegin_txid, so the device returns the distinct
+    SW_PREPEGIN_TXID_MISMATCH (0xB00A) instead of the generic SW_INCORRECT_DATA.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+    _, _, _, _, htlc_spk = _htlc_output(
+        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock,
+    )
+
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
+    psbt = _build_prepegin_psbt(htlc_spk,
+                                input_internal_key=input_key,
+                                input_fingerprint=fingerprint,
+                                input_coin_type=coin_type,
+                                auth_anchor=vault_auth_anchor(_DERIVED_ROOT))
+    wallet = _standard_taproot_wallet(client, coin_type)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_PREPEGIN_TXID_MISMATCH
 
 
 # ===========================================================================
@@ -2480,12 +2516,12 @@ def test_sign_psbt_payout_3vault_batch(
             _assert_single_schnorr_sig(result, dep_pk)
 
     # SESSION2_COMPLETE is now set; any further payout must be rejected.
-    # The dispatch falls through to the standalone tapscript path in COMPLETE, which
-    # cannot recognise the vault-UTXO leaf shape and returns SW_INCORRECT_DATA.
+    # The vault UTXO leaf ends with OP_CSV, so the standalone dispatch routes it to
+    # _validate_display_refund, which returns SW_BAD_STATE in SESSION2_COMPLETE.
     extra_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0, htlc_vout=0)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(extra_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+    assert exc.value.status == SW_BAD_STATE
 
 
 # ===========================================================================

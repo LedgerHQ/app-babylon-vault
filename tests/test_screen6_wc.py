@@ -32,7 +32,7 @@ from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
 from test_utils.taproot import taproot_tweak_pubkey
 
-from .vault_client import SW_DENY, SW_INCORRECT_DATA, sign_psbt_with_nav_and_compare
+from .vault_client import SW_DENY, SW_INCORRECT_DATA, TEST_VALID_KEYS, sign_psbt_with_nav_and_compare
 from .instructions import sign_psbt_wc_instructions, sign_psbt_wc_nav
 from .test_sign_psbt_validate import (
     _NoWalletPolicy,
@@ -261,7 +261,7 @@ def test_sign_psbt_wc_foreign_key(
 ) -> None:
     """WC fails when the leaf D key is not derived from this device's seed."""
     fingerprint, _, coin_type = _wc_keys(client, bitcoin_network)
-    foreign_key = bytes([0xBB] * 32)
+    foreign_key = TEST_VALID_KEYS[0]  # valid EC point, not derived from this device
     psbt = _build_wc_psbt(fingerprint, foreign_key, coin_type)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:

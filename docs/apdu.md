@@ -260,7 +260,8 @@ Handled by `bitcoin_app_base`. Listed here for completeness.
 | `0x6E00` | `SW_CLA_NOT_SUPPORTED`  | Unknown CLA. |
 | `0x6F00` | `SW_BIP32_FAIL`         | BIP-32 key derivation failed (invalid key at path). |
 | `0xB007` | `SW_BAD_STATE`          | Command not allowed in current session state. |
-| `0xB009` | `SW_BAD_CPFP_ANCHOR`    | `SIGN_PSBT` payout validation: CPFP anchor output's scriptPubKey does not match the expected BIP-86 P2TR script for the intended recipient (claimer key for VK payout Out1; `vault_provider_pk` for VP payout Out2). |
+| `0xB009` | `SW_BAD_CPFP_ANCHOR`    | `SIGN_PSBT` depositor payout: Output 1 scriptPubKey does not match BIP-86 P2TR(depositor). Only returned for Depositor claimer (claimer index = `keeper_count + 1`). |
+| `0xB00A` | `SW_PREPEGIN_TXID_MISMATCH` | `SIGN_PSBT` Session-2 Pre-PegIn: the double-SHA256 txid computed from the PSBT's transaction fields does not match the `prepegin_txid` committed in the approved intent. |
 
 ---
 
