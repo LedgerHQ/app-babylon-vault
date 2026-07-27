@@ -339,7 +339,10 @@ static bool _validate_prepegin(
         }
         anchor_found = true;
     }
-    (void) anchor_found; /* optional per v22: OP_RETURN may be absent */
+    /* v22: OP_RETURN anchor is optional — presence is not enforced.
+     * anchor_found enforces at-most-one anchor within the loop; its final
+     * value is intentionally not checked here. */
+    (void) anchor_found;
 
     if (st->outputs.total_amount > st->inputs_total_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -698,6 +701,12 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
                                                            1,
                                                            prepegin_txid,
                                                            VAULT_HASH256_LEN)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    /* In an active session the displayed txid must match the intent-bound Pre-PegIn. */
+    if (G_vault_context.state >= VAULT_STATE_SESSION1_PREPEGIN_EXPECTED &&
+        memcmp(prepegin_txid, G_vault_intent.prepegin_txid, VAULT_HASH256_LEN) != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1485,8 +1494,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
 static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     vault_state_t state = G_vault_context.state;
-    if (state != VAULT_STATE_SESSION2_PEGIN_EXPECTED &&
-        state != VAULT_STATE_SESSION2_PAYOUT_EXPECTED && state != VAULT_STATE_SESSION2_COMPLETE) {
+    if (state != VAULT_STATE_SESSION2_PAYOUT_EXPECTED && state != VAULT_STATE_SESSION2_COMPLETE) {
         SEND_SW(dc, SW_BAD_STATE);
         return false;
     }
@@ -1918,15 +1926,15 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
     int leaf_len = G_scratch.tls.leaf_script_len;
 
     /* WC leaf (exact 73 bytes):
-     *   <D>(32B) OP_CHECKSIGVERIFY OP_SIZE OP_PUSHBYTES_1 0x20 OP_EQUALVERIFY
+     *   <D>(32B) OP_CHECKSIGVERIFY OP_SIZE OP_PUSHBYTES_1 32 OP_EQUALVERIFY
      *   OP_SHA256 OP_PUSHBYTES_32 <output_label_hash>(32B) OP_EQUAL.
      * The output_label_hash at [40..71] is read as-is; not reconstructed from intent. */
     if (leaf_len != 73 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
-        leaf[34] != (uint8_t) OP_SIZE || leaf[35] != 0x01u || /* OP_PUSHBYTES_1 */
-        leaf[36] != 0x20u ||                                  /* push value 32 */
-        leaf[37] != 0x88u ||                                  /* OP_EQUALVERIFY */
-        leaf[38] != 0xa8u ||                                  /* OP_SHA256 */
-        leaf[39] != OP_PUSHBYTES_32 || leaf[72] != 0x87u) {   /* OP_EQUAL */
+        leaf[34] != (uint8_t) OP_SIZE || leaf[35] != OP_PUSHBYTES_1 ||
+        leaf[36] != VAULT_HASH256_LEN ||
+        leaf[37] != (uint8_t) OP_EQUALVERIFY ||
+        leaf[38] != (uint8_t) OP_SHA256 ||
+        leaf[39] != OP_PUSHBYTES_32 || leaf[72] != (uint8_t) OP_EQUAL) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }

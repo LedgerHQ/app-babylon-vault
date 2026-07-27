@@ -112,7 +112,7 @@ bool display_wc_transaction(dispatcher_context_t *dc,
 bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee);
 
 /**
- * @brief Screen 8 — Payout finalize review (NAPPS-1464).
+ * @brief Screen 8 — Payout finalize review.
  *
  * Confirmation screen presented once all payout transactions in a vault group
  * have been signed, before the host proceeds with broadcast.

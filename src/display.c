@@ -26,6 +26,13 @@ _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
                "TX_DISPLAY_ADDR_STR_SIZE too small; update globals.h");
 _Static_assert(TX_DISPLAY_TXID_STR_SIZE >= 2 * 32 + 1,
                "TX_DISPLAY_TXID_STR_SIZE too small for 32-byte hex txid; update globals.h");
+_Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= 2 * VAULT_HASH256_LEN + 1,
+               "TX_DISPLAY_ADDR_STR_SIZE too small for hex txid reuse in Claim/Assert display");
+/* NBGL stores all pair pointers before rendering; VAULT_KEY_PAIR_SLOTS must cover the
+ * maximum pairs laid out per page on any supported device (currently 4 on Flex/Stax/Apex).
+ * Verify this assumption against the SDK when updating to a new device target. */
+_Static_assert(VAULT_KEY_PAIR_SLOTS >= 4,
+               "VAULT_KEY_PAIR_SLOTS too small; verify NBGL per-page pair limit before reducing");
 
 // ---------------------------------------------------------------------------
 // Screen 1 — DERIVE_CONTEXT_HASH approval
@@ -284,14 +291,13 @@ bool display_wc_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // Screen 7 — Payout transaction
 // ---------------------------------------------------------------------------
 
 bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list;
+    nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, payout_amount, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
@@ -324,7 +330,8 @@ bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount
     return true;
 }
 
-// Screen 8 — Payout finalize (NAPPS-1464)
+// ---------------------------------------------------------------------------
+// Screen 8 — Payout finalize
 // ---------------------------------------------------------------------------
 
 bool display_payout_finalize(dispatcher_context_t *dc) {

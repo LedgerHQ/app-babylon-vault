@@ -528,6 +528,21 @@ def test_invalid_ec_point_keeper_rejected(client: RaggerClient, navigator: Navig
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: Navigator,
+                                              device: Device, bitcoin_network: str):
+    """A challenger key whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    with pytest.raises(ExceptionRAPDU) as exc:
+        # TEST_INVALID_XONLY_KEY is >= secp256k1 prime p — no valid curve point.
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, TEST_INVALID_XONLY_KEY))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_depositor_key_collision_as_keeper(client: RaggerClient, navigator: Navigator,
                                            device: Device, bitcoin_network: str):
     """Keeper key equal to the device's depositor x-only key must return SW_INCORRECT_DATA.
