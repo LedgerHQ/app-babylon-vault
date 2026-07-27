@@ -7,6 +7,7 @@
 #include "../bitcoin_app_base/src/ui/menu.h"
 #include "globals.h"
 #include "io_ext.h"
+#include "ledger_assert.h"
 #include "nbgl_use_case.h"
 
 static void review_choice(bool approved) {
@@ -550,6 +551,8 @@ static void vault_stream_intro_choice(bool confirm) {
 // G_vault_intent is immutable while io_ui_process blocks, so pk indexing is safe.
 static nbgl_contentTagValue_t *_vault_key_pair_callback(uint8_t pairIndex) {
     const vault_intent_t *intent = &G_vault_intent;
+    LEDGER_ASSERT(pairIndex < (uint8_t) (intent->keeper_count + intent->challenger_count),
+                  "pairIndex out of range");
     const uint8_t *pk;
     uint8_t slot = pairIndex % VAULT_KEY_PAIR_SLOTS;
     if (pairIndex < intent->keeper_count) {

@@ -1443,7 +1443,9 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         total_out += out_value;
     }
 
-    /* Fee bound: fee = (vault_amount + VAULT_DUST_LIMIT) - total_out
+    /* Fee bound: fee = (vault_amount + Assert:0_amount) - total_out.
+     * Assert:0_amount was already validated as VAULT_DUST_LIMIT by _payout_check_witness_utxo
+     * above, so the two are equivalent.
      *   fee <= base_fee_rate * (MAX_PAYOUT_VSIZE_BASE + MAX_PAYOUT_VSIZE_PER_PARTICIPANT*(N+M)) */
     uint64_t total_in = intent->groups[gi].vault_amount + VAULT_DUST_LIMIT;
     if (total_out > total_in) {
@@ -1525,7 +1527,9 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         return false;
     }
 
-    /* Identify which challenger from leaf[35..66] */
+    /* Identify the depositor-graph challenger at leaf[35..66].  The role can be
+     * a VaultKeeper (indices 0..keeper_count-1) or a UniversalChallenger
+     * (indices keeper_count..keeper_count+challenger_count-1). */
     const uint8_t *leaf_challenger = leaf + 35;
     int challenger_idx = -1;
     for (int i = 0; i < (int) intent->keeper_count && challenger_idx < 0; i++) {
@@ -1618,7 +1622,8 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
         return false;
     }
 
-    /* G_scratch.tls already populated; leaf is 34 bytes <D> OP_CHECKSIG */
+    /* G_scratch.tls already populated; dispatcher guarantees leaf is 34 bytes <D> OP_CHECKSIG */
+    LEDGER_ASSERT(G_scratch.tls.leaf_script_len == 34, "unexpected claim leaf length");
     const uint8_t *leaf = G_scratch.tls.leaf_script;
     /* Extract D key into a local copy before any use of G_scratch.leaf_check */
     uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
@@ -1782,7 +1787,11 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
         return false;
     }
 
-    /* G_scratch.tls already populated; extract D key before any use of leaf_check */
+    /* G_scratch.tls already populated; extract D key before any use of leaf_check.
+     * Leaf shape: <D>(32B) OP_CHECKSIGVERIFY <key>(32B) OP_CSV (68 bytes).
+     * <key> at leaf[35..66] is not verified against the vault intent — per spec this is
+     * "parameter insulation": the Assert leaf is host-provided (the WOTS chain tips are
+     * outside the device's knowledge), and the signature only commits the depositor key. */
     const uint8_t *leaf = G_scratch.tls.leaf_script;
     uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
     memcpy(d_key, leaf + 1, VAULT_XONLY_PUBKEY_LEN);
@@ -1909,7 +1918,7 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
  * ---------------------------------------------------------------------- */
 
 static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st) {
-    if (st->n_outputs != 1) {
+    if (st->n_inputs < 1 || st->n_outputs != 1) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1931,10 +1940,9 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
      * The output_label_hash at [40..71] is read as-is; not reconstructed from intent. */
     if (leaf_len != 73 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
         leaf[34] != (uint8_t) OP_SIZE || leaf[35] != OP_PUSHBYTES_1 ||
-        leaf[36] != VAULT_HASH256_LEN ||
-        leaf[37] != (uint8_t) OP_EQUALVERIFY ||
-        leaf[38] != (uint8_t) OP_SHA256 ||
-        leaf[39] != OP_PUSHBYTES_32 || leaf[72] != (uint8_t) OP_EQUAL) {
+        leaf[36] != VAULT_HASH256_LEN || leaf[37] != (uint8_t) OP_EQUALVERIFY ||
+        leaf[38] != (uint8_t) OP_SHA256 || leaf[39] != OP_PUSHBYTES_32 ||
+        leaf[72] != (uint8_t) OP_EQUAL) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }

@@ -53,6 +53,9 @@ _Static_assert(sizeof(G_scratch.sign_standalone.xpub_bytes) == sizeof(serialized
                "sign_standalone.xpub_bytes size must match serialized_extended_pubkey_t");
 _Static_assert(sizeof(sign_standalone_scratch_t) <= sizeof(vault_scratch_t),
                "sign_standalone_scratch_t must fit within vault_scratch_t");
+_Static_assert(sizeof(sign_standalone_scratch_t) <= sizeof(tap_leaf_script_state_t),
+               "sign_standalone aliasing: sign_standalone_scratch_t exceeds "
+               "tap_leaf_script_state_t — SDK tls layout changed");
 
 /*
  * Read PSBT_IN_WITNESS_UTXO for input 0 of `input_map` and require it to be a
@@ -210,8 +213,9 @@ bool sign_custom_inputs(
              * depositor.  The validator already checked this on the same PSBT, but
              * the signing path must not silently rely on that to remain safe if
              * validation and signing are ever decoupled. */
-            if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != OP_CHECKSIGVERIFY ||
-                leaf[34] != OP_PUSHBYTES_32 || leaf[67] != OP_CHECKSIG ||
+            if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 ||
+                leaf[33] != (uint8_t) OP_CHECKSIGVERIFY || leaf[34] != OP_PUSHBYTES_32 ||
+                leaf[67] != (uint8_t) OP_CHECKSIG ||
                 memcmp(leaf + 1, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN) != 0) {
                 vault_context_invalidate(&G_vault_context);
                 SEND_SW(dc, SW_INCORRECT_DATA);

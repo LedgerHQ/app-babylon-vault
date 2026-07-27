@@ -108,7 +108,7 @@ def _build_assert_psbt(
     psbt.inputs = [PartiallySignedInput(0)]
     psbt.outputs = [PartiallySignedOutput(0)]
 
-    # WITNESS_UTXO value is read as amount_carried; SPK is not taproot-verified.
+    # WITNESS_UTXO SPK is taproot-verified via _refund_verify_taproot_commitment; value is read as amount_carried.
     psbt.inputs[0].witness_utxo = CTxOut(amount_carried, assert_spk)
     psbt.inputs[0].tap_scripts[(assert_leaf, 0xC0)] = {control_block}
     psbt.inputs[0].tap_bip32_paths[leaf_key] = (

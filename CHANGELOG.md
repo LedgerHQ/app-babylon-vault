@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - NAPPS-1462: depositor-as-claimer NoPayout screens, v22 protocol alignment
+
+Adds standalone Claim (Screen 4), Assert (Screen 5), and WronglyChallenged (Screen 6) flows
+for the depositor-as-claimer path, and aligns the validator with HLD v22.
+
+### Added
+
+- **Screen 4 — Claim** (`_validate_display_claim`, `display_claim_transaction`): standalone
+  flow spending `PegIn:1` (Depositor Claim UTXO). Displays spent amount and fee; verifies
+  depositor key ownership via BIP-32 derivation and Taproot commitment.
+- **Screen 5 — Assert** (`_validate_display_assert`, `display_assert_transaction`): standalone
+  flow spending `Claim:0`. Displays Claim txid, amount carried, and fee; verifies depositor
+  key in the claimer leaf position and Taproot commitment.
+- **Screen 6 — WronglyChallenged** (`_validate_display_wc`, `display_wc_transaction`):
+  standalone flow spending a `ChallengeAssert` connector. Displays reclaimed amount and fee;
+  verifies BIP-86 P2TR(depositor) output.
+- Reject-path Ragger tests for Screens 4–6 on all supported devices.
+
+### Changed (v22 protocol alignment — **breaking**)
+
+- **OP_RETURN auth-anchor optional** (`_validate_prepegin`): the Pre-PegIn OP_RETURN carrying
+  `SHA256(authAnchor)` is no longer mandatory. PSBTs without it are accepted (v22 removes the
+  auth-anchor ordering guarantee).
+- **PegIn sighash tightened** (`_pegin_validate_input`): `SIGHASH_ALL` (explicit value `0x01`)
+  is now **rejected** for PegIn inputs; only `SIGHASH_DEFAULT` (absent or `0x00`) is accepted.
+  Clients sending explicit `SIGHASH_ALL` must be updated to omit the `PSBT_IN_SIGHASH_TYPE`
+  field or set it to `0x00`.
+- **Non-depositor payout output scripts value-checked only** (`_validate_payout`): per v22,
+  VaultProvider and VaultKeeper output addresses are registered in the vault contract and
+  accepted as-is from the PSBT; only values are enforced. Depositor-destined outputs (VP
+  claimer Out0, Depositor claimer Out0/Out1) continue to require BIP-86 P2TR verification.
+- **`TAG_PREPEGIN_MAX_FEE` (0x010F) added** to the intent TLV (13 scalar fields, 128 bytes
+  total); the field is now required.
+
 ## [0.8.0] - NAPPS-1461: v21 protocol alignment — 2-byte TLV tags, P1 phase swap, P2A constant
 
 Aligns the APPROVE_VAULT_INTENT wire format with HLD v21.
