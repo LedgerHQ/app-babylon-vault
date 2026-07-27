@@ -32,8 +32,13 @@ from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
 from test_utils.taproot import taproot_tweak_pubkey
 
-from .vault_client import SW_INCORRECT_DATA, TEST_VALID_KEYS, sign_psbt_with_nav_and_compare
-from .instructions import sign_psbt_claim_approve_instructions, sign_psbt_claim_approve_nav
+from .vault_client import SW_DENY, SW_INCORRECT_DATA, TEST_VALID_KEYS, sign_psbt_with_nav_and_compare
+from .instructions import (
+    sign_psbt_claim_approve_instructions,
+    sign_psbt_claim_approve_nav,
+    sign_psbt_claim_reject_instructions,
+    sign_psbt_claim_reject_nav,
+)
 from .test_sign_psbt_validate import (
     _NoWalletPolicy,
     _bip86_p2tr_spk,
@@ -325,3 +330,33 @@ def test_sign_psbt_claim_output_equals_input(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ===========================================================================
+# Screen 4 — Claim: user rejection test
+# ===========================================================================
+
+def test_reject_claim_screen(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """User rejects Screen 4 (Claim) → SW_DENY."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    fingerprint = client.get_master_fingerprint()
+    leaf_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey[1:]
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    tname = "screen4_claim/reject_" + bitcoin_network
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        if device.is_nano:
+            client.sign_psbt(psbt, dummy_wallet, None, navigator,
+                             testname=tname, instructions=sign_psbt_claim_reject_instructions(device))
+        else:
+            sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
+                                           testname=tname, nav_instructions=sign_psbt_claim_reject_nav(device))
+    assert exc.value.status == SW_DENY
