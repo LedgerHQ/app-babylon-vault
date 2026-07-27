@@ -54,7 +54,6 @@ SW_WRONG_DATA_LENGTH = _HexInt(0x6A87)
 SW_WRONG_P1P2        = _HexInt(0x6A86)
 SW_BAD_STATE              = _HexInt(0xB007)
 SW_BAD_CPFP_ANCHOR        = _HexInt(0xB009)
-SW_PREPEGIN_TXID_MISMATCH = _HexInt(0xB00A)
 
 # P1=0x00 scalar 2-byte tags — must match src/vault_intent_tags.h (v21 scheme)
 TAG_STRUCTURE_TYPE            = 0x0001

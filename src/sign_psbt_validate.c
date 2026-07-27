@@ -40,9 +40,6 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 /* Distinct status word for CPFP anchor output scriptPubKey mismatch in payout */
 #define SW_BAD_CPFP_ANCHOR 0xB009u
 
-/* Distinct status word for Pre-PegIn txid mismatch against intent->prepegin_txid */
-#define SW_PREPEGIN_TXID_MISMATCH 0xB00Au
-
 /* Payout fee bound constants (NAPPS-1376) */
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
@@ -184,142 +181,6 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
  * All Pre-PegIn output scripts are 34 bytes (P2TR or OP_RETURN); prior validation
  * ensures this, so the script buffer is bounded to VAULT_P2TR_SCRIPTPUBKEY_LEN.
  * Returns false and sends SW on any PSBT read or crypto failure. */
-static bool _compute_prepegin_txid(dispatcher_context_t *dc,
-                                   sign_psbt_state_t *st,
-                                   uint8_t txid_out[VAULT_HASH256_LEN]) {
-    if (st->n_inputs >= 0xFD || st->n_outputs >= 0xFD) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
-    cx_err_t error = CX_OK;
-    cx_sha256_t ctx;
-    CX_CHECK(cx_sha256_init_no_throw(&ctx));
-
-#define _H(data, len) CX_CHECK(cx_hash_no_throw(&ctx.header, 0, (data), (size_t) (len), NULL, 0))
-
-    /* version (4 bytes LE) */
-    {
-        uint32_t v = (uint32_t) st->tx_version;
-        uint8_t vb[4] = {(uint8_t) v, (uint8_t) (v >> 8), (uint8_t) (v >> 16), (uint8_t) (v >> 24)};
-        _H(vb, 4);
-    }
-    /* input count */
-    {
-        uint8_t n = (uint8_t) st->n_inputs;
-        _H(&n, 1);
-    }
-
-    for (unsigned int i = 0; i < st->n_inputs; i++) {
-        merkleized_map_commitment_t imap;
-        if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, i, &imap) < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        /* prev txid (32 bytes, internal byte order) */
-        uint8_t txid_buf[VAULT_HASH256_LEN];
-        if (call_get_merkleized_map_value(dc,
-                                          &imap,
-                                          (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
-                                          1,
-                                          txid_buf,
-                                          VAULT_HASH256_LEN) != VAULT_HASH256_LEN) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        _H(txid_buf, VAULT_HASH256_LEN);
-        /* vout (4 bytes LE, stored as-is in PSBT) */
-        uint8_t vout[4];
-        if (call_get_merkleized_map_value(dc,
-                                          &imap,
-                                          (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                          1,
-                                          vout,
-                                          4) != 4) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        _H(vout, 4);
-        /* scriptSig length = 0x00 (SegWit input) */
-        {
-            uint8_t z = 0;
-            _H(&z, 1);
-        }
-        /* sequence (4 bytes LE; absent in PSBT → default 0xFFFFFFFF) */
-        uint8_t seq[4] = {0xFF, 0xFF, 0xFF, 0xFF};
-        {
-            int res =
-                call_get_merkleized_map_value(dc, &imap, (uint8_t[]) {PSBT_IN_SEQUENCE}, 1, seq, 4);
-            if (res >= 0 && res != 4) {
-                SEND_SW(dc, SW_INCORRECT_DATA);
-                return false;
-            }
-        }
-        _H(seq, 4);
-    }
-
-    /* output count */
-    {
-        uint8_t n = (uint8_t) st->n_outputs;
-        _H(&n, 1);
-    }
-
-    for (unsigned int i = 0; i < st->n_outputs; i++) {
-        merkleized_map_commitment_t omap;
-        if (call_get_merkleized_map(dc, st->outputs_root, st->n_outputs, i, &omap) < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        /* value (8 bytes LE, stored as-is in PSBT) */
-        uint8_t val[8];
-        if (call_get_merkleized_map_value(dc, &omap, (uint8_t[]) {PSBT_OUT_AMOUNT}, 1, val, 8) !=
-            8) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        _H(val, 8);
-        /* script length varint + script (all Pre-PegIn scripts are 34 bytes) */
-        uint8_t script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        int slen = call_get_merkleized_map_value(dc,
-                                                 &omap,
-                                                 (uint8_t[]) {PSBT_OUT_SCRIPT},
-                                                 1,
-                                                 script,
-                                                 VAULT_P2TR_SCRIPTPUBKEY_LEN);
-        if (slen <= 0 || slen > (int) VAULT_P2TR_SCRIPTPUBKEY_LEN) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t sl = (uint8_t) slen;
-        _H(&sl, 1);
-        _H(script, slen);
-    }
-
-    /* locktime (4 bytes LE) */
-    {
-        uint32_t lt = st->locktime;
-        uint8_t lb[4] = {(uint8_t) lt,
-                         (uint8_t) (lt >> 8),
-                         (uint8_t) (lt >> 16),
-                         (uint8_t) (lt >> 24)};
-        _H(lb, 4);
-    }
-#undef _H
-
-    /* double SHA256 */
-    uint8_t h1[VAULT_HASH256_LEN];
-    CX_CHECK(cx_hash_no_throw(&ctx.header, CX_LAST, NULL, 0, h1, VAULT_HASH256_LEN));
-    CX_CHECK(cx_sha256_init_no_throw(&ctx));
-    CX_CHECK(
-        cx_hash_no_throw(&ctx.header, CX_LAST, h1, VAULT_HASH256_LEN, txid_out, VAULT_HASH256_LEN));
-
-end:
-    if (error != CX_OK) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
-    return true;
-}
-
 static bool _validate_prepegin(
     dispatcher_context_t *dc,
     sign_psbt_state_t *st,
@@ -490,17 +351,6 @@ static bool _validate_prepegin(
     if (prepegin_fee > intent->prepegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
-    }
-
-    /* Session 1 (Pre-PegIn only): intent txid is all-zeros — no binding was committed.
-     * Session 2 (PegIn+Payout): intent txid is non-zero — verify the PSBT matches. */
-    if (memcmp(intent->prepegin_txid, zeros, VAULT_HASH256_LEN) != 0) {
-        uint8_t computed_txid[VAULT_HASH256_LEN];
-        if (!_compute_prepegin_txid(dc, st, computed_txid)) return false;
-        if (memcmp(computed_txid, intent->prepegin_txid, VAULT_HASH256_LEN) != 0) {
-            SEND_SW(dc, SW_PREPEGIN_TXID_MISMATCH);
-            return false;
-        }
     }
 
     /* Advance state: INTENT_LOADED → SESSION1_PREPEGIN_EXPECTED.

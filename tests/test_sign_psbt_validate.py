@@ -34,7 +34,6 @@ from .vault_client import (
     SW_BAD_STATE,
     SW_BAD_CPFP_ANCHOR,
     SW_INCORRECT_DATA,
-    SW_PREPEGIN_TXID_MISMATCH,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
     P1_SCALARS,
@@ -1110,40 +1109,6 @@ def test_sign_psbt_prepegin_htlc_value_too_low(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
-
-
-def test_sign_psbt_prepegin_txid_mismatch(
-    client: "RaggerClient",
-    navigator: Navigator,
-    bitcoin_network: str,
-    device,
-) -> None:
-    """Pre-PegIn returns SW_PREPEGIN_TXID_MISMATCH when computed txid != intent prepegin_txid.
-
-    Session 2 loads an intent with prepegin_txid = _PREPEGIN_TXID = bytes(range(32)).
-    The submitted Pre-PegIn PSBT is structurally valid but its double-SHA256 txid
-    does not equal the intent's prepegin_txid, so the device returns the distinct
-    SW_PREPEGIN_TXID_MISMATCH (0xB00A) instead of the generic SW_INCORRECT_DATA.
-    """
-    coin_type = 0 if bitcoin_network == "main" else 1
-    dep_pk = _depositor_pk(bitcoin_network)
-
-    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
-    _, _, _, _, htlc_spk = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock,
-    )
-
-    fingerprint, input_key = _prepegin_input_key(client, coin_type)
-    psbt = _build_prepegin_psbt(htlc_spk,
-                                input_internal_key=input_key,
-                                input_fingerprint=fingerprint,
-                                input_coin_type=coin_type,
-                                auth_anchor=vault_auth_anchor(_DERIVED_ROOT))
-    wallet = _standard_taproot_wallet(client, coin_type)
-
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, wallet, None)
-    assert exc.value.status == SW_PREPEGIN_TXID_MISMATCH
 
 
 # ===========================================================================
