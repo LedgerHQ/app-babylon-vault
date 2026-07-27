@@ -1820,13 +1820,12 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     {
         G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
         memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
-        int deriv_len =
-            call_get_merkleized_map_value(dc,
-                                          &input_map,
-                                          G_scratch.sign_standalone.deriv_key,
-                                          1 + VAULT_XONLY_PUBKEY_LEN,
-                                          G_scratch.sign_standalone.deriv_val,
-                                          sizeof(G_scratch.sign_standalone.deriv_val));
+        int deriv_len = call_get_merkleized_map_value(dc,
+                                                      &input_map,
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      1 + VAULT_XONLY_PUBKEY_LEN,
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
         if (deriv_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1984,13 +1983,12 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
     {
         G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
         memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
-        int deriv_len =
-            call_get_merkleized_map_value(dc,
-                                          &input_map,
-                                          G_scratch.sign_standalone.deriv_key,
-                                          1 + VAULT_XONLY_PUBKEY_LEN,
-                                          G_scratch.sign_standalone.deriv_val,
-                                          sizeof(G_scratch.sign_standalone.deriv_val));
+        int deriv_len = call_get_merkleized_map_value(dc,
+                                                      &input_map,
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      1 + VAULT_XONLY_PUBKEY_LEN,
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
         if (deriv_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;

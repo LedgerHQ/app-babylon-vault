@@ -559,11 +559,12 @@ static nbgl_contentTagValue_t *_vault_key_pair_callback(uint8_t pairIndex) {
                  "Challenger %u",
                  (unsigned) (ci + 1u));
     }
-    format_hex(pk, VAULT_XONLY_PUBKEY_LEN,
+    format_hex(pk,
+               VAULT_XONLY_PUBKEY_LEN,
                G_scratch.display.key_str[slot],
                sizeof(G_scratch.display.key_str[slot]));
     nbgl_contentTagValue_t *pair = (nbgl_contentTagValue_t *) G_scratch.display.key_pair_raw[slot];
-    pair->item  = G_scratch.display.key_label[slot];
+    pair->item = G_scratch.display.key_label[slot];
     pair->value = G_scratch.display.key_str[slot];
     return pair;
 }

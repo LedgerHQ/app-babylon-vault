@@ -71,8 +71,8 @@ typedef struct {
  */
 typedef struct {
     uint8_t vault_pairs_raw[VAULT_SCALAR_PAIRS_MAX * VAULT_DISPLAY_PAIR_SIZE];
-    char    key_str[VAULT_KEY_PAIR_SLOTS][VAULT_HEX_KEY_STR_SIZE];
-    char    key_label[VAULT_KEY_PAIR_SLOTS][VAULT_KEY_LABEL_SIZE];
+    char key_str[VAULT_KEY_PAIR_SLOTS][VAULT_HEX_KEY_STR_SIZE];
+    char key_label[VAULT_KEY_PAIR_SLOTS][VAULT_KEY_LABEL_SIZE];
     uint8_t key_pair_raw[VAULT_KEY_PAIR_SLOTS][VAULT_DISPLAY_PAIR_SIZE];
 } display_vault_intent_scratch_t;
 
@@ -191,15 +191,16 @@ typedef struct {
  * _Static_asserts in sign_custom_inputs.c verify the layout assumptions.
  */
 typedef struct {
-    uint8_t leaf_hash[VAULT_HASH256_LEN];            /* [0..31]   */
-    uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];        /* [32..63]  */
+    uint8_t leaf_hash[VAULT_HASH256_LEN];           /* [0..31]   */
+    uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];       /* [32..63]  */
     uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN]; /* [64..97]  */
     uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];  /* [98..130] */
     /* 1B n_hashes + 2×32B leaf_hashes + 4B fingerprint + path */
-    uint8_t deriv_val[1 + 2 * VAULT_HASH256_LEN + 4 + VAULT_STANDALONE_PATH_LEN * 4]; /* [131..219] */
-    uint32_t sign_path[VAULT_STANDALONE_PATH_LEN];  /* [220..239] */
-    uint8_t xpub_bytes[78]; /* sizeof(serialized_extended_pubkey_t) */     /* [240..317] */
-    uint8_t sighash[VAULT_HASH256_LEN];              /* [318..349] */
+    uint8_t
+        deriv_val[1 + 2 * VAULT_HASH256_LEN + 4 + VAULT_STANDALONE_PATH_LEN * 4]; /* [131..219] */
+    uint32_t sign_path[VAULT_STANDALONE_PATH_LEN];                                /* [220..239] */
+    uint8_t xpub_bytes[78]; /* sizeof(serialized_extended_pubkey_t) */            /* [240..317] */
+    uint8_t sighash[VAULT_HASH256_LEN];                                           /* [318..349] */
 } sign_standalone_scratch_t;
 
 /**

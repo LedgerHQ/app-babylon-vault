@@ -47,7 +47,7 @@ _Static_assert(offsetof(sign_standalone_scratch_t, input_spk) == 2 * VAULT_XONLY
 /* input_spk must start before tls.leaf_script so writes to input_spk[0..3] only
  * hit dead control_block/control_block_len bytes (offsets 64-67), not leaf_script. */
 _Static_assert(offsetof(sign_standalone_scratch_t, input_spk) <
-               offsetof(tap_leaf_script_state_t, leaf_script),
+                   offsetof(tap_leaf_script_state_t, leaf_script),
                "sign_standalone aliasing: input_spk must start before tls.leaf_script");
 _Static_assert(sizeof(G_scratch.sign_standalone.xpub_bytes) == sizeof(serialized_extended_pubkey_t),
                "sign_standalone.xpub_bytes size must match serialized_extended_pubkey_t");
@@ -391,7 +391,9 @@ bool sign_custom_inputs(
 
         /* leaf_key [32..63]: clobbers tls.control_block[30..62] — dead.
          * Source tls.leaf_script[1..32] is at offsets [69..100], past dst [32..63]. */
-        memcpy(G_scratch.sign_standalone.leaf_key, G_scratch.tls.leaf_script + 1, VAULT_XONLY_PUBKEY_LEN);
+        memcpy(G_scratch.sign_standalone.leaf_key,
+               G_scratch.tls.leaf_script + 1,
+               VAULT_XONLY_PUBKEY_LEN);
 
         /* tls is fully consumed.  input_spk [64..97] now clobbers tls.control_block_len
          * (offset 67) and tls.leaf_script[0..29] (offsets 68..97) — all dead. */
@@ -424,10 +426,10 @@ bool sign_custom_inputs(
 
         uint32_t fingerprint;
         int path_len = parse_tap_bip32_deriv_value(G_scratch.sign_standalone.deriv_val,
-                                                    deriv_len,
-                                                    &fingerprint,
-                                                    G_scratch.sign_standalone.sign_path,
-                                                    VAULT_STANDALONE_PATH_LEN);
+                                                   deriv_len,
+                                                   &fingerprint,
+                                                   G_scratch.sign_standalone.sign_path,
+                                                   VAULT_STANDALONE_PATH_LEN);
         if (path_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
