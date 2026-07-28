@@ -1952,13 +1952,34 @@ def test_sign_psbt_payout_wrong_assert0_leaf(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_sign_psbt_payout_vp_wrong_commission_amount(
+def test_sign_psbt_payout_vp_commission_over_fc(
     client: "RaggerClient",
     navigator: Navigator,
     bitcoin_network: str,
     device,
 ) -> None:
-    """VP Payout fails when Out1 amount differs from commission_fee."""
+    """VP Payout fails when Out1 exceeds commission_fee."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    psbt.tx.vout[1].nValue = _COMMISSION_FEE + 1
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_payout_vp_reduced_commission(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """VP Payout succeeds when Out1 is below commission_fee (VP takes less than the cap)."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
@@ -1968,9 +1989,8 @@ def test_sign_psbt_payout_vp_wrong_commission_amount(
     psbt.tx.vout[1].nValue = _COMMISSION_FEE - 1
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
 
 
 def test_sign_psbt_payout_wrong_dust_output(

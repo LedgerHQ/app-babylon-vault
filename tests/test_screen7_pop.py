@@ -462,3 +462,53 @@ def test_pop_explicit_sighash_default(
     sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
                                    testname=tname,
                                    nav_instructions=sign_psbt_pop_approve_nav(device))
+
+
+def test_pop_missing_witness_utxo(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when WITNESS_UTXO is absent (firmware requires it to extract the tweaked key)."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    psbt.inputs[0].witness_utxo = None
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_missing_tap_internal_key(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when TAP_INTERNAL_KEY is absent (firmware requires it for BIP-86 tweak check)."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    psbt.inputs[0].tap_internal_key = None
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_wrong_witness_utxo_key(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when WITNESS_UTXO tweaked key doesn't match BIP-86 tweak of the internal key."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    rogue_tweaked_key = bytes(32)   # all-zeros — not BIP-86(internal_key)
+    psbt.inputs[0].witness_utxo = CTxOut(0, bytes([0x51, 0x20]) + rogue_tweaked_key)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_max_length_chain_id(client: "RaggerClient", bitcoin_network: str) -> None:
+    """Grammar parser handles a 112-byte message (BIP322_POP_MSG_MAX_LEN) without overflow.
+
+    Uses a 20-digit chain_id so the total encoded length is exactly 112 bytes.  The prevout
+    txid is zeroed out so the firmware rejects at the txid-mismatch check rather than
+    showing a UI screen — this keeps the test snapshot-free while still exercising the full
+    parse and hash path at the buffer boundary.
+    """
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    chain_id_20digits = "12345678901234567890"   # 20 decimal digits — at BIP322_CHAIN_ID_STR_LEN-1
+    msg = f"{_ETH_ADDR}:{chain_id_20digits}:pegin:{_REGISTRY}"
+    assert len(msg.encode("ascii")) == 112       # exactly BIP322_POP_MSG_MAX_LEN
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type, message=msg)
+    psbt.tx.vin[0].prevout = COutPoint(0, 0)     # zero txid → firmware rejects at txid check
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA

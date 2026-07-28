@@ -3,10 +3,12 @@
 #include <string.h>
 
 #include "cx.h"
+#include "ledger_assert.h"
 
-const uint8_t BIP322_PSBT_PROP_POP_MSG_KEY[BIP322_PSBT_PROP_KEY_LEN] = {
-    0xFC, 0x06, 'b', 'v', 'a', 'u', 'l', 't', 0x00
-};
+static const char BIP322_TAG[] = "BIP0322-signed-message";
+
+const uint8_t BIP322_PSBT_PROP_POP_MSG_KEY[BIP322_PSBT_PROP_KEY_LEN] =
+    {0xFC, 0x06, 'b', 'v', 'a', 'u', 'l', 't', 0x00};
 
 /* -------------------------------------------------------------------------
  * PoP message grammar validation
@@ -17,8 +19,9 @@ static bool _is_lowercase_hex(uint8_t c) {
 }
 
 /* Validate "0x" + 40 lowercase hex chars — writes 42 chars + NUL into out. */
-static bool _parse_eth_address(const uint8_t *field, int field_len,
-                                char out[BIP322_ETH_ADDR_STR_LEN]) {
+static bool _parse_eth_address(const uint8_t *field,
+                               int field_len,
+                               char out[BIP322_ETH_ADDR_STR_LEN]) {
     if (field_len != 42) return false;
     if (field[0] != '0' || field[1] != 'x') return false;
     for (int i = 2; i < 42; i++) {
@@ -48,7 +51,7 @@ bool bip322_parse_pop_message(const uint8_t *msg,
 
     /* Field 1: chain_id [colon[0]+1 .. colon[1]-1] */
     int f1_start = colon[0] + 1;
-    int f1_len   = colon[1] - f1_start;
+    int f1_len = colon[1] - f1_start;
     if (f1_len <= 0 || f1_len > BIP322_CHAIN_ID_STR_LEN - 1) return false;
     /* No leading zeros unless the field is the single character "0". */
     if (f1_len > 1 && msg[f1_start] == '0') return false;
@@ -60,12 +63,12 @@ bool bip322_parse_pop_message(const uint8_t *msg,
 
     /* Field 2: literal "pegin" */
     int f2_start = colon[1] + 1;
-    int f2_len   = colon[2] - f2_start;
+    int f2_len = colon[2] - f2_start;
     if (f2_len != 5 || memcmp(msg + f2_start, "pegin", 5) != 0) return false;
 
     /* Field 3: registry_address [colon[2]+1 .. end] */
     int f3_start = colon[2] + 1;
-    int f3_len   = msg_len - f3_start;
+    int f3_len = msg_len - f3_start;
     if (!_parse_eth_address(msg + f3_start, f3_len, registry)) return false;
 
     return true;
@@ -100,11 +103,9 @@ bool bip322_parse_pop_message(const uint8_t *msg,
  * txid = reverse(SHA256(SHA256(to_spend_bytes))) — Bitcoin wire format.
  */
 bool bip322_compute_to_spend_txid(const uint8_t *message,
-                                   int msg_len,
-                                   const uint8_t tweaked_key[32],
-                                   uint8_t txid_out[32]) {
-    static const char TAG[] = "BIP0322-signed-message";
-
+                                  int msg_len,
+                                  const uint8_t tweaked_key[32],
+                                  uint8_t txid_out[32]) {
     cx_sha256_t sha;
     uint8_t tag_hash[32];
     uint8_t tagged_hash[32];
@@ -113,8 +114,8 @@ bool bip322_compute_to_spend_txid(const uint8_t *message,
     cx_sha256_init_no_throw(&sha);
     if (cx_hash_no_throw(&sha.header,
                          CX_LAST,
-                         (const uint8_t *) TAG,
-                         sizeof(TAG) - 1,
+                         (const uint8_t *) BIP322_TAG,
+                         sizeof(BIP322_TAG) - 1,
                          tag_hash,
                          sizeof(tag_hash)) != CX_OK) {
         return false;
@@ -142,70 +143,81 @@ bool bip322_compute_to_spend_txid(const uint8_t *message,
     int pos = 0;
 
     /* version = 0 */
-    to_spend[pos++] = 0x00; to_spend[pos++] = 0x00;
-    to_spend[pos++] = 0x00; to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
 
     /* vin_count = 1 */
     to_spend[pos++] = 0x01;
 
     /* input 0: txid = 00..00 */
-    memset(to_spend + pos, 0x00, 32); pos += 32;
+    memset(to_spend + pos, 0x00, 32);
+    pos += 32;
 
     /* input 0: vout = 0xFFFFFFFF */
-    to_spend[pos++] = 0xFF; to_spend[pos++] = 0xFF;
-    to_spend[pos++] = 0xFF; to_spend[pos++] = 0xFF;
+    to_spend[pos++] = 0xFF;
+    to_spend[pos++] = 0xFF;
+    to_spend[pos++] = 0xFF;
+    to_spend[pos++] = 0xFF;
 
     /* input 0: scriptSig length = 34 (0x22) */
-    to_spend[pos++] = 0x22;
+    to_spend[pos++] = BIP322_SCRIPT_LEN_34;
 
     /* input 0: scriptSig = OP_0 PUSHBYTES_32 tagged_hash */
-    to_spend[pos++] = 0x00; /* OP_0 */
-    to_spend[pos++] = 0x20; /* PUSHBYTES_32 */
-    memcpy(to_spend + pos, tagged_hash, 32); pos += 32;
+    to_spend[pos++] = BIP322_OP_0;
+    to_spend[pos++] = BIP322_PUSHBYTES_32;
+    memcpy(to_spend + pos, tagged_hash, 32);
+    pos += 32;
 
     /* input 0: sequence = 0 */
-    to_spend[pos++] = 0x00; to_spend[pos++] = 0x00;
-    to_spend[pos++] = 0x00; to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
 
     /* vout_count = 1 */
     to_spend[pos++] = 0x01;
 
     /* output 0: value = 0 */
-    memset(to_spend + pos, 0x00, 8); pos += 8;
+    memset(to_spend + pos, 0x00, 8);
+    pos += 8;
 
     /* output 0: scriptPubKey length = 34 (0x22) */
-    to_spend[pos++] = 0x22;
+    to_spend[pos++] = BIP322_SCRIPT_LEN_34;
 
     /* output 0: scriptPubKey = OP_1 PUSHBYTES_32 tweaked_key */
-    to_spend[pos++] = 0x51; /* OP_1 */
-    to_spend[pos++] = 0x20; /* PUSHBYTES_32 */
-    memcpy(to_spend + pos, tweaked_key, 32); pos += 32;
+    to_spend[pos++] = BIP322_OP_1;
+    to_spend[pos++] = BIP322_PUSHBYTES_32;
+    memcpy(to_spend + pos, tweaked_key, 32);
+    pos += 32;
 
     /* locktime = 0 */
-    to_spend[pos++] = 0x00; to_spend[pos++] = 0x00;
-    to_spend[pos++] = 0x00; to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
+    to_spend[pos++] = 0x00;
 
-    /* pos == 128 */
+    LEDGER_ASSERT(pos == 128, "to_spend size mismatch");
 
     /* SHA256d(to_spend) */
     uint8_t hash1[32];
     cx_sha256_init_no_throw(&sha);
-    if (cx_hash_no_throw(&sha.header, CX_LAST, to_spend, (size_t) pos,
-                          hash1, sizeof(hash1)) != CX_OK) {
+    if (cx_hash_no_throw(&sha.header, CX_LAST, to_spend, (size_t) pos, hash1, sizeof(hash1)) !=
+        CX_OK) {
         return false;
     }
 
     cx_sha256_init_no_throw(&sha);
-    if (cx_hash_no_throw(&sha.header, CX_LAST, hash1, sizeof(hash1),
-                          txid_out, 32) != CX_OK) {
+    if (cx_hash_no_throw(&sha.header, CX_LAST, hash1, sizeof(hash1), txid_out, 32) != CX_OK) {
         return false;
     }
 
     /* Reverse to Bitcoin wire format (SHA256d output is in natural order;
      * Bitcoin serializes txids in reversed byte order as used in raw txs and PSBTs). */
     for (int i = 0; i < 16; i++) {
-        uint8_t tmp   = txid_out[i];
-        txid_out[i]   = txid_out[31 - i];
+        uint8_t tmp = txid_out[i];
+        txid_out[i] = txid_out[31 - i];
         txid_out[31 - i] = tmp;
     }
 

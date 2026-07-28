@@ -318,10 +318,10 @@ bool display_pop_transaction(dispatcher_context_t *dc,
     strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
 
     int n = 0;
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "ETH address",
-                                             .value = G_scratch.display_tx.addr_str};
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Chain ID",
-                                             .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "ETH address", .value = G_scratch.display_tx.addr_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Chain ID", .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry contract",
                                              .value = G_scratch.display_tx.txid_str};
 

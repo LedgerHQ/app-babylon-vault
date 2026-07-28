@@ -1403,7 +1403,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     {
         uint64_t expected_out1_value =
             (claimer_idx == 0) ? intent->groups[gi].commission_fee : VAULT_DUST_LIMIT;
-        if (out_value != expected_out1_value) {
+        if (claimer_idx == 0 ? out_value > expected_out1_value : out_value != expected_out1_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2102,7 +2102,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                                 BIP322_PSBT_PROP_KEY_LEN,
                                                 msg_buf,
                                                 BIP322_POP_MSG_MAX_LEN);
-    if (msg_len <= 0) {
+    if (msg_len <= 0 || msg_len > BIP322_POP_MSG_MAX_LEN) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -2131,6 +2131,10 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                                        (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash);
+        if (res >= 0 && res != 4) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         if (res == 4 && sighash != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2158,7 +2162,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
         }
         uint8_t spk_len = witness_utxo[8];
         if (wu_len != 9 + spk_len || spk_len != VAULT_P2TR_SCRIPTPUBKEY_LEN ||
-            witness_utxo[9] != 0x51 || witness_utxo[10] != 0x20) {
+            witness_utxo[9] != BIP322_OP_1 || witness_utxo[10] != BIP322_PUSHBYTES_32) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2183,13 +2187,12 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
     {
         G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
         memcpy(G_scratch.sign_standalone.deriv_key + 1, internal_key, VAULT_XONLY_PUBKEY_LEN);
-        int deriv_len =
-            call_get_merkleized_map_value(dc,
-                                          &input_map,
-                                          G_scratch.sign_standalone.deriv_key,
-                                          1 + VAULT_XONLY_PUBKEY_LEN,
-                                          G_scratch.sign_standalone.deriv_val,
-                                          sizeof(G_scratch.sign_standalone.deriv_val));
+        int deriv_len = call_get_merkleized_map_value(dc,
+                                                      &input_map,
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      1 + VAULT_XONLY_PUBKEY_LEN,
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
         if (deriv_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2240,13 +2243,12 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
             return false;
         }
         uint8_t psbt_txid[VAULT_HASH256_LEN];
-        if (VAULT_HASH256_LEN !=
-                call_get_merkleized_map_value(dc,
-                                             &input_map,
-                                             (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
-                                             1,
-                                             psbt_txid,
-                                             VAULT_HASH256_LEN) ||
+        if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                               &input_map,
+                                                               (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                               1,
+                                                               psbt_txid,
+                                                               VAULT_HASH256_LEN) ||
             memcmp(psbt_txid, computed_txid, VAULT_HASH256_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2307,7 +2309,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                           1,
                                           out_script,
                                           sizeof(out_script)) != 1 ||
-            out_script[0] != 0x6A) {
+            out_script[0] != BIP322_OP_RETURN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
