@@ -1993,6 +1993,27 @@ def test_sign_psbt_payout_vp_reduced_commission(
     _assert_single_schnorr_sig(result, dep_pk)
 
 
+def test_sign_psbt_payout_vp_commission_at_fc(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """VP Payout succeeds when Out1 equals commission_fee exactly (boundary of ≤ Fc check)."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    # Out1 is already set to _COMMISSION_FEE by _build_payout_psbt; assert the boundary.
+    assert psbt.tx.vout[1].nValue == _COMMISSION_FEE
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
+
+
 def test_sign_psbt_payout_wrong_dust_output(
     client: "RaggerClient",
     navigator: Navigator,

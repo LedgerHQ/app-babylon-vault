@@ -327,7 +327,6 @@ def sign_psbt_wc_reject_nav(device: Device) -> List[NavInsID]:
     ]
 
 
-
 def sign_psbt_pop_approve_nav(device: Device) -> List[NavInsID]:
     """Flat approve-path navigation for Screen 7 (PoP) — all devices."""
     if device.is_nano:

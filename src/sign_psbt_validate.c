@@ -1401,11 +1401,20 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
     {
-        uint64_t expected_out1_value =
-            (claimer_idx == 0) ? intent->groups[gi].commission_fee : VAULT_DUST_LIMIT;
-        if (claimer_idx == 0 ? out_value > expected_out1_value : out_value != expected_out1_value) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
+        if (claimer_idx == 0) {
+            /* VP may take ≤ commission_fee; any surplus becomes miner fee, bounded by
+             * the fee-rate check below. */
+            uint64_t commission_fee = intent->groups[gi].commission_fee;
+            if (out_value > commission_fee) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+        } else {
+            /* Non-VP Out1 must be exactly DUST. */
+            if (out_value != VAULT_DUST_LIMIT) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
         }
         /* Only the Depositor claimer's CPFP anchor is script-verified (BIP-86 P2TR). */
         if (claimer_idx == (uint8_t) (intent->keeper_count + 1u)) {
@@ -2085,6 +2094,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
 
 static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     LEDGER_ASSERT(st->tx_version == 0, "pop handler called for non-PoP tx");
+    memset(&G_scratch.sign_standalone, 0, sizeof(G_scratch.sign_standalone));
     if (st->n_inputs != 1 || st->n_outputs != 1) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -2102,6 +2112,9 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                                 BIP322_PSBT_PROP_KEY_LEN,
                                                 msg_buf,
                                                 BIP322_POP_MSG_MAX_LEN);
+    /* call_get_merkleized_map_value returns at most the buffer size (bytes read, capped),
+     * so msg_len > BIP322_POP_MSG_MAX_LEN is structurally unreachable — kept as explicit
+     * documentation of the intended upper-bound rejection. */
     if (msg_len <= 0 || msg_len > BIP322_POP_MSG_MAX_LEN) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -2358,7 +2371,11 @@ bool validate_and_display_transaction(
     /* PoP BIP-322: tx_version == 0 uniquely identifies PoP across all protocol PSBTs.
      * PoP is intentionally state-independent: it may be signed at any time, with or
      * without a loaded intent. A pegin request may be re-submitted after the deposit
-     * ceremony, so PoP is never constrained by the vault session state machine. */
+     * ceremony, so PoP is never constrained by the vault session state machine.
+     * Scratch safety: all other handlers in this function complete within a single APDU
+     * and do not leave live data in G_scratch across APDU boundaries, so dispatching PoP
+     * at any point does not clobber in-progress state. _validate_display_pop zeroes
+     * G_scratch.sign_standalone before use. */
     if (st->tx_version == 0) return _validate_display_pop(dc, st);
 
     vault_state_t state = G_vault_context.state;

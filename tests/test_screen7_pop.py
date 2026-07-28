@@ -395,6 +395,8 @@ def test_pop_wrong_output_script(client: "RaggerClient", bitcoin_network: str) -
 def test_pop_foreign_key(client: "RaggerClient", bitcoin_network: str) -> None:
     """PoP fails when the internal key is not derived from this device's seed."""
     fingerprint, _, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    # A fixed x-only public key with no known BIP-32 derivation path from any seed.
+    # Chosen as a reproducible test vector; not the device's key and not a magic constant.
     foreign_key = bytes.fromhex("F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9")
     psbt = _build_pop_psbt(fingerprint, foreign_key, coin_type)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -509,6 +511,23 @@ def test_pop_max_length_chain_id(client: "RaggerClient", bitcoin_network: str) -
     assert len(msg.encode("ascii")) == 112       # exactly BIP322_POP_MSG_MAX_LEN
     psbt = _build_pop_psbt(fingerprint, internal_key, coin_type, message=msg)
     psbt.tx.vin[0].prevout = COutPoint(0, 0)     # zero txid → firmware rejects at txid check
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_overlong_message(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when the raw message exceeds BIP322_POP_MSG_MAX_LEN (112 bytes).
+
+    call_get_merkleized_map_value caps the read at the buffer size, so the 113-byte message
+    is truncated to 112 bytes before parsing.  The truncated form has a 41-char registry
+    (one byte short of the required 42) which fails grammar validation.
+    """
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    chain_id_21digits = "123456789012345678901"  # 21 decimal digits — one over BIP322_CHAIN_ID_STR_LEN-1
+    msg = f"{_ETH_ADDR}:{chain_id_21digits}:pegin:{_REGISTRY}"
+    assert len(msg.encode("ascii")) == 113       # one byte over BIP322_POP_MSG_MAX_LEN
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type, message=msg)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
