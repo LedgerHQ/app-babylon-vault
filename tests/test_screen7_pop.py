@@ -478,7 +478,7 @@ def test_pop_missing_tap_internal_key(client: "RaggerClient", bitcoin_network: s
     """PoP fails when TAP_INTERNAL_KEY is absent (firmware requires it for BIP-86 tweak check)."""
     fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
     psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
-    psbt.inputs[0].tap_internal_key = None
+    psbt.inputs[0].tap_internal_key = b""
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
