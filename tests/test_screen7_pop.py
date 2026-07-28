@@ -276,6 +276,16 @@ def test_pop_sighash_all(client: "RaggerClient", bitcoin_network: str) -> None:
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_pop_nonzero_sequence(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when nSequence is not 0 (BIP-322 to_sign nSequence must be exactly 0)."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    psbt.tx.vin[0].nSequence = 1   # must be 0
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_pop_extra_input(client: "RaggerClient", bitcoin_network: str) -> None:
     """PoP fails when n_inputs != 1."""
     fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
@@ -299,7 +309,11 @@ def test_pop_extra_output(client: "RaggerClient", bitcoin_network: str) -> None:
 
 
 def test_pop_missing_message(client: "RaggerClient", bitcoin_network: str) -> None:
-    """PoP fails when the global proprietary message field is absent."""
+    """PoP PSBT without the proprietary message field is rejected (AC: generic path rejected).
+
+    A version-0 PSBT submitted without BIP322_PSBT_PROP_POP_MSG_KEY never falls through
+    to a generic transaction display — the firmware rejects it before signing proceeds.
+    """
     fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
     psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
     del psbt.unknown[_POP_MSG_KEY]
