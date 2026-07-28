@@ -2084,6 +2084,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
  * ---------------------------------------------------------------------- */
 
 static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *st) {
+    LEDGER_ASSERT(st->tx_version == 0, "pop handler called for non-PoP tx");
     if (st->n_inputs != 1 || st->n_outputs != 1) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -2122,7 +2123,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
         return false;
     }
 
-    /* Sighash: absent (SIGHASH_DEFAULT) only; explicit values forbidden */
+    /* Sighash: absent (SIGHASH_DEFAULT) or explicit 0 only */
     {
         uint32_t sighash = 0;
         int res = call_get_merkleized_map_value_u32_le(dc,
@@ -2130,7 +2131,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                                        (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
                                                        1,
                                                        &sighash);
-        if ((res >= 0 && res != 4) || (res == 4 && sighash != 0)) {
+        if (res == 4 && sighash != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2147,6 +2148,11 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                                    witness_utxo,
                                                    sizeof(witness_utxo));
         if (wu_len < 9) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* BIP-322 to_spend output value must be 0 */
+        if (read_u64_le(witness_utxo, 0) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2293,13 +2299,14 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        uint8_t out_script[1];
-        if (1 != call_get_merkleized_map_value(dc,
-                                               &out_map,
-                                               (uint8_t[]) {PSBT_OUT_SCRIPT},
-                                               1,
-                                               out_script,
-                                               1) ||
+        /* BIP-322: to_sign output 0 must be a bare single-byte OP_RETURN */
+        uint8_t out_script[2];
+        if (call_get_merkleized_map_value(dc,
+                                          &out_map,
+                                          (uint8_t[]) {PSBT_OUT_SCRIPT},
+                                          1,
+                                          out_script,
+                                          sizeof(out_script)) != 1 ||
             out_script[0] != 0x6A) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2346,7 +2353,10 @@ bool validate_and_display_transaction(
     sign_psbt_state_t *st,
     const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)],
     const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
-    /* PoP BIP-322: tx_version == 0 is unique to PoP across all protocol PSBTs */
+    /* PoP BIP-322: tx_version == 0 uniquely identifies PoP across all protocol PSBTs.
+     * PoP is intentionally state-independent: it may be signed at any time, with or
+     * without a loaded intent. A pegin request may be re-submitted after the deposit
+     * ceremony, so PoP is never constrained by the vault session state machine. */
     if (st->tx_version == 0) return _validate_display_pop(dc, st);
 
     vault_state_t state = G_vault_context.state;

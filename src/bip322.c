@@ -34,7 +34,8 @@ bool bip322_parse_pop_message(const uint8_t *msg,
                               char eth_addr[BIP322_ETH_ADDR_STR_LEN],
                               char chain_id[BIP322_CHAIN_ID_STR_LEN],
                               char registry[BIP322_ETH_ADDR_STR_LEN]) {
-    /* Find exactly 3 colons. */
+    /* Scan for the first 3 colons; any extra colons fall into field 3 and are
+     * implicitly rejected by _parse_eth_address's strict field_len == 42 check. */
     int colon[3];
     int nc = 0;
     for (int i = 0; i < msg_len && nc < 3; i++) {

@@ -23,8 +23,6 @@ import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import requests.exceptions
-
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
@@ -43,7 +41,6 @@ from test_utils.taproot import taproot_tweak_pubkey
 
 from .vault_client import SW_DENY, SW_INCORRECT_DATA, sign_psbt_with_nav_and_compare
 from .instructions import (
-    sign_psbt_pop_approve_instructions,
     sign_psbt_pop_approve_nav,
     sign_psbt_pop_reject_instructions,
     sign_psbt_pop_reject_nav,
@@ -208,21 +205,9 @@ def test_sign_psbt_pop_screen(
     psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
     tname = "screen7_pop/screen_" + bitcoin_network
 
-    if device.is_nano:
-        try:
-            client.sign_psbt(psbt, wallet, None, navigator,
-                             testname=tname,
-                             instructions=sign_psbt_pop_approve_instructions(device))
-        except requests.exceptions.ChunkedEncodingError:
-            # BIP-340 key-path signing is instantaneous: Speculos closes the async
-            # stream before the navigator's post-BOTH_CLICK wait_for_screen_change
-            # runs.  All reference screenshots (00000–00005) are captured before
-            # this point, so the golden run succeeds and comparisons are valid.
-            pass
-    else:
-        sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
-                                       testname=tname,
-                                       nav_instructions=sign_psbt_pop_approve_nav(device))
+    sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
+                                   testname=tname,
+                                   nav_instructions=sign_psbt_pop_approve_nav(device))
 
 
 # ===========================================================================
@@ -415,3 +400,65 @@ def test_pop_foreign_key(client: "RaggerClient", bitcoin_network: str) -> None:
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_bad_grammar_empty_chain_id(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when chain_id is empty (consecutive colons: <eth>::pegin:<reg>)."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    bad = f"{_ETH_ADDR}::pegin:{_REGISTRY}"   # empty chain_id — grammar error
+    psbt.unknown[_POP_MSG_KEY] = bad.encode("ascii")
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_witness_utxo_nonzero_value(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when WITNESS_UTXO value is not 0 (BIP-322 to_spend output value must be 0)."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    _, tweaked_key = taproot_tweak_pubkey(internal_key, b"")
+    witness_spk = bytes([0x51, 0x20]) + tweaked_key
+    psbt.inputs[0].witness_utxo = CTxOut(1000, witness_spk)   # value must be 0
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_chain_id_zero(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """PoP accepts chain_id == '0' (the single character zero is a valid chain ID).
+
+    Run once with --golden_run to create reference snapshots.
+    """
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    msg = f"{_ETH_ADDR}:0:pegin:{_REGISTRY}"
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type, message=msg)
+    tname = "screen7_pop/chain_id_zero_" + bitcoin_network
+    sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
+                                   testname=tname,
+                                   nav_instructions=sign_psbt_pop_approve_nav(device))
+
+
+def test_pop_explicit_sighash_default(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """PoP accepts an explicit PSBT_IN_SIGHASH_TYPE = 0 (SIGHASH_DEFAULT).
+
+    Absent key and explicit 0 are semantically equivalent for Taproot.
+    Run once with --golden_run to create reference snapshots.
+    """
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    psbt.inputs[0].sighash = 0   # explicit SIGHASH_DEFAULT — must be accepted
+    tname = "screen7_pop/explicit_sighash_default_" + bitcoin_network
+    sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
+                                   testname=tname,
+                                   nav_instructions=sign_psbt_pop_approve_nav(device))

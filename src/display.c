@@ -5,6 +5,7 @@
 
 #include "../bitcoin_app_base/src/ui/display.h"
 #include "../bitcoin_app_base/src/ui/menu.h"
+#include "bip322.h"
 #include "globals.h"
 #include "io_ext.h"
 #include "ledger_assert.h"
@@ -34,6 +35,12 @@ _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= 2 * VAULT_HASH256_LEN + 1,
  * Verify this assumption against the SDK when updating to a new device target. */
 _Static_assert(VAULT_KEY_PAIR_SLOTS >= 4,
                "VAULT_KEY_PAIR_SLOTS too small; verify NBGL per-page pair limit before reducing");
+_Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= BIP322_ETH_ADDR_STR_LEN,
+               "TX_DISPLAY_ADDR_STR_SIZE too small for Ethereum address");
+_Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= BIP322_CHAIN_ID_STR_LEN,
+               "TX_DISPLAY_AMOUNT_STR_SIZE too small for chain ID");
+_Static_assert(TX_DISPLAY_TXID_STR_SIZE >= BIP322_ETH_ADDR_STR_LEN,
+               "TX_DISPLAY_TXID_STR_SIZE too small for registry address");
 
 // ---------------------------------------------------------------------------
 // Screen 1 — DERIVE_CONTEXT_HASH approval

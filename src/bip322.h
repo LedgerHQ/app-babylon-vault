@@ -17,7 +17,7 @@
 #define BIP322_CHAIN_ID_STR_LEN  21 /* up to 20 decimal digits + NUL */
 
 /* Maximum raw byte length of the complete PoP message string. */
-#define BIP322_POP_MSG_MAX_LEN   112 /* 42 + 1 + 20 + 7 + 42 */
+#define BIP322_POP_MSG_MAX_LEN   112 /* eth(42) + ':' + chain_id(20) + ":pegin:" + registry(42) */
 
 /*
  * PSBT global proprietary key carrying the PoP message.
@@ -40,7 +40,8 @@ extern const uint8_t BIP322_PSBT_PROP_POP_MSG_KEY[BIP322_PSBT_PROP_KEY_LEN];
  *   field 3: "0x" + 40 lowercase hex chars (registry address)
  *
  * Returns true and fills the three output buffers on success; returns false on
- * any grammar violation without modifying the buffers.
+ * any grammar violation. Output buffers may be partially written on failure;
+ * callers must discard them when the return value is false.
  */
 bool bip322_parse_pop_message(const uint8_t *msg,
                               int msg_len,

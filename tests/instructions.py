@@ -327,23 +327,11 @@ def sign_psbt_wc_reject_nav(device: Device) -> List[NavInsID]:
     ]
 
 
-def sign_psbt_pop_approve_instructions(device: Device) -> Instructions:
-    """Approve-path Instructions for Screen 7 (PoP) — Nano devices only.
-
-    Touch devices should use sign_psbt_pop_approve_nav() instead.
-    """
-    instructions = Instructions(device)
-    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
-    return instructions
-
 
 def sign_psbt_pop_approve_nav(device: Device) -> List[NavInsID]:
-    """Flat approve-path navigation for Screen 7 (PoP) on touch devices.
-
-    All three pairs (ETH address, Chain ID, Registry contract) fit on one
-    content page on every touch device.
-    """
-    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    """Flat approve-path navigation for Screen 7 (PoP) — all devices."""
+    if device.is_nano:
+        return [NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK]
     return [
         NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
         NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
