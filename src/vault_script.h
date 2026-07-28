@@ -100,13 +100,28 @@ int vault_build_depositor_claim_leaf(const vault_intent_t *intent, uint8_t *buf,
 
 /**
  * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
- * @param claimer_idx  0 = VP is claimer; 1..keeper_count = VK_i is claimer.
+ * @param claimer_idx  0 = VP; 1..keeper_count = VK_i; keeper_count+1 = Depositor.
  */
 int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
                                     int group_idx,
                                     int claimer_idx,
                                     uint8_t *buf,
                                     int buf_max);
+
+/**
+ * Build the NoPayout leaf: <Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG.
+ *
+ * The Depositor key comes from intent->depositor_pk.
+ * Challengers are indexed 0..keeper_count-1 (VaultKeepers) then
+ * keeper_count..keeper_count+challenger_count-1 (UniversalChallengers).
+ *
+ * @param challenger_idx  Index into the combined keeper+challenger list.
+ * Returns byte count (68) on success, -1 on error.
+ */
+int vault_build_nopayout_leaf(const vault_intent_t *intent,
+                              int challenger_idx,
+                              uint8_t *buf,
+                              int buf_max);
 
 /* --------------------------------------------------------------------------
  * Derived outputs
@@ -140,7 +155,7 @@ bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
 
 /**
  * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
- * @param claimer_idx  0 = VP; 1..keeper_count = VK_i.
+ * @param claimer_idx  0 = VP; 1..keeper_count = VK_i; keeper_count+1 = Depositor.
  */
 bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
                                              int group_idx,

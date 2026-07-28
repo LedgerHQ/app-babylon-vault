@@ -108,7 +108,7 @@ static uint8_t *tlv_path(uint8_t *p, uint16_t tag, const uint32_t *path, int lev
 }
 
 /**
- * Build a complete, valid P1=0x00 TLV payload (12 scalar tags) into @p buf.
+ * Build a complete, valid P1=0x00 TLV payload (13 scalar tags) into @p buf.
  * Returns byte length.
  */
 static size_t build_valid_tlv(uint8_t *buf) {
@@ -125,6 +125,7 @@ static size_t build_valid_tlv(uint8_t *buf) {
     p = tlv_u8    (p, TAG_KEEPER_COUNT,              1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
     p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
+    p = tlv_u64be (p, TAG_PREPEGIN_MAX_FEE,          50000ULL);
     return (size_t)(p - buf);
 }
 
@@ -216,6 +217,7 @@ static void test_tlv_tags_any_order_ok(void **state) {
     p = tlv_u8    (p, TAG_KEEPER_COUNT,              1);
     p = tlv_u8    (p, TAG_CHALLENGER_COUNT,          1);
     p = tlv_u8    (p, TAG_VAULT_COUNT,               1);
+    p = tlv_u64be (p, TAG_PREPEGIN_MAX_FEE,          50000ULL);
     /* TAG_COIN_TYPE last — intentionally out of spec-table order */
     p = tlv_u32be (p, TAG_COIN_TYPE,                 BIP44_COIN_TYPE);
     assert_int_equal(vault_tlv_parse(buf, (size_t)(p - buf), &out), VAULT_TLV_OK);
@@ -378,7 +380,7 @@ static void test_tlv_htlc_refund_above_max(void **state) {
     (void) state;
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
-    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_TIMELOCK_MAX + 1);
+    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_HTLC_REFUND_TIMELOCK_MAX + 1);
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_ERR_VALIDATION);
 }
 
@@ -386,7 +388,7 @@ static void test_tlv_htlc_refund_at_max(void **state) {
     (void) state;
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
-    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_TIMELOCK_MAX);
+    patch_tlv_u32be(buf, len, TAG_HTLC_REFUND_TIMELOCK, VAULT_HTLC_REFUND_TIMELOCK_MAX);
     assert_int_equal(vault_tlv_parse(buf, len, &out), VAULT_TLV_OK);
 }
 

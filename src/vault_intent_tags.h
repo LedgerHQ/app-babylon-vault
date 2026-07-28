@@ -24,7 +24,7 @@
  *   depositor_derivation_path: wire = 20 B (5 × u32 BE), validated n == 5
  */
 
-/* --- P1=0x00 scalar tags (12) ------------------------------------------- */
+/* --- P1=0x00 scalar tags (13) ------------------------------------------- */
 
 #define TAG_STRUCTURE_TYPE \
     ((uint16_t) 0x0001) /**< u8    — protocol structure type constant         (1 B)    */
@@ -50,6 +50,8 @@
     ((uint16_t) 0x0105) /**< u8    — number of challenger keys [1, 32]         (1 B)    */
 #define TAG_VAULT_COUNT \
     ((uint16_t) 0x0106) /**< u8    — number of vault groups [1, 10]            (1 B)    */
+#define TAG_PREPEGIN_MAX_FEE \
+    ((uint16_t) 0x010F) /**< u64   — max Pre-PegIn fee in satoshis             (8 B BE) */
 
 /* --- P1=0x01 per-vault group tags (6) ------------------------------------ */
 /* Independent tag namespace from P1=0x00; parsed by vault_tlv_parse_group.  */
@@ -77,7 +79,7 @@
 /* --- Field counts for the parsers ---------------------------------------- */
 
 /** Number of mandatory scalar tags in P1=0x00. */
-#define VAULT_INTENT_TAG_COUNT 12
+#define VAULT_INTENT_TAG_COUNT 13
 
 /** Number of mandatory per-vault group fields in P1=0x01. */
 #define VAULT_GROUP_TAG_COUNT 6

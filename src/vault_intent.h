@@ -55,7 +55,7 @@ typedef struct {
  * @brief Vault intent — all parameters received via APPROVE_VAULT_INTENT (INS 0x80).
  *
  * Populated in three phases:
- *   P1=0x00  TLV scalar parsing  (12 mandatory fields, tag 2B + len 1B)
+ *   P1=0x00  TLV scalar parsing  (13 mandatory fields, tag 2B + len 1B)
  *   P1=0x01  Per-vault TLV group parsing (vault_count groups, 6 fields each)
  *   P1=0x02  Key batch TLV (keeper_count keepers, then challenger_count challengers)
  *
@@ -64,7 +64,7 @@ typedef struct {
  */
 typedef struct {
     // -------------------------------------------------------------------------
-    // Scalar fields (12) — parsed from TLV P1=0x00
+    // Scalar fields (13) — parsed from TLV P1=0x00
     // -------------------------------------------------------------------------
 
     /** Protocol structure type — must equal the vault structure type constant. */
@@ -79,7 +79,7 @@ typedef struct {
     /** PegIn CSV timelock P in blocks. Range: [72, 1008] inclusive. */
     uint16_t pegin_csv_timelock;
 
-    /** HTLC refund timelock T_refund in blocks. Range: [72, 1008] inclusive. */
+    /** HTLC refund timelock T_refund in blocks. Range: [72, 4320] inclusive. */
     uint16_t htlc_refund_timelock;
 
     /** Payout timelock t2 in blocks. Range: (90, 4032) exclusive. */
@@ -105,6 +105,9 @@ typedef struct {
 
     /** Pre-PegIn transaction ID (little-endian). */
     uint8_t prepegin_txid[VAULT_HASH256_LEN];
+
+    /** Maximum acceptable Pre-PegIn transaction fee in satoshis. */
+    uint64_t prepegin_max_fee;
 
     // -------------------------------------------------------------------------
     // Per-vault groups — parsed from TLV P1=0x01

@@ -77,6 +77,9 @@
 /** Maximum depth of a BIP-32 derivation path (number of levels). */
 #define VAULT_MAX_PATH_DEPTH 10u
 
+/** BIP-86 path depth for standalone signing (m/86'/coin_type'/0'/change/index). */
+#define VAULT_STANDALONE_PATH_LEN 5u
+
 /** Compressed SEC1 public key length: 1-byte parity prefix + 32-byte x-coordinate. */
 #define VAULT_COMPRESSED_PUBKEY_LEN 33u
 
@@ -96,8 +99,11 @@
 /** Minimum inclusive bound for pegin_csv_timelock and htlc_refund_timelock. */
 #define VAULT_TIMELOCK_MIN 72u
 
-/** Maximum inclusive bound for pegin_csv_timelock and htlc_refund_timelock. */
+/** Maximum inclusive bound for pegin_csv_timelock. */
 #define VAULT_TIMELOCK_MAX 1008u
+
+/** Maximum inclusive bound for htlc_refund_timelock (v22: ~1 month). */
+#define VAULT_HTLC_REFUND_TIMELOCK_MAX 4320u
 
 /** Exclusive lower bound for payout_timelock. */
 #define VAULT_PAYOUT_TIMELOCK_MIN 90u

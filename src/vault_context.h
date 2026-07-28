@@ -38,7 +38,8 @@ typedef enum {
     VAULT_STATE_INTENT_LOADED,
     VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
     VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-    VAULT_STATE_SESSION2_PAYOUT_EXPECTED,  // payout_index tracks which claimer (0=VP, 1..N=VK)
+    VAULT_STATE_SESSION2_PAYOUT_EXPECTED,  // payout_index tracks claimer (0=VP, 1..N=VK,
+                                           // N+1=Depositor)
     VAULT_STATE_SESSION2_COMPLETE,
 } vault_state_t;
 
@@ -76,10 +77,17 @@ typedef struct {
 
     /**
      * Payout iteration index within the active vault group.
-     * 0 = VP claimer, 1..keeper_count = VK claimers in ascending key order.
+     * 0 = VP claimer, 1..keeper_count = VK claimers, keeper_count+1 = Depositor.
      * Only meaningful in VAULT_STATE_SESSION2_PAYOUT_EXPECTED.
      */
     uint8_t payout_index;
+
+    /**
+     * Number of NoPayout PSBTs signed so far in the current Session 2.
+     * Each vault contributes (keeper_count + challenger_count) NoPayout leaves.
+     * Capped at vault_count × (keeper_count + challenger_count) ≤ 10×64 = 640.
+     */
+    uint16_t nopayout_index;
 
     /**
      * Index of the vault group currently being processed in Session 2.

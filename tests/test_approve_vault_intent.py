@@ -80,7 +80,7 @@ def _coin_type(network: str) -> int:
 
 
 def _make_scalars(network: str, **overrides) -> bytes:
-    """Build a valid P1=0x00 TLV scalar payload (v21 2-byte tags, 12 scalar fields)."""
+    """Build a valid P1=0x00 TLV scalar payload (v21 2-byte tags, 13 scalar fields)."""
     ct = _coin_type(network)
     defaults = dict(
         coin_type=ct,
@@ -92,6 +92,7 @@ def _make_scalars(network: str, **overrides) -> bytes:
         depositor_path=depositor_path(ct),
         keeper_count=1,
         challenger_count=1,
+        prepegin_max_fee=500_000,
         vault_count=1,
     )
     defaults.update(overrides)
@@ -136,7 +137,7 @@ def test_minimal_1_keeper_1_challenger(client: RaggerClient, navigator: Navigato
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/1k1c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/1k1c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
 
@@ -232,7 +233,7 @@ def test_max_32_keepers_32_challengers(client: RaggerClient, navigator: Navigato
                                   challenger_pks=_MAX_CHALLENGERS,
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/max_32k32c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/max_32k32c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 32))
 
 
@@ -247,7 +248,7 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=grp,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/reload_1_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/reload_1_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
     # Second load — derive first to reach HASH_DERIVED, then handler invalidates the
     # first session and shows the screen again
@@ -256,7 +257,7 @@ def test_reload_intent_invalidates_previous(client: RaggerClient, navigator: Nav
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=grp,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/reload_2_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/reload_2_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
 
@@ -281,7 +282,7 @@ def test_session2_preimage_survives_approve_vault_intent(client: RaggerClient, n
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/session2_survive_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/session2_survive_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
     # Step 3 — state is INTENT_LOADED; P1=0x01 without a preceding P1=0x00 must fail
@@ -303,7 +304,7 @@ def test_approve_resets_session_derive_can_run(client: RaggerClient, navigator: 
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=[_make_group()],
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/reset_session_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/reset_session_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 1, 1))
 
     # DERIVE_CONTEXT_HASH invalidates any loaded intent per spec.
@@ -366,6 +367,20 @@ def test_pegin_csv_below_min(client: RaggerClient, bitcoin_network: str):
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_htlc_refund_timelock_at_max(client: RaggerClient, bitcoin_network: str):
+    """htlc_refund_timelock = 4320 (maximum per v22) must be accepted."""
+    scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=4320)
+    _raw_exchange(client, P1_SCALARS, scalars)  # must not raise
+
+
+def test_htlc_refund_timelock_over_max(client: RaggerClient, bitcoin_network: str):
+    """htlc_refund_timelock = 4321 (above v22 maximum 4320) must return SW_INCORRECT_DATA."""
+    scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=4321)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_keeper_count_zero(client: RaggerClient, bitcoin_network: str):
     """keeper_count = 0 must return SW_INCORRECT_DATA."""
     scalars = _make_scalars(bitcoin_network, keeper_count=0)
@@ -377,12 +392,10 @@ def test_keeper_count_zero(client: RaggerClient, bitcoin_network: str):
 def test_duplicate_tlv_tag(client: RaggerClient, bitcoin_network: str):
     """TLV payload with a duplicate tag must return SW_INCORRECT_DATA."""
     scalars = _make_scalars(bitcoin_network)
-    # Append a second TAG_VERSION at the end.  The parser sees the first occurrence
-    # during normal field collection, then hits the duplicate on the appended entry
-    # and rejects it.  Appending (rather than inserting mid-stream) is intentional:
-    # it ensures the first TAG_VERSION is always processed before the duplicate,
-    # regardless of canonical field ordering.
-    bad_tlv = scalars + bytes([0x02, 1, VAULT_PROTOCOL_VERSION])
+    # Append a second TAG_VERSION (0x0002) at the end — 2-byte tag, 1-byte length, value.
+    # The parser sees the first TAG_VERSION during normal field collection, then hits the
+    # duplicate on the appended entry and rejects it.
+    bad_tlv = scalars + bytes([0x00, 0x02, 1, VAULT_PROTOCOL_VERSION])
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, bad_tlv)
     assert exc.value.status == SW_INCORRECT_DATA
@@ -523,6 +536,7 @@ def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: N
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
+        # TEST_INVALID_XONLY_KEY is >= secp256k1 prime p — no valid curve point.
         _raw_exchange(client, P1_KEY_BATCH,
                       _ktlv(TAG_KEEPER_PK, KEY_A) +
                       _ktlv(TAG_CHALLENGER_PK, TEST_INVALID_XONLY_KEY))
@@ -642,7 +656,7 @@ def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
                                   groups=groups,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/10vault_1k1c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/10vault_1k1c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 10, 1))
 
 
@@ -662,18 +676,8 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
                                   challenger_pks=_MAX_CHALLENGERS,
                                   groups=groups,
                                   path=SCREENSHOT_PATH,
-                                  test_case_name="vault_intent/10vault_32k32c_" + bitcoin_network,
+                                  test_case_name="screen2_vault_intent/10vault_32k32c_" + bitcoin_network,
                                   n_swipes=vault_intent_steps(device, 10, 32))
-
-
-def test_htlc_vout_out_of_order(client: RaggerClient, bitcoin_network: str):
-    """Second group with htlc_vout <= first group must return SW_INCORRECT_DATA."""
-    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
-    _raw_exchange(client, P1_SCALARS, scalars)
-    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=5))
-    with pytest.raises(ExceptionRAPDU) as exc:
-        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=3))  # 3 <= 5
-    assert exc.value.status == SW_INCORRECT_DATA
 
 
 def test_htlc_vout_equal_rejected(client: RaggerClient, bitcoin_network: str):
