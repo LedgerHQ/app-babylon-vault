@@ -176,10 +176,9 @@ bool parse_payout_leaf_script(const uint8_t *script,
     /* Try 2-byte LE CScriptNum (t2 in [128, VAULT_PAYOUT_TIMELOCK_MAX]):
      * last 4 bytes: [OP_PUSHBYTES_2] [lo] [hi] [OP_CSV]
      * Sign bit must be clear in the high byte (hi & 0x80 == 0 means positive). */
-    if ((uint8_t) script[script_len - 4] == OP_PUSHBYTES_2 &&
-        !(script[script_len - 2] & 0x80u)) {
-        t2 = (uint32_t)(uint8_t) script[script_len - 3] |
-             ((uint32_t)(uint8_t) script[script_len - 2] << 8);
+    if ((uint8_t) script[script_len - 4] == OP_PUSHBYTES_2 && !(script[script_len - 2] & 0x80u)) {
+        t2 = (uint32_t) (uint8_t) script[script_len - 3] |
+             ((uint32_t) (uint8_t) script[script_len - 2] << 8);
         if (t2 >= VAULT_PAYOUT_TIMELOCK_MIN && t2 <= VAULT_PAYOUT_TIMELOCK_MAX) {
             *csv_value_out = t2;
             return true;
@@ -188,7 +187,7 @@ bool parse_payout_leaf_script(const uint8_t *script,
     /* Try 1-byte CScriptNum (t2 in [VAULT_PAYOUT_TIMELOCK_MIN, 127]):
      * last 3 bytes: [OP_PUSHBYTES_1] [value] [OP_CSV] */
     if ((uint8_t) script[script_len - 3] == OP_PUSHBYTES_1) {
-        t2 = (uint32_t)(uint8_t) script[script_len - 2];
+        t2 = (uint32_t) (uint8_t) script[script_len - 2];
         if (t2 >= VAULT_PAYOUT_TIMELOCK_MIN && t2 <= VAULT_PAYOUT_TIMELOCK_MAX && t2 <= 127u) {
             *csv_value_out = t2;
             return true;

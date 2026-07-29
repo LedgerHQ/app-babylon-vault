@@ -396,13 +396,12 @@ bool sign_custom_inputs(
                G_scratch.sign_standalone.leaf_key,
                VAULT_XONLY_PUBKEY_LEN);
 
-        int deriv_len =
-            call_get_merkleized_map_value(dc,
-                                          &input1_map,
-                                          G_scratch.sign_standalone.deriv_key,
-                                          sizeof(G_scratch.sign_standalone.deriv_key),
-                                          G_scratch.sign_standalone.deriv_val,
-                                          sizeof(G_scratch.sign_standalone.deriv_val));
+        int deriv_len = call_get_merkleized_map_value(dc,
+                                                      &input1_map,
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      sizeof(G_scratch.sign_standalone.deriv_key),
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
         if (deriv_len < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;

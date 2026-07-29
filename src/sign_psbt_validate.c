@@ -2502,8 +2502,8 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
      * valid across io_ui_process() because it lives in global scratch storage. */
     {
         uint8_t out0_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        out0_spk[0] = 0x51;  /* OP_1 */
-        out0_spk[1] = 0x20;  /* OP_PUSHBYTES_32 */
+        out0_spk[0] = 0x51; /* OP_1 */
+        out0_spk[1] = 0x20; /* OP_PUSHBYTES_32 */
         memcpy(out0_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN);
         if (get_script_address(out0_spk,
                                VAULT_P2TR_SCRIPTPUBKEY_LEN,
