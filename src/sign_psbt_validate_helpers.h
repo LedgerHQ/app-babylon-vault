@@ -37,3 +37,19 @@ bool parse_refund_leaf_script(const uint8_t *script,
                               int script_len,
                               uint8_t leaf_key_out[VAULT_XONLY_PUBKEY_LEN],
                               uint32_t *csv_value_out);
+
+/**
+ * Parse a PayoutFinalize (Assert:0 payout) leaf script:
+ *   <OP_PUSHBYTES_32> <32B depositor-key> <OP_CHECKSIGVERIFY>
+ *   [AppChallengers multisig] [UnivChallengers multisig]
+ *   <t2-push> <OP_CHECKSEQUENCEVERIFY>
+ *
+ * Validates the leaf shape (length > 68, correct opcodes at fixed positions and
+ * tail), extracts the 32-byte x-only depositor key into d_key_out, and decodes
+ * the t2 CSV timelock into csv_value_out.
+ * Returns true if the script has the expected shape, false otherwise.
+ */
+bool parse_payout_leaf_script(const uint8_t *script,
+                              int script_len,
+                              uint8_t d_key_out[VAULT_XONLY_PUBKEY_LEN],
+                              uint32_t *csv_value_out);

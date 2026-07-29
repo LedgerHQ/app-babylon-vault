@@ -131,10 +131,16 @@ bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount
 /**
  * @brief Screen 8 — Payout finalize review.
  *
- * Confirmation screen presented once all payout transactions in a vault group
- * have been signed, before the host proceeds with broadcast.
+ * Shown when the depositor self-claims after a successful Claim + Assert chain.
+ * Displays the amount received (Output 0 value) and the depositor's bech32m
+ * destination address.  Fee is not shown because the device signs Input 1 only
+ * and has no attested value for Input 0's prevout.
  *
+ * @param amount_received  Output 0 value in satoshis (funds going to depositor).
+ * @param address          NUL-terminated bech32m destination address; caller keeps valid.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
-bool display_payout_finalize(dispatcher_context_t *dc);
+bool display_payout_finalize(dispatcher_context_t *dc,
+                             uint64_t amount_received,
+                             const char *address);

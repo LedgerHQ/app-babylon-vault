@@ -391,16 +391,33 @@ bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount
 // Screen 8 — Payout finalize
 // ---------------------------------------------------------------------------
 
-bool display_payout_finalize(dispatcher_context_t *dc) {
-    nbgl_layoutTagValueList_t pair_list = {.nbPairs = 0};
+bool display_payout_finalize(dispatcher_context_t *dc,
+                             uint64_t amount_received,
+                             const char *address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list = {0};
 
-    nbgl_useCaseReview(TYPE_OPERATION,
+    format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount received",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
+
+    assert(n <= MAX_N_PAIRS);
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
                        &pair_list,
                        &ICON_APP_ACTION,
-                       "Finalize payout",
+                       "Review payout\nfinalization",
                        NULL,
-                       "Confirm payout\nfinalization?",
-                       derive_context_hash_choice);
+                       "Sign payout\nfinalization?",
+                       review_choice);
 
     bool approved = io_ui_process(dc);
     if (!approved) {

@@ -747,6 +747,97 @@ def _build_refund_psbt(
     return psbt
 
 
+# VAULT_DUST_LIMIT must match vault_constants.h VAULT_DUST_LIMIT.
+_VAULT_DUST_LIMIT = 546
+
+
+def _payout_leaf(d_pk: bytes, app_chal_key: bytes, univ_chal_key: bytes, t2: int) -> bytes:
+    """Payout leaf: <D> OP_CHECKSIGVERIFY <AppChal 1-of-1> <UnivChal 1-of-1> <t2> OP_CSV.
+
+    Uses minimal single-key multisig groups for test purposes.  The leaf is always
+    > 68 bytes (106 with these parameters), which distinguishes it from the 68-byte
+    Assert leaf that the firmware's payout-leaf shape check requires.
+    """
+    s  = bytes([0x20]) + d_pk + bytes([0xAD])            # <D> OP_CHECKSIGVERIFY
+    s += bytes([0x20]) + app_chal_key + bytes([0xAD])    # AppChallengers 1-of-1 (CHECKSIGVERIFY)
+    s += bytes([0x20]) + univ_chal_key + bytes([0xAD])   # UnivChallengers 1-of-1 (CHECKSIGVERIFY)
+    s += _encode_script_num(t2) + bytes([0xB2])          # <t2> OP_CSV
+    return s
+
+
+def _build_payout_finalize_psbt(
+    fingerprint: bytes,
+    d_key: bytes,
+    coin_type: int,
+    app_chal_key: bytes = None,
+    univ_chal_key: bytes = None,
+    t2: int = _PAYOUT_TIMELOCK,
+    amount_received: int = 1_234_567,
+    dust_value: int = _VAULT_DUST_LIMIT,
+    input1_value: int = 2_000_000,
+    d_key_index: int = 0,
+) -> PSBT:
+    """Build a minimal PSBTv0 for a PayoutFinalize transaction (Screen 8).
+
+    Input 0: external (no TAP_LEAF_SCRIPT, no TAP_BIP32_DERIVATION) — the device
+             does not sign it.
+    Input 1: internal tapscript spend via payout leaf; the device signs this input.
+    Output 0: amount_received → P2TR(BIP-86(D)).
+    Output 1: dust_value (546 sat) → P2TR(BIP-86(D)).
+
+    Both outputs carry the same scriptPubKey (the depositor's BIP-86 key-path address).
+    """
+    if app_chal_key is None:
+        app_chal_key = TEST_VALID_KEYS[0]
+    if univ_chal_key is None:
+        univ_chal_key = TEST_VALID_KEYS[1]
+
+    leaf = _payout_leaf(d_key, app_chal_key, univ_chal_key, t2)
+    leaf_hash = _tapleaf_hash(leaf)
+    parity, tweaked_key = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
+    input1_spk = bytes([0x51, 0x20]) + tweaked_key
+    control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY
+
+    _, bip86_out_key = taproot_tweak_pubkey(d_key, b'')
+    out_spk = bytes([0x51, 0x20]) + bip86_out_key
+
+    tx = CTransaction()
+    tx.nVersion = 2
+    tx.nLockTime = 0
+    tx.vin = [CTxIn(), CTxIn()]
+    tx.vin[0].prevout = COutPoint(int.from_bytes(b'\xAA' * 32, 'little'), 0)
+    tx.vin[0].nSequence = 0xFFFFFFFE   # Input 0: external, no CSV
+    tx.vin[1].prevout = COutPoint(int.from_bytes(b'\xBB' * 32, 'little'), 0)
+    tx.vin[1].nSequence = t2           # Input 1: CSV timelock satisfied
+    tx.vout = [
+        CTxOut(amount_received, out_spk),
+        CTxOut(dust_value, out_spk),
+    ]
+    tx.wit = CTxWitness()
+
+    psbt = PSBT()
+    psbt.version = 0
+    psbt.tx = tx
+    psbt.inputs = [PartiallySignedInput(0), PartiallySignedInput(0)]
+    psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0)]
+
+    # Input 0: external — no leaf, no derivation (the bitvector bit stays 0)
+    psbt.inputs[0].witness_utxo = CTxOut(input1_value + 100_000, bytes([0x51, 0x20]) + bytes(32))
+
+    # Input 1: tapscript spend — leaf + BIP-86 derivation for D
+    psbt.inputs[1].witness_utxo = CTxOut(input1_value, input1_spk)
+    psbt.inputs[1].tap_scripts[(leaf, 0xC0)] = {control_block}
+    psbt.inputs[1].tap_bip32_paths[d_key] = (
+        {leaf_hash},
+        KeyOriginInfo(
+            fingerprint,
+            [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, d_key_index],
+        ),
+    )
+
+    return psbt
+
+
 # ===========================================================================
 # Pre-PegIn signing (NAPPS-1375, NAPPS-1444)
 # Pre-PegIn is signed silently — no user confirmation screen.
