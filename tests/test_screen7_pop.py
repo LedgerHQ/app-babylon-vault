@@ -105,6 +105,29 @@ def _bip322_to_spend_txid(message: bytes, tweaked_key: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Babylon canonical test vector — no device required
+#
+# Provided by the Babylon team; sourced from vault
+# d93596e78999e88e93a328ab44f176834e1e2ff797cffd176ecca37e024b322d on signet.
+# ---------------------------------------------------------------------------
+
+_BABYLON_MSG          = "0xcabdce2a2010a9a88c75506a86dba669716d47fa:11155111:pegin:0xb331467c4db13dccc77fa66c2d185b74ed57ab80"
+_BABYLON_TWEAKED_KEY  = bytes.fromhex("3ba1d14c8716be7930aebf51cd0866ac56af9b85078df5fc31756a094ba55c6f")
+_BABYLON_TO_SPEND_TXID = bytes.fromhex("9c12fc2451c22053afab00c6b2e56c62495c9fda61942eca124ee79bfe4f4ce5")
+
+
+def test_pop_babylon_canonical_txid() -> None:
+    """BIP-322 to_spend txid matches the Babylon-provided canonical vector.
+
+    Pure hash computation — no device or Speculos required.
+    """
+    computed = _bip322_to_spend_txid(_BABYLON_MSG.encode("ascii"), _BABYLON_TWEAKED_KEY)
+    assert computed == _BABYLON_TO_SPEND_TXID, (
+        f"expected {_BABYLON_TO_SPEND_TXID.hex()}, got {computed.hex()}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Wallet policy and PSBT builders
 # ---------------------------------------------------------------------------
 

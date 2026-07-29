@@ -209,6 +209,60 @@ static void test_compute_txid_known_vector(void **state) {
 }
 
 /* -------------------------------------------------------------------------
+ * bip322_compute_to_spend_txid — Babylon canonical vector
+ *
+ * Provided by the Babylon team; sourced from vault
+ * d93596e78999e88e93a328ab44f176834e1e2ff797cffd176ecca37e024b322d on signet.
+ *   message     = "0xcabdce2a2010a9a88c75506a86dba669716d47fa:11155111:pegin:
+ *                  0xb331467c4db13dccc77fa66c2d185b74ed57ab80"  (100 bytes)
+ *   tweaked_key = 3ba1d14c 8716be79 30aebf51 cd0866ac
+ *                 56af9b85 078df5fc 31756a09 4ba55c6f
+ *   txid        = 9c12fc24 51c22053 afab00c6 b2e56c62
+ *                 495c9fda 61942eca 124ee79b fe4f4ce5
+ * ---------------------------------------------------------------------- */
+
+static const uint8_t BABYLON_MSG[] =
+    "0xcabdce2a2010a9a88c75506a86dba669716d47fa:11155111:pegin:"
+    "0xb331467c4db13dccc77fa66c2d185b74ed57ab80";
+
+static const uint8_t BABYLON_TWEAKED_KEY[32] = {
+    0x3b, 0xa1, 0xd1, 0x4c, 0x87, 0x16, 0xbe, 0x79,
+    0x30, 0xae, 0xbf, 0x51, 0xcd, 0x08, 0x66, 0xac,
+    0x56, 0xaf, 0x9b, 0x85, 0x07, 0x8d, 0xf5, 0xfc,
+    0x31, 0x75, 0x6a, 0x09, 0x4b, 0xa5, 0x5c, 0x6f,
+};
+
+static const uint8_t BABYLON_TXID[32] = {
+    0x9c, 0x12, 0xfc, 0x24, 0x51, 0xc2, 0x20, 0x53,
+    0xaf, 0xab, 0x00, 0xc6, 0xb2, 0xe5, 0x6c, 0x62,
+    0x49, 0x5c, 0x9f, 0xda, 0x61, 0x94, 0x2e, 0xca,
+    0x12, 0x4e, 0xe7, 0x9b, 0xfe, 0x4f, 0x4c, 0xe5,
+};
+
+static void test_parse_babylon_canonical_message(void **state) {
+    (void) state;
+    char eth_addr[BIP322_ETH_ADDR_STR_LEN];
+    char chain_id[BIP322_CHAIN_ID_STR_LEN];
+    char registry[BIP322_ETH_ADDR_STR_LEN];
+
+    assert_true(bip322_parse_pop_message(BABYLON_MSG, sizeof(BABYLON_MSG) - 1,
+                                         eth_addr, chain_id, registry));
+    assert_string_equal(eth_addr, "0xcabdce2a2010a9a88c75506a86dba669716d47fa");
+    assert_string_equal(chain_id, "11155111");
+    assert_string_equal(registry, "0xb331467c4db13dccc77fa66c2d185b74ed57ab80");
+}
+
+static void test_compute_txid_babylon_canonical(void **state) {
+    (void) state;
+    uint8_t txid[32];
+    assert_true(bip322_compute_to_spend_txid(BABYLON_MSG,
+                                              sizeof(BABYLON_MSG) - 1,
+                                              BABYLON_TWEAKED_KEY,
+                                              txid));
+    assert_memory_equal(txid, BABYLON_TXID, 32);
+}
+
+/* -------------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -226,6 +280,8 @@ int main(void) {
         cmocka_unit_test(test_parse_wrong_literal),
         cmocka_unit_test(test_parse_registry_wrong_length),
         cmocka_unit_test(test_compute_txid_known_vector),
+        cmocka_unit_test(test_parse_babylon_canonical_message),
+        cmocka_unit_test(test_compute_txid_babylon_canonical),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
