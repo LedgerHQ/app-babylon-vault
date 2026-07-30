@@ -325,7 +325,7 @@ bool display_pop_transaction(dispatcher_context_t *dc,
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry contract",
                                              .value = G_scratch.display_tx.txid_str};
 
-    assert(n <= MAX_N_PAIRS);
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
     pair_list.nbMaxLinesForValue = 0;
     pair_list.nbPairs = n;
