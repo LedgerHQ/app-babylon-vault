@@ -98,6 +98,8 @@ cx_err_t cx_hash_no_throw(cx_hash_t     *hash,
 
 void cx_sha256_init(cx_sha256_t *ctx);
 
+static inline void cx_sha256_init_no_throw(cx_sha256_t *ctx) { cx_sha256_init(ctx); }
+
 // --- HMAC-SHA256 ------------------------------------------------------------
 
 WARN_UNUSED_RESULT cx_err_t cx_hmac_sha256_init_no_throw(cx_hmac_sha256_t *hmac,

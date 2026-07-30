@@ -146,3 +146,21 @@ target_compile_definitions(test_sign_psbt_validate PRIVATE
 target_link_libraries(test_sign_psbt_validate cmocka)
 
 add_test(NAME test_sign_psbt_validate COMMAND test_sign_psbt_validate)
+
+# -----------------------------------------------------------------------
+# test_bip322
+#
+# Tests bip322_parse_pop_message (pure string logic) and
+# bip322_compute_to_spend_txid (BIP-322 tagged hash + to_spend txid).
+# mock_cx.c provides the software SHA-256 implementation.
+# -----------------------------------------------------------------------
+add_executable(test_bip322
+  test_bip322.c
+  mock_cx.c
+  ${SRC_DIR}/bip322.c
+)
+
+target_compile_definitions(test_bip322 PRIVATE TEST BIP44_COIN_TYPE=1)
+target_link_libraries(test_bip322 cmocka)
+
+add_test(NAME test_bip322 COMMAND test_bip322)

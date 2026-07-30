@@ -325,3 +325,32 @@ def sign_psbt_wc_reject_nav(device: Device) -> List[NavInsID]:
         NavInsID.USE_CASE_REVIEW_REJECT,
         NavInsID.USE_CASE_CHOICE_CONFIRM,
     ]
+
+
+def sign_psbt_pop_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 7 (PoP) — all devices."""
+    if device.is_nano:
+        return [NavInsID.RIGHT_CLICK] * 4 + [NavInsID.BOTH_CLICK]
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_pop_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 7 (PoP) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_pop_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 7 (PoP) on touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]

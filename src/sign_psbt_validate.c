@@ -14,6 +14,7 @@
 
 #include "cx.h"
 #include "../bitcoin_app_base/src/crypto.h"
+#include "bip322.h"
 #include "display.h"
 #include "globals.h"
 #include "vault_constants.h"
@@ -1400,11 +1401,20 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
     {
-        uint64_t expected_out1_value =
-            (claimer_idx == 0) ? intent->groups[gi].commission_fee : VAULT_DUST_LIMIT;
-        if (out_value != expected_out1_value) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
+        if (claimer_idx == 0) {
+            /* VP may take ≤ commission_fee; any surplus becomes miner fee, bounded by
+             * the fee-rate check below. */
+            uint64_t commission_fee = intent->groups[gi].commission_fee;
+            if (out_value > commission_fee) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+        } else {
+            /* Non-VP Out1 must be exactly DUST. */
+            if (out_value != VAULT_DUST_LIMIT) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
         }
         /* Only the Depositor claimer's CPFP anchor is script-verified (BIP-86 P2TR). */
         if (claimer_idx == (uint8_t) (intent->keeper_count + 1u)) {
@@ -2074,6 +2084,255 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
 }
 
 /* -------------------------------------------------------------------------
+ * PoP (BIP-322 proof-of-possession) validation + display (Screen 7)
+ *
+ * Discriminator: tx_version == 0 is unique to PoP across all protocol PSBTs.
+ * Input 0: P2TR key-path (BIP-86 depositor), SIGHASH_DEFAULT, sequence 0.
+ * Output 0: value 0, scriptPubKey OP_RETURN (0x6A).
+ * Global proprietary field (BIP322_PSBT_PROP_POP_MSG_KEY) carries the PoP message.
+ * ---------------------------------------------------------------------- */
+
+static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *st) {
+    LEDGER_ASSERT(st->tx_version == 0, "pop handler called for non-PoP tx");
+    memset(&G_scratch.sign_standalone, 0, sizeof(G_scratch.sign_standalone));
+    if (st->n_inputs != 1 || st->n_outputs != 1) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    if (st->locktime != 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Read PoP message from PSBT global proprietary field */
+    uint8_t msg_buf[BIP322_POP_MSG_MAX_LEN];
+    int msg_len = call_get_merkleized_map_value(dc,
+                                                &st->global_map,
+                                                BIP322_PSBT_PROP_POP_MSG_KEY,
+                                                BIP322_PSBT_PROP_KEY_LEN,
+                                                msg_buf,
+                                                BIP322_POP_MSG_MAX_LEN);
+    /* call_get_merkleized_map_value returns at most the buffer size (bytes read, capped),
+     * so msg_len > BIP322_POP_MSG_MAX_LEN is structurally unreachable — kept as explicit
+     * documentation of the intended upper-bound rejection. */
+    if (msg_len <= 0 || msg_len > BIP322_POP_MSG_MAX_LEN) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Validate message grammar */
+    char eth_addr[BIP322_ETH_ADDR_STR_LEN];
+    char chain_id[BIP322_CHAIN_ID_STR_LEN];
+    char registry[BIP322_ETH_ADDR_STR_LEN];
+    if (!bip322_parse_pop_message(msg_buf, msg_len, eth_addr, chain_id, registry)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Open Input 0 map */
+    merkleized_map_commitment_t input_map;
+    if (call_get_merkleized_map(dc, st->inputs_root, 1, 0, &input_map) < 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Sighash: absent (SIGHASH_DEFAULT) or explicit 0 only */
+    {
+        uint32_t sighash = 0;
+        int res = call_get_merkleized_map_value_u32_le(dc,
+                                                       &input_map,
+                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
+                                                       1,
+                                                       &sighash);
+        if (res >= 0 && res != 4) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (res == 4 && sighash != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* WITNESS_UTXO: P2TR scriptPubKey (OP_1 PUSHBYTES_32 <tweaked_key>) */
+    uint8_t tweaked_key[VAULT_XONLY_PUBKEY_LEN];
+    {
+        uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
+        int wu_len = call_get_merkleized_map_value(dc,
+                                                   &input_map,
+                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
+                                                   1,
+                                                   witness_utxo,
+                                                   sizeof(witness_utxo));
+        if (wu_len < 9) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* BIP-322 to_spend output value must be 0 */
+        if (read_u64_le(witness_utxo, 0) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t spk_len = witness_utxo[8];
+        if (wu_len != 9 + spk_len || spk_len != VAULT_P2TR_SCRIPTPUBKEY_LEN ||
+            witness_utxo[9] != BIP322_OP_1 || witness_utxo[10] != BIP322_PUSHBYTES_32) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        memcpy(tweaked_key, witness_utxo + 11, VAULT_XONLY_PUBKEY_LEN);
+    }
+
+    /* TAP_INTERNAL_KEY: x-only BIP-86 internal key */
+    uint8_t internal_key[VAULT_XONLY_PUBKEY_LEN];
+    if (VAULT_XONLY_PUBKEY_LEN !=
+        call_get_merkleized_map_value(dc,
+                                      &input_map,
+                                      (uint8_t[]) {PSBT_IN_TAP_INTERNAL_KEY},
+                                      1,
+                                      internal_key,
+                                      VAULT_XONLY_PUBKEY_LEN)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Verify internal key via BIP-32 derivation + BIP-86 tweak.
+     * Uses G_scratch.sign_standalone for large buffers (xpub 78B, deriv_val 89B). */
+    {
+        G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
+        memcpy(G_scratch.sign_standalone.deriv_key + 1, internal_key, VAULT_XONLY_PUBKEY_LEN);
+        int deriv_len = call_get_merkleized_map_value(dc,
+                                                      &input_map,
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      1 + VAULT_XONLY_PUBKEY_LEN,
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
+        if (deriv_len < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint32_t fingerprint;
+        int path_len = parse_tap_bip32_deriv_value(G_scratch.sign_standalone.deriv_val,
+                                                   deriv_len,
+                                                   &fingerprint,
+                                                   G_scratch.sign_standalone.sign_path,
+                                                   VAULT_STANDALONE_PATH_LEN);
+        if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
+            !check_bip86_path(G_scratch.sign_standalone.sign_path, path_len)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        serialized_extended_pubkey_t *xpub =
+            (serialized_extended_pubkey_t *) G_scratch.sign_standalone.xpub_bytes;
+        if (get_extended_pubkey_at_path(G_scratch.sign_standalone.sign_path,
+                                        (uint8_t) path_len,
+                                        BIP32_PUBKEY_VERSION,
+                                        xpub) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* The derived x-only key must match the PSBT TAP_INTERNAL_KEY */
+        if (memcmp(xpub->compressed_pubkey + 1, internal_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* BIP-86: key-path-only tweak must match the tweaked key in WITNESS_UTXO */
+        uint8_t bip86_parity;
+        uint8_t bip86_tweaked[VAULT_XONLY_PUBKEY_LEN];
+        if (crypto_tr_tweak_pubkey(internal_key, NULL, 0, &bip86_parity, bip86_tweaked) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (memcmp(bip86_tweaked, tweaked_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* Verify PSBT_IN_PREVIOUS_TXID against the computed to_spend txid */
+    {
+        uint8_t computed_txid[VAULT_HASH256_LEN];
+        if (!bip322_compute_to_spend_txid(msg_buf, msg_len, tweaked_key, computed_txid)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t psbt_txid[VAULT_HASH256_LEN];
+        if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                               &input_map,
+                                                               (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                               1,
+                                                               psbt_txid,
+                                                               VAULT_HASH256_LEN) ||
+            memcmp(psbt_txid, computed_txid, VAULT_HASH256_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* PSBT_IN_OUTPUT_INDEX must be 0 */
+    {
+        uint32_t vout;
+        if (call_get_merkleized_map_value_u32_le(dc,
+                                                 &input_map,
+                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
+                                                 1,
+                                                 &vout) != 4 ||
+            vout != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* PSBT_IN_SEQUENCE must be 0 (BIP-322 to_sign nSequence = 0) */
+    {
+        uint32_t seq;
+        if (call_get_merkleized_map_value_u32_le(dc,
+                                                 &input_map,
+                                                 (uint8_t[]) {PSBT_IN_SEQUENCE},
+                                                 1,
+                                                 &seq) != 4 ||
+            seq != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* Output 0: value == 0, scriptPubKey == OP_RETURN (0x6A, single byte) */
+    {
+        merkleized_map_commitment_t out_map;
+        if (call_get_merkleized_map(dc, st->outputs_root, 1, 0, &out_map) < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t raw8[8];
+        if (8 != call_get_merkleized_map_value(dc,
+                                               &out_map,
+                                               (uint8_t[]) {PSBT_OUT_AMOUNT},
+                                               1,
+                                               raw8,
+                                               8) ||
+            read_u64_le(raw8, 0) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* BIP-322: to_sign output 0 must be a bare single-byte OP_RETURN */
+        uint8_t out_script[2];
+        if (call_get_merkleized_map_value(dc,
+                                          &out_map,
+                                          (uint8_t[]) {PSBT_OUT_SCRIPT},
+                                          1,
+                                          out_script,
+                                          sizeof(out_script)) != 1 ||
+            out_script[0] != BIP322_OP_RETURN) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    if (!display_pop_transaction(dc, eth_addr, chain_id, registry)) return false;
+    return true;
+}
+
+/* -------------------------------------------------------------------------
  * Public helpers for sign_custom_inputs
  * ---------------------------------------------------------------------- */
 
@@ -2109,6 +2368,16 @@ bool validate_and_display_transaction(
     sign_psbt_state_t *st,
     const uint8_t internal_inputs[static BITVECTOR_REAL_SIZE(MAX_N_INPUTS_CAN_SIGN)],
     const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
+    /* PoP BIP-322: tx_version == 0 uniquely identifies PoP across all protocol PSBTs.
+     * PoP is intentionally state-independent: it may be signed at any time, with or
+     * without a loaded intent. A pegin request may be re-submitted after the deposit
+     * ceremony, so PoP is never constrained by the vault session state machine.
+     * Scratch safety: all other handlers in this function complete within a single APDU
+     * and do not leave live data in G_scratch across APDU boundaries, so dispatching PoP
+     * at any point does not clobber in-progress state. _validate_display_pop zeroes
+     * G_scratch.sign_standalone before use. */
+    if (st->tx_version == 0) return _validate_display_pop(dc, st);
+
     vault_state_t state = G_vault_context.state;
 
     /* PegIn: strictly state-gated */
