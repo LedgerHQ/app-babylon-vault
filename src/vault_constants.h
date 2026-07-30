@@ -105,10 +105,10 @@
 /** Maximum inclusive bound for htlc_refund_timelock (v22: ~1 month). */
 #define VAULT_HTLC_REFUND_TIMELOCK_MAX 4320u
 
-/** Exclusive lower bound for payout_timelock. */
+/** Minimum valid value for payout t2 CSV timelock (inclusive). */
 #define VAULT_PAYOUT_TIMELOCK_MIN 90u
 
-/** Exclusive upper bound for payout_timelock. */
+/** Maximum valid value for payout t2 CSV timelock (inclusive). */
 #define VAULT_PAYOUT_TIMELOCK_MAX 4032u
 
 /** P2A anchor output value in satoshis (PegIn Output 2). Floored at relay-dust. */

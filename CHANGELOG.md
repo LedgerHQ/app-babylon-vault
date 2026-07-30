@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - NAPPS-1464: PayoutFinalize depositor self-claim (Screen 8)
+
+Adds Screen 8 — the depositor reclaims their deposit after the Claim+Assert chain by
+spending the payout leaf (Input 1) of the PayoutFinalize PSBT.  This is the only flow
+where the device signs Input 1 rather than Input 0.
+
+### Added
+
+- **Screen 8 — PayoutFinalize** (`_validate_display_payout_finalize`, `display_payout_finalize`):
+  standalone flow identified by `has_no_wallet_policy && n_inputs == 2 && n_outputs == 2`.
+  Input 0 is the external Assert:0 UTXO (not signed); Input 1 is the payout tapscript leaf
+  (signed by the device's BIP-86 D key).  Displays "Amount received" and "Destination: Your
+  address" before the final approval screen.  Verifies: payout leaf structure (`> 68 bytes`,
+  D-key match, t2 ∈ `[VAULT_PAYOUT_TIMELOCK_MIN, VAULT_PAYOUT_TIMELOCK_MAX]`), BIP-341
+  taproot commitment on Input 1, nSequence ≥ t2, Output 0 P2TR(BIP-86(D)), Output 1
+  P2TR(BIP-86(D)) with value == `VAULT_DUST_LIMIT`.
+- `vault_read_payout_leaf_script` in `sign_psbt_validate.h/.c`: re-reads Input 1's
+  `PSBT_IN_TAP_LEAF_SCRIPT` during the sign phase after `G_scratch.tls` has been consumed
+  by display.
+- `parse_payout_leaf_script` in `sign_psbt_validate_helpers.c/.h`: parses the payout leaf
+  to extract the D key and t2 CSV value; rejects leaves ≤ 68 bytes (Assert leaf shape).
+- `VAULT_PAYOUT_TIMELOCK_MIN` (90) and `VAULT_PAYOUT_TIMELOCK_MAX` (4032) in
+  `vault_constants.h`.
+- Ragger golden-snapshot and error-path tests (`tests/test_screen8_payout_finalize.py`):
+  19 tests covering happy path, user rejection, and all validated rejection cases.
+
+### Security
+
+- **Input 0 internal guard**: `validate_and_display_transaction` rejects any PayoutFinalize
+  PSBT where `bitvector_get(internal_inputs, 0)` is set — Input 0 must always be external.
+- **BIP-68 nSequence flag checks**: `nSequence` for Input 1 is rejected if the BIP-68
+  disable flag (bit 31) or time-based flag (bit 22) is set; only block-count relative
+  timelocks are accepted.
+- **WITNESS_UTXO bounds check**: Input 1's `witness_utxo` value is extracted and verified
+  to satisfy `amount_received + VAULT_DUST_LIMIT ≤ input1_value`, preventing a fabricated
+  `witness_utxo` from concealing an over-spend.
+
+### Fixed
+
+- `display.c`: seven `assert(n <= MAX_N_PAIRS)` / `assert(n <= VAULT_INTENT_MAX_PAIRS)` calls replaced
+  with `LEDGER_ASSERT(...)`.  Plain `assert` is a no-op when `NDEBUG` is defined (release
+  builds); `LEDGER_ASSERT` always terminates the app.
+- `sign_psbt_validate_helpers.c`: removed unreachable `if (script_len < 4) return false`
+  branch in `parse_payout_leaf_script`; the preceding `script_len <= 68` guard already
+  ensures `script_len ≥ 69`.
+
 ## [0.9.1] - NAPPS-1463: BIP-322 proof-of-possession signing (Screen 7)
 
 Adds Screen 7 — the depositor proves ownership of their Ethereum address by

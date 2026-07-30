@@ -170,8 +170,6 @@ bool parse_payout_leaf_script(const uint8_t *script,
      * OP_PUSHBYTES_2 cannot appear in multisig N-of-N thresholds (those use OP_N
      * opcodes 0x51-0x60 for N<=16, or OP_PUSHBYTES_1 for N>16), so the push
      * opcode immediately before <t2 data> <OP_CSV> is unambiguous. */
-    if (script_len < 4) return false;
-
     uint32_t t2 = 0;
     /* Try 2-byte LE CScriptNum (t2 in [128, VAULT_PAYOUT_TIMELOCK_MAX]):
      * last 4 bytes: [OP_PUSHBYTES_2] [lo] [hi] [OP_CSV]

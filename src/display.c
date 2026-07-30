@@ -122,7 +122,7 @@ bool display_refund_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
 
-    assert(n <= MAX_N_PAIRS);
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
     pair_list.nbMaxLinesForValue = 0;
     pair_list.nbPairs = n;
@@ -172,7 +172,7 @@ bool display_claim_transaction(dispatcher_context_t *dc,
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.addr_str};
 
-    assert(n <= MAX_N_PAIRS);
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
     pair_list.nbMaxLinesForValue = 0;
     pair_list.nbPairs = n;
@@ -226,7 +226,7 @@ bool display_assert_transaction(dispatcher_context_t *dc,
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
-    assert(n <= MAX_N_PAIRS);
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
     pair_list.nbMaxLinesForValue = 0;
     pair_list.nbPairs = n;
@@ -276,7 +276,7 @@ bool display_wc_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = wc_address};
 
-    assert(n <= MAX_N_PAIRS);
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
     pair_list.nbMaxLinesForValue = 0;
     pair_list.nbPairs = n;
@@ -365,7 +365,7 @@ bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
-    assert(n <= MAX_N_PAIRS);
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
     pair_list.nbMaxLinesForValue = 0;
     pair_list.nbPairs = n;
@@ -405,7 +405,7 @@ bool display_payout_finalize(dispatcher_context_t *dc,
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
 
-    assert(n <= MAX_N_PAIRS);
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
     pair_list.nbMaxLinesForValue = 0;
     pair_list.nbPairs = n;
@@ -699,7 +699,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Refund timelock", .value = vault_refund_tl_str};
 
-    assert(n <= VAULT_INTENT_MAX_PAIRS);
+    LEDGER_ASSERT(n <= VAULT_INTENT_MAX_PAIRS, "Too many pairs");
 
     // Scalar params segment: pairs live in vault_pairs_raw; value strings live on
     // this stack frame and stay valid because io_ui_process blocks here for the

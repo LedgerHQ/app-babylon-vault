@@ -2376,8 +2376,9 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         }
     }
 
-    /* WITNESS_UTXO for Input 1: verify P2TR size, then taproot commitment.
+    /* WITNESS_UTXO for Input 1: record the input value, verify P2TR size, then taproot commitment.
      * _refund_verify_taproot_commitment reads G_scratch.tls, which is still intact here. */
+    uint64_t input1_value;
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -2390,6 +2391,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        input1_value = read_u64_le(witness_utxo, 0);
         uint8_t spk_len = witness_utxo[8];
         if (wu_len != 9 + spk_len || spk_len != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -2468,7 +2470,9 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         }
     }
 
-    /* Output 0: P2TR(D) BIP-86 — amount received by depositor */
+    /* Output 0: P2TR(D) BIP-86 — amount received by depositor.
+     * Encode SPK as bech32m address here; addr_str stays valid across io_ui_process()
+     * because it lives in global scratch storage. */
     uint64_t amount_received;
     {
         uint8_t out0_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
@@ -2476,8 +2480,15 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out0_spk[0] != 0x51 || out0_spk[1] != 0x20 ||
+        if (out0_spk[0] != OP_1 || out0_spk[1] != OP_PUSHBYTES_32 ||
             memcmp(out0_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (get_script_address(out0_spk,
+                               VAULT_P2TR_SCRIPTPUBKEY_LEN,
+                               G_scratch.display_tx.addr_str,
+                               sizeof(G_scratch.display_tx.addr_str)) < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2491,27 +2502,18 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out1_value != VAULT_DUST_LIMIT || out1_spk[0] != 0x51 || out1_spk[1] != 0x20 ||
+        if (out1_value != VAULT_DUST_LIMIT || out1_spk[0] != OP_1 ||
+            out1_spk[1] != OP_PUSHBYTES_32 ||
             memcmp(out1_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
     }
 
-    /* Encode Output 0 SPK as a bech32m address.  G_scratch.display_tx.addr_str stays
-     * valid across io_ui_process() because it lives in global scratch storage. */
-    {
-        uint8_t out0_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        out0_spk[0] = 0x51; /* OP_1 */
-        out0_spk[1] = 0x20; /* OP_PUSHBYTES_32 */
-        memcpy(out0_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN);
-        if (get_script_address(out0_spk,
-                               VAULT_P2TR_SCRIPTPUBKEY_LEN,
-                               G_scratch.display_tx.addr_str,
-                               sizeof(G_scratch.display_tx.addr_str)) < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
+    /* Outputs must not exceed Input 1 — guards against fabricated witness_utxo values. */
+    if (amount_received > input1_value || VAULT_DUST_LIMIT > input1_value - amount_received) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
     }
     if (!display_payout_finalize(dc, amount_received, G_scratch.display_tx.addr_str)) return false;
     return true;
@@ -2616,7 +2618,7 @@ bool validate_and_display_transaction(
 
     /* PayoutFinalize: 2 inputs, 2 outputs; device signs Input 1, not Input 0.
      * Reject if the host erroneously requests a signature for Input 0. */
-    if (st->n_inputs == 2 && st->n_outputs == 2) {
+    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
         if (bitvector_get(internal_inputs, 0)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;

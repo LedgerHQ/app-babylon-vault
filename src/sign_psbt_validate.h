@@ -30,9 +30,6 @@ bool validate_and_display_transaction(
  * Also fills *input_map_out with the input's merkleized map commitment so
  * the caller can do further PSBT reads (WITNESS_UTXO, TAP_BIP32_DERIVATION).
  *
- * Called from sign_custom_inputs for Refund signing, after validate_and_display_transaction
- * has returned (G_scratch.tls was clobbered by display_refund_transaction in the meantime).
- *
  * @return true on success; sends SW_INCORRECT_DATA and returns false on any error.
  */
 bool vault_read_refund_leaf_script(dispatcher_context_t *dc,
@@ -43,7 +40,6 @@ bool vault_read_refund_leaf_script(dispatcher_context_t *dc,
  * @brief Re-read the PSBT_IN_TAP_LEAF_SCRIPT entry for a PayoutFinalize input (Input 1).
  *
  * Identical to vault_read_refund_leaf_script but targets Input 1 instead of Input 0.
- * Called from sign_custom_inputs after display_payout_finalize clobbers G_scratch.tls.
  *
  * @return true on success; sends SW_INCORRECT_DATA and returns false on any error.
  */

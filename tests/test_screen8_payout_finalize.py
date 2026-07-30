@@ -385,3 +385,83 @@ def test_payout_finalize_csv_out_of_range(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_finalize_input0_marked_internal(
+    client: "RaggerClient", bitcoin_network: str,
+) -> None:
+    """PayoutFinalize fails when Input 0 carries the payout leaf (inputs swapped).
+
+    The firmware guards against Input 0 being signed via bitvector_get(internal_inputs, 0).
+    Swapping the two inputs produces a PSBT where Input 0 has the payout leaf and
+    TAP_BIP32_DERIVATION (so the sign_psbt framework marks it internal), while Input 1
+    is external.  The guard fires before any further validation.
+    """
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
+    # Swap inputs: payout leaf moves to Input 0, external UTXO moves to Input 1.
+    psbt.tx.vin[0], psbt.tx.vin[1] = psbt.tx.vin[1], psbt.tx.vin[0]
+    psbt.inputs[0], psbt.inputs[1] = psbt.inputs[1], psbt.inputs[0]
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_finalize_sequence_locktime_disabled(
+    client: "RaggerClient", bitcoin_network: str,
+) -> None:
+    """PayoutFinalize fails when Input 1 nSequence has BIP-68 disable flag set (H2).
+
+    Setting bit 31 of nSequence disables relative locktime enforcement.  The firmware
+    must reject this: sequence >= t2 with the disable flag set means the timelock is
+    not actually enforced on-chain.
+    """
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
+    psbt.tx.vin[1].nSequence = _PAYOUT_TIMELOCK | 0x80000000
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_finalize_sequence_time_based(
+    client: "RaggerClient", bitcoin_network: str,
+) -> None:
+    """PayoutFinalize fails when Input 1 nSequence has BIP-68 time-based flag set (H2).
+
+    Setting bit 22 of nSequence switches the relative locktime unit from blocks to
+    512-second intervals.  The payout leaf specifies a block-count CSV, so this flag
+    means the sequence value encodes a different unit and must be rejected.
+    """
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
+    psbt.tx.vin[1].nSequence = _PAYOUT_TIMELOCK | 0x00400000
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_finalize_input1_value_too_small(
+    client: "RaggerClient", bitcoin_network: str,
+) -> None:
+    """PayoutFinalize fails when Input 1 witness_utxo value < amount_received + VAULT_DUST_LIMIT.
+
+    The firmware verifies that amount_received + VAULT_DUST_LIMIT <= input1_value to
+    prevent a fabricated witness_utxo from hiding an over-spend.  Here input1_value ==
+    amount_received, leaving no room for the CPFP anchor, so the check must reject it.
+    """
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    amount = 1_999_000
+    # input1_value == amount_received → amount_received + VAULT_DUST_LIMIT > input1_value
+    psbt = _build_payout_finalize_psbt(
+        fingerprint, d_key, coin_type,
+        amount_received=amount,
+        input1_value=amount,
+    )
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
