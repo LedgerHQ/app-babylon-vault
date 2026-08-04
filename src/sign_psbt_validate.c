@@ -184,6 +184,100 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
  * All Pre-PegIn output scripts are 34 bytes (P2TR or OP_RETURN); prior validation
  * ensures this, so the script buffer is bounded to VAULT_P2TR_SCRIPTPUBKEY_LEN.
  * Returns false and sends SW on any PSBT read or crypto failure. */
+static bool _compute_prepegin_txid(dispatcher_context_t *dc,
+                                   sign_psbt_state_t *st,
+                                   uint8_t txid_out[VAULT_HASH256_LEN]) {
+    cx_sha256_t sha;
+    cx_sha256_init_no_throw(&sha);
+    uint8_t tmp[8];
+
+    /* version (4 bytes LE) */
+    write_u32_le(tmp, 0, (uint32_t) st->tx_version);
+    if (cx_hash_no_throw(&sha.header, 0, tmp, 4, NULL, 0) != CX_OK) return false;
+
+    /* input count */
+    if (crypto_hash_update_varint(&sha.header, st->n_inputs) != CX_OK) return false;
+
+    for (unsigned int i = 0; i < st->n_inputs; i++) {
+        merkleized_map_commitment_t in_map;
+        if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, i, &in_map) < 0) {
+            return false;
+        }
+        uint8_t prev_txid[VAULT_HASH256_LEN];
+        if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                               &in_map,
+                                                               (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                               1,
+                                                               prev_txid,
+                                                               VAULT_HASH256_LEN)) {
+            return false;
+        }
+        if (cx_hash_no_throw(&sha.header, 0, prev_txid, VAULT_HASH256_LEN, NULL, 0) != CX_OK)
+            return false;
+
+        uint32_t vout;
+        if (call_get_merkleized_map_value_u32_le(dc,
+                                                 &in_map,
+                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
+                                                 1,
+                                                 &vout) != 4) {
+            return false;
+        }
+        write_u32_le(tmp, 0, vout);
+        if (cx_hash_no_throw(&sha.header, 0, tmp, 4, NULL, 0) != CX_OK) return false;
+
+        /* scriptSig: empty (varint 0x00) */
+        tmp[0] = 0x00;
+        if (cx_hash_no_throw(&sha.header, 0, tmp, 1, NULL, 0) != CX_OK) return false;
+
+        /* nSequence (4 bytes LE); absent PSBT_IN_SEQUENCE defaults to 0xFFFFFFFF */
+        uint32_t seq = 0xFFFFFFFFu;
+        int seq_rc = call_get_merkleized_map_value_u32_le(dc,
+                                                          &in_map,
+                                                          (uint8_t[]) {PSBT_IN_SEQUENCE},
+                                                          1,
+                                                          &seq);
+        if (seq_rc >= 0 && seq_rc != 4) return false;
+        write_u32_le(tmp, 0, seq);
+        if (cx_hash_no_throw(&sha.header, 0, tmp, 4, NULL, 0) != CX_OK) return false;
+    }
+
+    /* output count */
+    if (crypto_hash_update_varint(&sha.header, st->n_outputs) != CX_OK) return false;
+
+    for (unsigned int i = 0; i < st->n_outputs; i++) {
+        uint8_t spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t value;
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, i, spk, &value)) {
+            return false;
+        }
+        write_u64_le(tmp, 0, value);
+        if (cx_hash_no_throw(&sha.header, 0, tmp, 8, NULL, 0) != CX_OK) return false;
+        if (crypto_hash_update_varint(&sha.header, VAULT_P2TR_SCRIPTPUBKEY_LEN) != CX_OK)
+            return false;
+        if (cx_hash_no_throw(&sha.header, 0, spk, VAULT_P2TR_SCRIPTPUBKEY_LEN, NULL, 0) != CX_OK)
+            return false;
+    }
+
+    /* locktime (4 bytes LE) */
+    write_u32_le(tmp, 0, st->locktime);
+    if (cx_hash_no_throw(&sha.header, 0, tmp, 4, NULL, 0) != CX_OK) return false;
+
+    /* Finalise first SHA256 */
+    uint8_t inner[VAULT_HASH256_LEN];
+    if (cx_hash_no_throw(&sha.header, CX_LAST, NULL, 0, inner, VAULT_HASH256_LEN) != CX_OK)
+        return false;
+
+    /* SHA256(inner) = txid */
+    cx_sha256_init_no_throw(&sha);
+    return cx_hash_no_throw(&sha.header,
+                            CX_LAST,
+                            inner,
+                            VAULT_HASH256_LEN,
+                            txid_out,
+                            VAULT_HASH256_LEN) == CX_OK;
+}
+
 static bool _validate_prepegin(
     dispatcher_context_t *dc,
     sign_psbt_state_t *st,
@@ -357,6 +451,16 @@ static bool _validate_prepegin(
     if (prepegin_fee > intent->prepegin_max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
+    }
+
+    /* Verify the PSBT will produce the txid committed in the intent. */
+    {
+        uint8_t computed_txid[VAULT_HASH256_LEN];
+        if (!_compute_prepegin_txid(dc, st, computed_txid) ||
+            memcmp(computed_txid, intent->prepegin_txid, VAULT_HASH256_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
     }
 
     if (G_vault_context.pre_pegin_signed >= 1u) {
@@ -1246,11 +1350,11 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     {
         uint8_t wu1[8 + 1 + VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (call_get_merkleized_map_value(dc,
-                                         &input1_map,
-                                         (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                         1,
-                                         wu1,
-                                         sizeof(wu1)) != (int) sizeof(wu1) ||
+                                          &input1_map,
+                                          (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
+                                          1,
+                                          wu1,
+                                          sizeof(wu1)) != (int) sizeof(wu1) ||
             wu1[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1267,11 +1371,9 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             vault_taproot_leaf_hash(G_scratch.leaf_check.expected_script, leaf_len, lh);
             uint8_t parity;
             uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-            if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY,
-                                       lh,
-                                       VAULT_HASH256_LEN,
-                                       &parity,
-                                       tweaked) != 0) continue;
+            if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, lh, VAULT_HASH256_LEN, &parity, tweaked) !=
+                0)
+                continue;
             uint8_t cand_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
             cand_spk[0] = 0x51;
             cand_spk[1] = 0x20;

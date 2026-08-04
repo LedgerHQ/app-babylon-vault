@@ -37,6 +37,24 @@ static bool _secret_is_zero(const vault_context_t *ctx) {
     return true;
 }
 
+/** Assert that an illegal transition invalidates the context. */
+static void _assert_illegal(vault_state_t current_state,
+                             vault_state_t from,
+                             vault_state_t to) {
+    vault_context_t ctx;
+    vault_context_init(&ctx);
+    ctx.state = current_state;
+
+    /* Place non-zero root so we can verify it gets wiped */
+    memset(ctx.root, 0x42, sizeof(ctx.root));
+
+    bool ok = vault_context_transition(&ctx, from, to);
+
+    assert_false(ok);
+    assert_int_equal(ctx.state, VAULT_STATE_IDLE);
+    assert_true(_secret_is_zero(&ctx));
+}
+
 // ---------------------------------------------------------------------------
 // vault_context_init
 // ---------------------------------------------------------------------------
@@ -147,24 +165,6 @@ static void test_transition_intent_loaded_is_terminal(void **state) {
 // ---------------------------------------------------------------------------
 // vault_context_transition — invalid edges → invalidation
 // ---------------------------------------------------------------------------
-
-/** Helper: assert that an illegal transition invalidates the context. */
-static void _assert_illegal(vault_state_t current_state,
-                             vault_state_t from,
-                             vault_state_t to) {
-    vault_context_t ctx;
-    vault_context_init(&ctx);
-    ctx.state = current_state;
-
-    /* Place non-zero root so we can verify it gets wiped */
-    memset(ctx.root, 0x42, sizeof(ctx.root));
-
-    bool ok = vault_context_transition(&ctx, from, to);
-
-    assert_false(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_IDLE);
-    assert_true(_secret_is_zero(&ctx));
-}
 
 static void test_transition_wrong_from_state(void **state) {
     (void) state;

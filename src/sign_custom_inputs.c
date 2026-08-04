@@ -104,8 +104,8 @@ bool sign_custom_inputs(
      * Sign HTLC Leaf 0 (input 0) with the depositor key.
      * _validate_pegin stored the detected group index in vault_group_index.
      * ----------------------------------------------------------------------- */
-    if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy &&
-        st->n_inputs == 1 && st->n_outputs == 3) {
+    if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy && st->n_inputs == 1 &&
+        st->n_outputs == 3) {
         uint8_t gi = G_vault_context.vault_group_index;
         LEDGER_ASSERT(gi < intent->vault_count, "_validate_pegin must set vault_group_index");
 

@@ -61,6 +61,11 @@ VAULT_NUMS_XONLY = bytes.fromhex(
 )
 
 
+def _hash256(data: bytes) -> bytes:
+    """Bitcoin double-SHA256 (txid computation)."""
+    return hashlib.sha256(hashlib.sha256(data).digest()).digest()
+
+
 def _encode_script_num(n: int) -> bytes:
     """Return minimal Bitcoin Script push encoding for positive integer n."""
     if n == 0:
@@ -855,7 +860,9 @@ def test_sign_psbt_prepegin(
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
-    hashlock = _setup_s1_state(client, navigator, device, coin_type)
+    # Derive root + hashlock first so we can build the PSBT before approving the intent.
+    # The intent must commit to the txid of this exact PSBT.
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
     _, _, _, _, htlc_spk = _htlc_output(
         dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock,
     )
@@ -866,6 +873,17 @@ def test_sign_psbt_prepegin(
                                 input_fingerprint=fingerprint,
                                 input_coin_type=coin_type,
                                 auth_anchor=vault_auth_anchor(_DERIVED_ROOT))
+
+    # Approve intent with the txid the device will compute from this PSBT.
+    scalars_tlv = _build_intent_tlv_for_test(
+        coin_type, _hash256(psbt.tx.serialize_without_witness())
+    )
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=[_build_group_for_test()],
+    )
+
     wallet = _standard_taproot_wallet(client, coin_type)
 
     result = client.sign_psbt(psbt, wallet, None)
@@ -893,7 +911,12 @@ def test_sign_psbt_prepegin_3vaults(
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
-    hashlocks = _setup_s1_state_3vault(client, navigator, device, coin_type)
+    # Derive root first so we can build the PSBT before approving the intent.
+    global _DERIVED_ROOT
+    _DERIVED_ROOT = derive_context_hash(
+        client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
+    )
+    hashlocks = [vault_hashlock(_DERIVED_ROOT, v) for v in _3V_HTLC_VOUTS]
 
     group_htlc_outputs = []
     for i, h in enumerate(hashlocks):
@@ -912,6 +935,27 @@ def test_sign_psbt_prepegin_3vaults(
         input_fingerprint=fingerprint,
         input_coin_type=coin_type,
     )
+
+    # Approve intent with the txid the device will compute from this PSBT.
+    scalars_tlv = build_intent_tlv(
+        coin_type=coin_type,
+        base_fee_rate=_BASE_FEE_RATE,
+        pegin_csv_timelock=_PEGIN_CSV_TIMELOCK,
+        payout_timelock=_PAYOUT_TIMELOCK,
+        prepegin_txid=_hash256(psbt.tx.serialize_without_witness()),
+        htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
+        depositor_path=depositor_path(coin_type),
+        keeper_count=len(_TEST_KEEPER_PKS),
+        challenger_count=len(_TEST_CHALLENGER_PKS),
+        prepegin_max_fee=500_000,
+        vault_count=3,
+    )
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=_build_groups_tlv_3vault(),
+    )
+
     wallet = _standard_taproot_wallet(client, coin_type)
 
     result = client.sign_psbt(psbt, wallet, None)
@@ -2774,7 +2818,7 @@ def test_sign_psbt_prepegin_no_op_return(
     """Valid Pre-PegIn without the auth-anchor OP_RETURN is accepted per v22.
 
     In v22 the OP_RETURN is optional (sign_psbt_validate.c: '(void) anchor_found').
-    prepegin_txid is zeros in the intent (no Pre-PegIn binding needed for this test).
+    The intent must still commit to the correct prepegin_txid.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -2793,7 +2837,9 @@ def test_sign_psbt_prepegin_no_op_return(
         auth_anchor=None,  # no OP_RETURN — valid in v22
     )
 
-    scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
+    scalars_tlv = _build_intent_tlv_for_test(
+        coin_type, _hash256(psbt.tx.serialize_without_witness())
+    )
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
