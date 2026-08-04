@@ -183,7 +183,7 @@ bool sign_custom_inputs(
     /* -----------------------------------------------------------------------
      * Payout / NoPayout (INTENT_LOADED, no wallet policy, n_inputs 2 or 3)
      *
-     * NoPayout (n_inputs==3): sign Input 0 with the depositor NoPayout leaf.
+     * NoPayout (n_inputs==3): sign Input 0 with the depositor Assert:0 leaf.
      * Payout   (n_inputs==2): sign Input 0 with the depositor Vault UTXO leaf.
      * _validate_payout stored vault_group_index (gi) and payout_index (claimer).
      * ----------------------------------------------------------------------- */
@@ -192,7 +192,7 @@ bool sign_custom_inputs(
         /* -------
          * NoPayout: 3 inputs, 1 output, no wallet policy.
          * Re-read Input 0's TAP_LEAF_SCRIPT (G_scratch.tls clobbered by display).
-         * Sign with the depositor path using the reconstructed NoPayout leaf hash.
+         * Sign with the depositor path using the reconstructed Assert:0 leaf hash.
          * ------- */
         if (st->has_no_wallet_policy && st->n_inputs == 3 && st->n_outputs == 1) {
             merkleized_map_commitment_t input_map;
@@ -204,7 +204,7 @@ bool sign_custom_inputs(
             const uint8_t *leaf = G_scratch.tls.leaf_script;
             int leaf_len = G_scratch.tls.leaf_script_len;
 
-            /* Verify NoPayout leaf shape and that the first key matches the approved
+            /* Verify Assert:0 leaf shape and that the first key matches the approved
              * depositor.  The validator already checked this on the same PSBT, but
              * the signing path must not silently rely on that to remain safe if
              * validation and signing are ever decoupled. */
@@ -359,7 +359,10 @@ bool sign_custom_inputs(
      * the two phases would produce a sighash committing to a leaf hash absent from
      * the script tree — an unusable signature (DoS only, no fund redirection).
      * ----------------------------------------------------------------------- */
-    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
+    /* VK/Depositor Payout (2+2, Input 0 internal) falls through to the standalone
+     * section below, which signs Input 0 from its TAP_LEAF_SCRIPT. */
+    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2 &&
+        !bitvector_get(internal_inputs, 0)) {
         merkleized_map_commitment_t input1_map;
         if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
 

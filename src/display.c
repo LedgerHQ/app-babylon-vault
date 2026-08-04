@@ -201,7 +201,6 @@ bool display_claim_transaction(dispatcher_context_t *dc,
 bool display_assert_transaction(dispatcher_context_t *dc,
                                 const uint8_t *claim_txid,
                                 uint64_t amount_carried,
-                                uint32_t n_outputs,
                                 uint64_t fee) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
@@ -210,10 +209,6 @@ bool display_assert_transaction(dispatcher_context_t *dc,
     /* addr_str (80 B) holds 64-char hex txid + NUL. */
     format_hex(claim_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, amount_carried, G_scratch.display_tx.amount_str);
-    snprintf(G_scratch.display_tx.extra_str,
-             TX_DISPLAY_AMOUNT_STR_SIZE,
-             "%lu outputs",
-             (unsigned long) n_outputs);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
@@ -221,8 +216,6 @@ bool display_assert_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Claim txid", .value = G_scratch.display_tx.addr_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Amount", .value = G_scratch.display_tx.amount_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Output count", .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
@@ -318,11 +311,11 @@ bool display_pop_transaction(dispatcher_context_t *dc,
     strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
 
     int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Ethereum address",
+                                             .value = G_scratch.display_tx.addr_str};
     tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "ETH address", .value = G_scratch.display_tx.addr_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Chain ID", .value = G_scratch.display_tx.extra_str};
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry contract",
+        (nbgl_layoutTagValue_t) {.item = "Chain id", .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry address",
                                              .value = G_scratch.display_tx.txid_str};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");

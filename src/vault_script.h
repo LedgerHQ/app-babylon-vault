@@ -109,7 +109,7 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
                                     int buf_max);
 
 /**
- * Build the NoPayout leaf: <Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG.
+ * Build the Assert:0 leaf: <Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG.
  *
  * The Depositor key comes from intent->depositor_pk.
  * Challengers are indexed 0..keeper_count-1 (VaultKeepers) then

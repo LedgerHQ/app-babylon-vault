@@ -48,6 +48,8 @@
     "Define VAULT_TARGET_SIGNET to confirm this build targets Bitcoin signet. " \
     "Add a separate #elif guarded by VAULT_TARGET_TESTNET for a testnet3/4 build."
 #endif
+/* Note: the HLD uses the label "bitcoin-testnet"; this app targets Bitcoin signet, so the
+ * correct canonicalNetworkName per the protocol spec is "bitcoin-signet". */
 #define VAULT_CANONICAL_NETWORK_NAME "bitcoin-signet"
 #else
 #error \

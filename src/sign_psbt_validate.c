@@ -558,8 +558,10 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        /* accept DEFAULT (0) and explicit ALL (1) — identical tapscript commitment (BIP-341) */
-        if (res == 4 && sighash_type != 0 && sighash_type != 1) {
+        /* HLD mandates SIGHASH_DEFAULT only; explicit SIGHASH_ALL is rejected even
+         * though BIP-341 defines it as equivalent for tapscript, to enforce strict
+         * canonical encoding per the protocol spec. */
+        if (res == 4 && sighash_type != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -694,7 +696,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & 0x0000FFFFu) < (csv_value & 0x0000FFFFu)) {
+        /* Canonical: sequence must encode exactly the CSV timelock, not just satisfy it. */
+        if ((nsequence & 0x0000FFFFu) != (csv_value & 0x0000FFFFu)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1031,8 +1034,8 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
 static bool _pegin_validate_outputs(dispatcher_context_t *dc,
                                     sign_psbt_state_t *st,
                                     const vault_intent_t *intent,
+                                    int group_idx,
                                     uint64_t htlc_value) {
-    const int group_idx = 0;
     uint8_t spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t amount;
     uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
@@ -1176,7 +1179,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
     uint64_t htlc_value;
     if (!_pegin_validate_input(dc, &input_map, intent, group_idx, &htlc_value)) return false;
-    if (!_pegin_validate_outputs(dc, st, intent, htlc_value)) return false;
+    if (!_pegin_validate_outputs(dc, st, intent, group_idx, htlc_value)) return false;
 
     if (G_vault_context.pegin_signed >= (uint16_t) G_vault_intent.vault_count) {
         vault_context_invalidate(&G_vault_context);
@@ -1557,6 +1560,10 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
     }
+    if (out_value <= VAULT_DUST_LIMIT) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     uint64_t total_out = out_value; /* out0: bounded by out_value; no overflow risk yet */
 
     /* Out1:
@@ -1628,9 +1635,18 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
     uint64_t fee = total_in - total_out;
+    if (fee == 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     uint64_t participants = (uint64_t) intent->keeper_count + intent->challenger_count;
-    uint64_t max_fee = intent->base_fee_rate *
-                       (MAX_PAYOUT_VSIZE_BASE + MAX_PAYOUT_VSIZE_PER_PARTICIPANT * participants);
+    uint64_t vsize = MAX_PAYOUT_VSIZE_BASE + MAX_PAYOUT_VSIZE_PER_PARTICIPANT * participants;
+    /* Overflow check before multiplying: vsize is bounded (~28k max), base_fee_rate is u64. */
+    if (intent->base_fee_rate != 0 && vsize > UINT64_MAX / intent->base_fee_rate) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint64_t max_fee = intent->base_fee_rate * vsize;
     if (fee > max_fee) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -1654,7 +1670,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 /* -------------------------------------------------------------------------
  * NoPayout validation (intent-bound, silent)
  *
- * Input 0: Assert:0 UTXO (depositor graph), NoPayout leaf, value DUST.
+ * Input 0: Assert:0 UTXO (depositor graph), Assert:0 leaf, value DUST.
  * Inputs 1, 2: ChallengeAssert connectors (not signed by device).
  * Output: pays challenger.
  * ---------------------------------------------------------------------- */
@@ -1672,13 +1688,19 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         return false;
     }
 
+    /* Exactly 3 inputs (Assert:0 + 2 ChallengeAssert connectors) and 1 output. */
+    if (st->n_inputs != 3 || st->n_outputs != 1) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
     merkleized_map_commitment_t input_map;
     if (!vault_read_refund_leaf_script(dc, st, &input_map)) return false;
 
     const uint8_t *leaf = G_scratch.tls.leaf_script;
     int leaf_len = G_scratch.tls.leaf_script_len;
 
-    /* NoPayout leaf: <D>(33B) OP_CHECKSIGVERIFY <Cj>(33B) OP_CHECKSIG = 68 bytes */
+    /* Assert:0 leaf: <D>(33B) OP_CHECKSIGVERIFY <Cj>(33B) OP_CHECKSIG = 68 bytes */
     if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
         leaf[34] != OP_PUSHBYTES_32 || leaf[67] != (uint8_t) OP_CHECKSIG) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1709,6 +1731,10 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         return false;
     }
 
+    /* Save challenger key before _refund_verify_taproot_commitment clobbers G_scratch.tls. */
+    uint8_t challenger_xonly[VAULT_XONLY_PUBKEY_LEN];
+    memcpy(challenger_xonly, leaf_challenger, VAULT_XONLY_PUBKEY_LEN);
+
     /* Reconstruct the leaf and compare to prevent parameter substitution */
     {
         uint8_t expected[68];
@@ -1733,7 +1759,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    /* Input 0 WITNESS_UTXO: value must be VAULT_DUST_LIMIT; verify taproot commitment */
+    /* Input 0 WITNESS_UTXO: value must be ≤ VAULT_DUST_LIMIT; verify taproot commitment */
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -1742,7 +1768,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
                                                    1,
                                                    witness_utxo,
                                                    sizeof(witness_utxo));
-        if (wu_len < 9 || read_u64_le(witness_utxo, 0) != VAULT_DUST_LIMIT) {
+        if (wu_len < 9 || read_u64_le(witness_utxo, 0) > VAULT_DUST_LIMIT) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1769,6 +1795,27 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
                                                    wu,
                                                    sizeof(wu));
         if (wu_len < 8 || read_u64_le(wu, 0) > VAULT_DUST_LIMIT) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* Output 0: must pay P2TR(Challenger_j) — key-path spend with empty script tree. */
+    {
+        uint8_t parity;
+        uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
+        if (crypto_tr_tweak_pubkey(challenger_xonly, NULL, 0, &parity, tweaked) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        expected_spk[0] = 0x51;
+        expected_spk[1] = 0x20;
+        memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
+        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t out_value;
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out_spk, &out_value) ||
+            memcmp(out_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2111,8 +2158,7 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
     }
     uint64_t fee = st->inputs_total_amount - st->outputs.total_amount;
 
-    if (!display_assert_transaction(dc, claim_txid, amount_carried, (uint32_t) st->n_outputs, fee))
-        return false;
+    if (!display_assert_transaction(dc, claim_txid, amount_carried, fee)) return false;
     return true;
 }
 
@@ -2393,6 +2439,23 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                       VAULT_XONLY_PUBKEY_LEN)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
+    }
+
+    /* PoP is a BIP-86 key-path spend — TAP_MERKLE_ROOT must be absent.
+     * TAP_LEAF_SCRIPT absence is enforced structurally: the BIP-86 tweak uses
+     * no scripts, and we verify the tweaked key against WITNESS_UTXO below —
+     * a script-derived alternative SPK would fail that check. */
+    {
+        uint8_t dummy[1];
+        if (call_get_merkleized_map_value(dc,
+                                          &input_map,
+                                          (uint8_t[]) {PSBT_IN_TAP_MERKLE_ROOT},
+                                          1,
+                                          dummy,
+                                          sizeof(dummy)) >= 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
     }
 
     /* Verify internal key via BIP-32 derivation + BIP-86 tweak.
@@ -2791,15 +2854,20 @@ bool validate_and_display_transaction(
     vault_state_t state = G_vault_context.state;
 
     /* Intent-bound flows (no wallet policy, INTENT_LOADED):
-     *   NoPayout  — 3 inputs, 1 output
-     *   Payout    — 2 inputs
-     *   PegIn     — Input 0 witness UTXO matches an HTLC scriptpubkey
+     *   NoPayout          — 3 inputs, 1 output
+     *   Payout (all)      — 2 inputs; VP=3 outputs, VK/Depositor=2 outputs with Input 0 internal
+     *   PegIn             — 2 inputs, 3 outputs, Input 0 UTXO matches an HTLC scriptpubkey
+     *   PayoutFinalize    — 2 inputs, 2 outputs, Input 0 external (routed after the block below)
      * Any other no-wallet-policy PSBT in INTENT_LOADED falls through to the
      * standalone leaf dispatch (Refund/Claim/Assert/WC also valid from this state). */
     if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy) {
         if (st->n_inputs == 3 && st->n_outputs == 1) return _validate_nopayout(dc, st);
-        /* PayoutFinalize (n_inputs==2, n_outputs==2) is routed below; exclude it here. */
-        if (st->n_inputs == 2 && st->n_outputs != 2) return _validate_payout(dc, st);
+        /* Payout: 2 inputs, VP=3 outputs / VK+Depositor=2 outputs.
+         * VK/Depositor Payout (2+2) is distinguished from PayoutFinalize (also 2+2) by
+         * Input 0 being internal (device signs Input 0 for Payout) vs external for
+         * PayoutFinalize (device signs Input 1). PayoutFinalize is routed below. */
+        if (st->n_inputs == 2 && (st->n_outputs != 2 || bitvector_get(internal_inputs, 0)))
+            return _validate_payout(dc, st);
 
         /* PegIn detection: check Input 0 witness UTXO against all HTLC scriptpubkeys.
          * vault_build_htlc_scriptpubkey uses G_scratch.script_scratch transiently;
@@ -2842,10 +2910,9 @@ bool validate_and_display_transaction(
         return _validate_display_wc(dc, st);
     }
 
-    /* PayoutFinalize: 2 inputs, 2 outputs; device signs Input 1, not Input 0.
-     * Reject if the host erroneously requests a signature for Input 0.
-     * This shape (2+2, no wallet policy) is unique to PayoutFinalize; any future
-     * 2+2 standalone flow must extend this discriminator before it can be dispatched. */
+    /* PayoutFinalize: 2 inputs, 2 outputs, Input 0 external (device signs Input 1).
+     * VK/Depositor Payout (also 2+2) was already routed above via the internal_inputs[0]
+     * check; only PayoutFinalize reaches here, so Input 0 being internal is a host error. */
     if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
         if (bitvector_get(internal_inputs, 0)) {
             SEND_SW(dc, SW_INCORRECT_DATA);

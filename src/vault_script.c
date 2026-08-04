@@ -269,7 +269,8 @@ int vault_build_depositor_claim_leaf(const vault_intent_t *intent, uint8_t *buf,
  * ----------------------------------------------------------------------- */
 
 int vault_build_htlc_leaf1(const vault_intent_t *intent, uint8_t *buf, int buf_max) {
-    /* Max output: 1 + 32 + 1 + _push_number(VAULT_TIMELOCK_MAX=1008)=3 + 1 = 38 bytes */
+    /* Max output: 1 + 32 + 1 + _push_number(VAULT_HTLC_REFUND_TIMELOCK_MAX=4320)=3 + 1 = 38 bytes
+     */
     if (buf_max < 38) return -1;
     int off = 0;
     buf[off++] = OP_PUSHBYTES_32;

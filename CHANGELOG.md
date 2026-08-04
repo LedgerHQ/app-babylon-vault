@@ -7,12 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 
-Aligns the device application with HLD v22 across twelve tracked discrepancies identified during
+Aligns the device application with HLD v22 across twenty tracked discrepancies identified during
 a full spec-vs-code audit.  No wire-format or SW changes for the host; all changes are internal
-security hardening and session-model simplification.
+security hardening, protocol-correctness fixes, and documentation alignment.
 
 ### Security
 
+- **VK / Depositor Payout routing** (`sign_psbt_validate.c`, `sign_custom_inputs.c`): PSBTs with
+  `n_inputs==2 && n_outputs==2` are now routed to `_validate_payout` when Input 0 is internal
+  (`bitvector_get(internal_inputs, 0)`), not to `_validate_display_payout_finalize`.  Previously
+  both VK and Depositor Payout shapes were misrouted to the PayoutFinalize path and signed
+  Input 1 instead of Input 0.
+- **NoPayout input-count guard** (`_validate_nopayout`): rejects any PSBT where `n_inputs != 3`
+  or `n_outputs != 1`.  Previously only output count was implicit and extra inputs were silently accepted.
+- **NoPayout Output 0 P2TR verification** (`_validate_nopayout`): Output 0 scriptPubKey is now
+  verified against `P2TR(Challenger_j)` via `crypto_tr_tweak_pubkey` with no scripts.  Previously
+  the output script was not checked and funds could have been redirected to an arbitrary address.
+- **Payout fee-bound overflow guard** (`_validate_payout`): `vsize` is computed as an intermediate
+  `uint64_t`; overflow (`base_fee_rate * vsize > UINT64_MAX`) and zero-fee (`fee == 0`) are now
+  explicitly rejected.
+- **Refund SIGHASH_DEFAULT only** (`_validate_display_refund`): `SIGHASH_ALL` (`0x01`) is no longer
+  accepted for Refund inputs; only `SIGHASH_DEFAULT` (`0x00`, absent or explicit) is valid.
+- **Refund nSequence exact match** (`_validate_display_refund`): Input 0 `nSequence` must equal the
+  CSV timelock value exactly; values greater than the timelock are now rejected (`!=` instead of `<`).
+- **NoPayout Input 0 UTXO dust alignment** (`_validate_nopayout`): Input 0 witness UTXO value
+  check changed from `!= VAULT_DUST_LIMIT` to `> VAULT_DUST_LIMIT`, consistent with Inputs 1–2.
+- **Payout Output 0 dust check** (`_validate_payout`): Output 0 value is now verified to be
+  strictly greater than `VAULT_DUST_LIMIT`.
+- **PoP TAP_MERKLE_ROOT absence enforced** (`_validate_display_pop`): an explicit
+  `call_get_merkleized_map_value` check rejects any PoP PSBT that carries a `PSBT_IN_TAP_MERKLE_ROOT`
+  entry, confirming key-path-only spend.
 - **Pre-PegIn txid binding** (`_validate_prepegin`): the device now serialises the non-witness
   Pre-PegIn transaction from PSBT fields and double-SHA256s it, comparing the result against
   `intent->prepegin_txid`.  Previously the txid was not independently verified; a malicious host
@@ -41,6 +65,14 @@ security hardening and session-model simplification.
 
 ### Changed
 
+- **Multi-group per APDU** (`approve_vault_intent.c`, `vault_tlv.c`): `vault_tlv_parse_group` now
+  accepts a `size_t *consumed` output parameter and stops as soon as all 6 fields are seen, allowing
+  back-to-back group records in one APDU payload.  `handle_group_payload` loops over all complete
+  groups in the APDU instead of returning after the first.  Per-group TLV fields must now appear in
+  strictly ascending tag order (htlc_vout first); out-of-order or duplicate tags are rejected.
+- **`_pegin_validate_outputs` group index** (`sign_psbt_validate.c`): `group_idx` is now passed as
+  a parameter rather than hardcoded to `0`.  PegIn outputs for `vault_count > 1` are validated
+  against the correct vault group's VP key, vault amount, and fee parameters.
 - **Connection 2 flow enabled** (`APPROVE_VAULT_INTENT`, `DERIVE_CONTEXT_HASH`): removed the
   `root_user_approved` gate that blocked `APPROVE_VAULT_INTENT` when `DERIVE_CONTEXT_HASH` was
   called with `P2=0x01` (silent re-derivation).  Connection 2 — where the host re-derives the
@@ -65,6 +97,18 @@ security hardening and session-model simplification.
 
 ### Fixed
 
+- **Screen 7 (PoP) field labels** (`display.c`): corrected "ETH address" → "Ethereum address",
+  "Chain ID" → "Chain id", "Registry contract" → "Registry address" to match HLD v22 screen spec.
+- **Screen 5 (Assert) field count** (`display.c`, `display.h`, `sign_psbt_validate.c`): removed the
+  spurious "Output count" field; Assert screen now shows exactly three fields: Claim txid, Amount,
+  Transaction fee.  `display_assert_transaction` no longer takes an `n_outputs` parameter.
+- **`approve_vault_intent.h` docstring**: updated from "Two-phase APDU / 17 fields / tag 1B" to
+  "Three-phase APDU / 13 fields / tag 2B" with correct P1=0x01 description.
+- **`vault_tlv.h` scalar-count docstring**: corrected "12 mandatory scalar tags" → "13".
+- **`vault_script.c` comment constant**: corrected `VAULT_TIMELOCK_MAX=1008` →
+  `VAULT_HTLC_REFUND_TIMELOCK_MAX=4320` in the `vault_build_htlc_leaf1` size comment.
+- **Assert:0 leaf naming**: renamed "NoPayout leaf" → "Assert:0 leaf" in comments across
+  `vault_script.h`, `sign_custom_inputs.c`, and `sign_psbt_validate.c` to match HLD v22 terminology.
 - HTLC refund timelock constant comment: corrected `[72, 1008]` → `[72, 4320]` blocks in
   `vault_intent_tags.h`.
 - Scalar field count comment: corrected `12` → `13` in `vault_intent_tags.h`.

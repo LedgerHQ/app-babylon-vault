@@ -89,7 +89,9 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
 }
 
 /* -------------------------------------------------------------------------
- * P1=0x01 — per-vault group TLV (one APDU per vault)
+ * P1=0x01 — per-vault group TLV
+ * One APDU may carry multiple back-to-back group records (as many as fit in
+ * 255 bytes, ~3 per APDU at ~83 bytes each).  Process all of them.
  * ---------------------------------------------------------------------- */
 
 static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd) {
@@ -97,38 +99,49 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
         SEND_SW(dc, SW_BAD_STATE);
         return;
     }
-    uint8_t idx = G_vault_context.vault_group_index;
-    if (idx >= G_vault_intent.vault_count) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return;
-    }
-    vault_tlv_err_t err =
-        vault_tlv_parse_group(cmd->data, (size_t) cmd->lc, &G_vault_intent.groups[idx]);
-    if (err != VAULT_TLV_OK) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, tlv_err_to_sw(err));
-        return;
+
+    size_t pos = 0;
+    while (pos < (size_t) cmd->lc) {
+        uint8_t idx = G_vault_context.vault_group_index;
+        if (idx >= G_vault_intent.vault_count) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
+        size_t consumed = 0;
+        vault_tlv_err_t err = vault_tlv_parse_group(cmd->data + pos,
+                                                    (size_t) cmd->lc - pos,
+                                                    &G_vault_intent.groups[idx],
+                                                    &consumed);
+        if (err != VAULT_TLV_OK) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, tlv_err_to_sw(err));
+            return;
+        }
+
+        /* Reject vault_provider_pk that is not a valid secp256k1 x-only point. */
+        uint8_t tmp_point[65];
+        int lift_rc = crypto_tr_lift_x(G_vault_intent.groups[idx].vault_provider_pk, tmp_point);
+        explicit_bzero(tmp_point, sizeof(tmp_point));
+        if (lift_rc != 0) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
+        /* Enforce strictly-ascending htlc_vout order across groups. */
+        if (idx > 0 &&
+            G_vault_intent.groups[idx].htlc_vout <= G_vault_intent.groups[idx - 1].htlc_vout) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
+
+        G_vault_context.vault_group_index++;
+        pos += consumed;
     }
 
-    /* Reject vault_provider_pk that is not a valid secp256k1 x-only point. */
-    uint8_t tmp_point[65];
-    int lift_rc = crypto_tr_lift_x(G_vault_intent.groups[idx].vault_provider_pk, tmp_point);
-    explicit_bzero(tmp_point, sizeof(tmp_point));
-    if (lift_rc != 0) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return;
-    }
-
-    /* Enforce strictly-ascending htlc_vout order across groups. */
-    if (idx > 0 &&
-        G_vault_intent.groups[idx].htlc_vout <= G_vault_intent.groups[idx - 1].htlc_vout) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return;
-    }
-    G_vault_context.vault_group_index++;
     SEND_SW(dc, SW_OK);
 }
 

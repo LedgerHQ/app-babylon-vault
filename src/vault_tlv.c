@@ -176,9 +176,14 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
  * vault_tlv_parse_group — P1=0x01 per-vault group payload (6 mandatory fields)
  * ---------------------------------------------------------------------- */
 
-vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_group_t *out) {
+vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data,
+                                      size_t len,
+                                      vault_group_t *out,
+                                      size_t *consumed) {
     uint8_t seen_mask = 0;
+    int last_field_idx = -1; /* for strict ascending-order enforcement */
     size_t pos = 0;
+    const uint8_t complete_mask = (uint8_t) ((1u << VAULT_GROUP_TAG_COUNT) - 1u);
 
     while (pos < len) {
         /* Need at least 3 bytes for 2-byte tag + 1-byte length. */
@@ -243,15 +248,21 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_gro
                 return VAULT_TLV_ERR_UNKNOWN_TAG;
         }
 
-        uint8_t bit = (uint8_t) (1u << field_idx);
-        if (seen_mask & bit) return VAULT_TLV_ERR_DUPLICATE_TAG;
-        seen_mask |= bit;
+        /* Enforce strictly ascending order (htlc_vout first); this also catches duplicates. */
+        if ((int) field_idx <= last_field_idx) return VAULT_TLV_ERR_DUPLICATE_TAG;
+        last_field_idx = (int) field_idx;
+        seen_mask |= (uint8_t) (1u << field_idx);
         pos += field_len;
+
+        /* Stop as soon as all 6 fields are present; remaining bytes belong to the
+         * next group record in the same APDU (per-APDU batching per HLD §P1=0x01). */
+        if (seen_mask == complete_mask) break;
     }
 
     /* All 6 mandatory group fields must be present. */
-    if (seen_mask != (uint8_t) ((1u << VAULT_GROUP_TAG_COUNT) - 1u))
-        return VAULT_TLV_ERR_MISSING_FIELD;
+    if (seen_mask != complete_mask) return VAULT_TLV_ERR_MISSING_FIELD;
+
+    *consumed = pos;
 
     /* Cross-field: vault_amount > commission_fee + 2*VAULT_DUST_LIMIT (overflow-safe).
      * Both the commission output and the depositor reclaim output must be fundable

@@ -71,7 +71,6 @@ bool display_claim_transaction(dispatcher_context_t *dc,
  *
  * @param claim_txid      32-byte Claim txid (shown as hex); caller must keep valid.
  * @param amount_carried  Amount carried into the Assert output in satoshis.
- * @param n_outputs       Number of outputs in the Assert transaction.
  * @param fee             Transaction fee in satoshis.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
@@ -79,7 +78,6 @@ bool display_claim_transaction(dispatcher_context_t *dc,
 bool display_assert_transaction(dispatcher_context_t *dc,
                                 const uint8_t *claim_txid,
                                 uint64_t amount_carried,
-                                uint32_t n_outputs,
                                 uint64_t fee);
 
 /**
