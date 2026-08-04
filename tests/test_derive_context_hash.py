@@ -141,6 +141,43 @@ def test_different_path_diverges(client: "RaggerClient", navigator: Navigator,
     assert b == _expected_root(APP_NAME, other_path, ctx, bitcoin_network)
 
 
+def test_app_name_exactly_64_bytes_accepted(client: "RaggerClient", bitcoin_network: str):
+    """app_name = 64 bytes (max allowed) must be accepted (SW_OK, P2_SILENT)."""
+    ct = 0 if bitcoin_network == "main" else 1
+    path = depositor_path(ct)
+    name = b"a" * 64
+    payload = (bytes([len(name)]) + name
+               + _encode_bip32_path(path)
+               + b"\x00\x01"  # context_total_len = 1
+               + b"\x01")     # 1-byte context
+    client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                     p1=P1_INITIAL, p2=P2_SILENT, data=payload)
+
+
+def test_path_depth_10_accepted(client: "RaggerClient", bitcoin_network: str):
+    """path_len == 10 (VAULT_MAX_PATH_DEPTH) must be accepted (SW_OK, P2_SILENT)."""
+    ct = 0 if bitcoin_network == "main" else 1
+    path = [HARDENED | 86, HARDENED | ct, HARDENED | 0, 0, 0, 0, 0, 0, 0, 0]
+    payload = (bytes([len(APP_NAME)]) + APP_NAME
+               + _encode_bip32_path(path)
+               + b"\x00\x01"  # context_total_len = 1
+               + b"\x01")     # 1-byte context
+    client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                     p1=P1_INITIAL, p2=P2_SILENT, data=payload)
+
+
+def test_single_byte_context_accepted(client: "RaggerClient", bitcoin_network: str):
+    """context = 1 byte (minimum valid length) with P2_SILENT must be accepted."""
+    ct = 0 if bitcoin_network == "main" else 1
+    path = depositor_path(ct)
+    payload = (bytes([len(APP_NAME)]) + APP_NAME
+               + _encode_bip32_path(path)
+               + b"\x00\x01"  # context_total_len = 1
+               + b"\x01")     # 1-byte context
+    client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
+                                     p1=P1_INITIAL, p2=P2_SILENT, data=payload)
+
+
 # ---------------------------------------------------------------------------
 # Error paths
 # ---------------------------------------------------------------------------
@@ -208,16 +245,6 @@ def test_multi_chunk_context_matches_reference(client: "RaggerClient", navigator
     assert len(root) == 32
     assert root == _expected_root(APP_NAME, path, context, bitcoin_network)
 
-
-def test_multi_chunk_deterministic(client: "RaggerClient", navigator: Navigator,
-                                   device: Device, bitcoin_network: str):
-    """Multi-chunk root is deterministic across calls."""
-    ct = 0 if bitcoin_network == "main" else 1
-    path = depositor_path(ct)
-    context = bytes(range(256)) + b"\xab" * 44  # 300 bytes
-    a = derive_context_hash(client, APP_NAME, path, context, navigator, device)
-    b = derive_context_hash(client, APP_NAME, path, context, navigator, device)
-    assert a == b
 
 
 # ---------------------------------------------------------------------------
@@ -409,22 +436,17 @@ def test_continuation_p2_mismatch_raises(client: "RaggerClient", bitcoin_network
     assert exc.value.status == SW_WRONG_P1P2
 
 
-def test_continuation_overflow_p2_silent_raises(client: "RaggerClient", bitcoin_network: str):
-    """P1=0x01 overflow on a P2_SILENT stream → SW_INCORRECT_DATA."""
+def test_continuation_p2_show_in_silent_stream_raises(client: "RaggerClient", bitcoin_network: str):
+    """P2_SHOW on a P1=0x01 continuation when the stream was started with P2_SILENT → SW_WRONG_P1P2.
+
+    Mirrors test_continuation_p2_mismatch_raises (start SHOW, continue SILENT) in the
+    opposite direction: start SILENT, continue SHOW.
+    """
     _enter_streaming(client, bitcoin_network, context_total=100, first_chunk_len=50, p2=P2_SILENT)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-                                         p1=P1_CONTINUE, p2=P2_SILENT, data=b"\xbb" * 51)
-    assert exc.value.status == SW_INCORRECT_DATA
-
-
-def test_empty_continuation_p2_silent_raises(client: "RaggerClient", bitcoin_network: str):
-    """P1=0x01 with lc == 0 on a P2_SILENT stream → SW_WRONG_DATA_LENGTH."""
-    _enter_streaming(client, bitcoin_network, context_total=100, first_chunk_len=50, p2=P2_SILENT)
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.transport_client.exchange(cla=CLA_VAULT, ins=INS_DERIVE_CONTEXT_HASH,
-                                         p1=P1_CONTINUE, p2=P2_SILENT, data=b"")
-    assert exc.value.status == SW_WRONG_DATA_LENGTH
+                                         p1=P1_CONTINUE, p2=P2_SHOW, data=b"\xbb" * 10)
+    assert exc.value.status == SW_WRONG_P1P2
 
 
 def test_reset_during_streaming(client: "RaggerClient", navigator: Navigator,

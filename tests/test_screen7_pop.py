@@ -539,6 +539,27 @@ def test_pop_max_length_chain_id(client: "RaggerClient", bitcoin_network: str) -
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_pop_tap_merkle_root_present(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when TAP_MERKLE_ROOT is present; key-path-only spend must have no script tree."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    psbt.inputs[0].tap_merkle_root = bytes([0xDE] * 32)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_bad_grammar_uppercase_registry(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when the registry address contains uppercase hex characters."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    bad = f"{_ETH_ADDR}:{_CHAIN_ID}:pegin:0xABCDEF1234567890abcdef1234567890abcdef12"
+    psbt.unknown[_POP_MSG_KEY] = bad.encode("ascii")
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_pop_overlong_message(client: "RaggerClient", bitcoin_network: str) -> None:
     """PoP fails when the raw message exceeds BIP322_POP_MSG_MAX_LEN (112 bytes).
 

@@ -315,6 +315,20 @@ def test_sign_psbt_claim_cpfp_wrong_spk(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_sign_psbt_claim_wrong_nsequence(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Claim fails when Input 0 nSequence is not 0xFFFFFFFF."""
+    fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
+    psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.vin[0].nSequence = 0
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_sign_psbt_claim_output_equals_input(
     client: "RaggerClient",
     bitcoin_network: str,
