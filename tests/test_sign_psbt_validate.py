@@ -122,7 +122,7 @@ VAULT_MAX_KEEPERS     = 32
 VAULT_MAX_CHALLENGERS = 32
 VAULT_SCRIPT_MAX_LEN  = 2560
 
-# Session 2: the txid of the Pre-PegIn transaction committed to in the intent.
+# Pre-PegIn txid committed in the intent; used by PegIn/Payout validators.
 _PREPEGIN_TXID = bytes(range(32))
 
 
@@ -492,10 +492,10 @@ def _setup_s1_state_3vault(
     device,
     coin_type: int,
 ) -> List[bytes]:
-    """Derive root + approve 3-vault Session-1 intent. Returns [hashlock_0, hashlock_1, hashlock_2].
+    """Derive root + approve 3-vault intent. Returns [hashlock_0, hashlock_1, hashlock_2].
 
-    prepegin_txid is zeros: Session 1 carries no txid binding, so the auto-transition
-    to SESSION2_PEGIN_EXPECTED does not fire.
+    prepegin_txid is zeros: the intent carries no Pre-PegIn binding; all signing
+    flows are accepted from VAULT_STATE_INTENT_LOADED.
     """
     global _DERIVED_ROOT
     _DERIVED_ROOT = derive_context_hash(
@@ -602,11 +602,10 @@ def _setup_s1_state(
     device,
     coin_type: int,
 ) -> bytes:
-    """Derive root + approve intent (Session 1).  Returns the 32-byte hashlock h.
+    """Derive root + approve intent.  Returns the 32-byte hashlock h.
 
     After this call the device is in VAULT_STATE_INTENT_LOADED with htlc_hashlock set.
-    prepegin_txid is zeros: Session 1 carries no txid binding, so the auto-transition
-    to SESSION2_PEGIN_EXPECTED does not fire (see approve_vault_intent.c).
+    prepegin_txid is zeros: the intent carries no Pre-PegIn binding.
     """
     hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
     scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
@@ -627,10 +626,11 @@ def _setup_s2_state(
     keeper_pks: Optional[List[bytes]] = None,
     challenger_pks: Optional[List[bytes]] = None,
 ) -> bytes:
-    """Derive root + approve intent (Session 2).  Returns the 32-byte hashlock h.
+    """Derive root + approve intent with a non-zero prepegin_txid.  Returns the 32-byte hashlock h.
 
-    After this call the device is in VAULT_STATE_SESSION2_PEGIN_EXPECTED.
-    prepegin_txid must be non-zero to trigger the extra state transition.
+    After this call the device is in VAULT_STATE_INTENT_LOADED.
+    prepegin_txid is embedded in the intent for tests that need a bound Pre-PegIn txid
+    (e.g., PegIn signing, which reads intent->prepegin_txid for display and validation).
 
     keeper_pks / challenger_pks default to the single-keeper / single-challenger
     test sets; pass larger sorted sets to approve a many-participant vault.
@@ -639,7 +639,7 @@ def _setup_s2_state(
         keeper_pks = _TEST_KEEPER_PKS
     if challenger_pks is None:
         challenger_pks = _TEST_CHALLENGER_PKS
-    assert any(prepegin_txid), "prepegin_txid must be non-zero for Session 2"
+    assert any(prepegin_txid), "prepegin_txid must be non-zero for txid-bound intent tests"
     hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
     scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid, keeper_pks, challenger_pks)
     approve_vault_intent_with_nav(
@@ -656,9 +656,9 @@ def _setup_s2_state_2vault(
     device,
     coin_type: int,
 ) -> bytes:
-    """Derive root + approve 2-vault Session-2 intent. Returns the hashlock for group 0.
+    """Derive root + approve 2-vault intent with bound prepegin_txid. Returns the hashlock for group 0.
 
-    After this call the device is in VAULT_STATE_SESSION2_PEGIN_EXPECTED.
+    After this call the device is in VAULT_STATE_INTENT_LOADED.
     Uses vault_count=2 to exercise the I3 index arithmetic
     (htlc_hashlock[vault_count-1] vs htlc_hashlock[0]).
     """
@@ -1268,7 +1268,7 @@ def test_sign_psbt_pegin(
 
     NAPPS-1377: sign_custom_inputs is fully implemented, so the SIGN_PSBT command returns
     SW_OK with the depositor's Schnorr signature over the HTLC Leaf 0 sighash.
-    State advances to SESSION2_PAYOUT_EXPECTED after signing.
+    After signing, pegin_signed is incremented; the device remains in VAULT_STATE_INTENT_LOADED.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -1367,21 +1367,17 @@ def test_sign_psbt_pegin_wrong_htlc_vout(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_sign_psbt_session2_direct_jump_2vault(
+def test_sign_psbt_pegin_2vault_group_index(
     client: "RaggerClient",
     navigator: Navigator,
     bitcoin_network: str,
     device,
 ) -> None:
-    """Session-2 direct jump fires correctly when vault_count=2.
+    """PegIn succeeds for group 0 of a 2-vault intent (regression guard for the I3 fix).
 
-    Regression guard for the I3 fix: the transition condition in handle_key_batch
-    checks htlc_hashlock[vault_count-1] (the last derived slot), not htlc_hashlock[0].
-    With vault_count=1 those are the same index; vault_count=2 distinguishes them.
-
-    If the jump fires, the device enters SESSION2_PEGIN_EXPECTED and PegIn succeeds.
-    If it did not fire (INTENT_LOADED instead), the dispatch would reach _validate_pegin
-    for a no-wallet-policy PSBT and fail with SW_INCORRECT_DATA on input structure.
+    The I3 fix ensures vault_group_index is set by scanning htlc_hashlock entries, not
+    by a hardcoded index.  vault_count=2 distinguishes htlc_hashlock[0] from
+    htlc_hashlock[1]; with vault_count=1 both indices alias the same slot.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -1831,9 +1827,7 @@ def _setup_payout_state(
     coin_type: int,
     prepegin_txid: bytes = _PREPEGIN_TXID,
 ) -> bytes:
-    """Advance device to SESSION2_PAYOUT_EXPECTED, payout_index=0.
-    Returns the 32-byte hashlock.
-    """
+    """Approve intent then sign PegIn (pegin_signed=1, payout_index=0). Returns the 32-byte hashlock."""
     dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
     hashlock = _setup_s2_state(client, navigator, device, coin_type, prepegin_txid)
     pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, prepegin_txid)
@@ -1872,7 +1866,7 @@ def test_sign_psbt_payout_vk(
 
     For a 1-keeper vault (N=1) the full sequence is 3 claimers (N+2):
       idx 0 = VP, idx 1 = VK_1, idx 2 = Depositor.
-    SESSION2_COMPLETE is set only after the Depositor (last) payout.
+    payout_signed reaches N+2 after the Depositor (last) payout.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -1890,7 +1884,7 @@ def test_sign_psbt_payout_vk(
     result = client.sign_psbt(vk_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
-    # Depositor payout — last payout, state transitions to SESSION2_COMPLETE
+    # Depositor payout — last payout, payout_signed reaches N+2
     dep_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=len(_TEST_KEEPER_PKS) + 1)
     result = client.sign_psbt(dep_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
@@ -2228,7 +2222,7 @@ def _setup_signet_payout_state(
     device,
     coin_type: int,
 ) -> None:
-    """Load signet vault intent and advance device to SESSION2_PAYOUT_EXPECTED."""
+    """Load signet vault intent and sign PegIn to advance payout_index=0."""
     dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
 
     # New spec: DERIVE_CONTEXT_HASH returns the root; the per-vault hashlock is
@@ -2405,7 +2399,7 @@ def test_sign_psbt_payout_signet_params(
     Keys sourced from payout tx 13d3f46888747c65d45b0ae8972e4ce6da86c8ad2584aefcbf03434071a99fab.
     Depositor key is substituted with the test device's derivation (device must sign).
     Runs all N+2 = 5 claimers: VP (idx=0), VK_1..VK_3 (idx=1..3), Depositor (idx=4).
-    SESSION2_COMPLETE is set after the Depositor (last) payout.
+    payout_signed reaches N+2 after the Depositor (last) payout.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -2555,17 +2549,17 @@ def test_sign_psbt_payout_3vault_batch(
     bitcoin_network: str,
     device,
 ) -> None:
-    """3-vault batch: SESSION2_COMPLETE is set only after all 3 groups' payouts are signed.
+    """3-vault batch: payout_signed cap is reached only after all 3 groups' payouts are signed.
 
     Uses uniform groups (same vault_amount/commission_fee, htlc_vout = 0/1/2) to keep
-    the PSBT builders simple.  Verifies that intermediate group completions leave the
-    device in PAYOUT_EXPECTED and that a post-complete attempt returns SW_BAD_STATE.
+    the PSBT builders simple.  Verifies that intermediate group completions succeed and
+    that a post-cap attempt returns SW_CAP_EXCEEDED.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
-    # Derive root and approve a 3-vault Session-2 intent with uniform group parameters.
+    # Derive root and approve a 3-vault intent with uniform group parameters.
     global _DERIVED_ROOT
     _DERIVED_ROOT = derive_context_hash(
         client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
@@ -2613,13 +2607,11 @@ def test_sign_psbt_payout_3vault_batch(
             result = client.sign_psbt(psbt, dummy_wallet, None)
             _assert_single_schnorr_sig(result, dep_pk)
 
-    # SESSION2_COMPLETE is now set; any further payout must be rejected.
-    # The vault UTXO leaf ends with OP_CSV, so the standalone dispatch routes it to
-    # _validate_display_refund, which returns SW_BAD_STATE in SESSION2_COMPLETE.
+    # payout_signed cap is now reached; any further payout must be rejected.
     extra_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0, htlc_vout=0)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(extra_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    assert exc.value.status == SW_CAP_EXCEEDED
 
 
 # ===========================================================================
@@ -2730,7 +2722,7 @@ def test_sign_psbt_nopayout(
     bitcoin_network: str,
     device,
 ) -> None:
-    """NoPayout: device signs Input 0 in SESSION2_PAYOUT_EXPECTED state."""
+    """NoPayout: device signs Input 0 from VAULT_STATE_INTENT_LOADED."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
@@ -2782,8 +2774,7 @@ def test_sign_psbt_prepegin_no_op_return(
     """Valid Pre-PegIn without the auth-anchor OP_RETURN is accepted per v22.
 
     In v22 the OP_RETURN is optional (sign_psbt_validate.c: '(void) anchor_found').
-    Session 1 uses zeros for prepegin_txid in the intent, so the device stays in
-    INTENT_LOADED and the txid check is skipped.
+    prepegin_txid is zeros in the intent (no Pre-PegIn binding needed for this test).
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)

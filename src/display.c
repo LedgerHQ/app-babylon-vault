@@ -348,46 +348,6 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
-// Screen 8 — Payout transaction
-// ---------------------------------------------------------------------------
-
-bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee) {
-    nbgl_layoutTagValue_t *const tx_pairs =
-        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
-
-    format_sats_amount(COIN_COINID_SHORT, payout_amount, G_scratch.display_tx.amount_str);
-    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
-
-    int n = 0;
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Payout amount", .value = G_scratch.display_tx.amount_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
-
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review payout\ntransaction",
-                       NULL,
-                       "Sign payout\ntransaction?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
-}
-
-// ---------------------------------------------------------------------------
 // Screen 8 — Payout finalize
 // ---------------------------------------------------------------------------
 

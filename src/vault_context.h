@@ -14,18 +14,11 @@
  *     └─(DERIVE_CONTEXT_HASH complete)──► HASH_DERIVED   [root held, no intent yet]
  *           │
  *           └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED   [root zeroed after
- *                 │                                htlc_hashlock + auth_anchor_hash computed]
- *                 ├─(Session 1: prepegin_txid == 0)─► INTENT_LOADED
- *                 │         └─(Pre-PegIn SIGN_PSBT)──► SESSION1_PREPEGIN_EXPECTED ──► INTENT_LOADED
- *                 │
- *                 └─(Session 2: prepegin_txid != 0)─► SESSION2_PEGIN_EXPECTED
- *                           │
- *                           └─(PegIn SIGN_PSBT)──► SESSION2_PAYOUT_EXPECTED
- *                                                    │  (payout_index 0..N)
- *                                                    └─(last Payout signed)──► SESSION2_COMPLETE
+ *                                                 htlc_hashlock + auth_anchor_hash computed]
  *
- * The host receives the root from DERIVE_CONTEXT_HASH and expands the per-vault
- * secrets itself; there is no on-device secret-release step.
+ * INTENT_LOADED is the terminal active state.  All signing flows (Pre-PegIn, PegIn,
+ * Payout, NoPayout, Refund, Claim, Assert, WC) are dispatched by PSBT structure alone;
+ * there is no inter-transaction ordering requirement (v22).
  *
  * Invalidation triggers (any of these → explicit_bzero(root) + IDLE):
  *   - Signing error in any hook
@@ -34,13 +27,8 @@
  */
 typedef enum {
     VAULT_STATE_IDLE = 0,
-    VAULT_STATE_HASH_DERIVED,  // DERIVE_CONTEXT_HASH complete; root held, no intent yet
-    VAULT_STATE_INTENT_LOADED,
-    VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
-    VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-    VAULT_STATE_SESSION2_PAYOUT_EXPECTED,  // payout_index tracks claimer (0=VP, 1..N=VK,
-                                           // N+1=Depositor)
-    VAULT_STATE_SESSION2_COMPLETE,
+    VAULT_STATE_HASH_DERIVED,   // DERIVE_CONTEXT_HASH complete; root held, no intent yet
+    VAULT_STATE_INTENT_LOADED,  // intent loaded; all signing flows accepted
 } vault_state_t;
 
 /**
@@ -76,9 +64,9 @@ typedef struct {
     vault_state_t state;
 
     /**
-     * Payout iteration index within the active vault group.
+     * Claimer index for the payout currently being validated/signed.
      * 0 = VP claimer, 1..keeper_count = VK claimers, keeper_count+1 = Depositor.
-     * Only meaningful in VAULT_STATE_SESSION2_PAYOUT_EXPECTED.
+     * Set by _validate_payout from PSBT structure; read by sign_custom_inputs.
      */
     uint8_t payout_index;
 
@@ -101,9 +89,10 @@ typedef struct {
     uint16_t nopayout_signed;
 
     /**
-     * Index of the vault group currently being processed in Session 2.
-     * Advances after the last payout of each group (0..vault_count-1).
-     * Only meaningful when state >= VAULT_STATE_SESSION2_PEGIN_EXPECTED.
+     * Dual-use field:
+     *   - During APPROVE_VAULT_INTENT P1=0x01: counts groups received (0..vault_count).
+     *   - During Payout signing: group index currently being validated/signed (set by
+     *     _validate_payout from PSBT structure, read by sign_custom_inputs).
      */
     uint8_t vault_group_index;
 
@@ -117,13 +106,6 @@ typedef struct {
     /** Number of levels in derivation_path. */
     uint8_t derivation_path_len;
 
-    /**
-     * True when the root was derived with user approval (P2=0x00 on
-     * DERIVE_CONTEXT_HASH).  False for silent re-derivation (P2=0x01).
-     * APPROVE_VAULT_INTENT requires this to be true; a silently-derived root
-     * cannot be used to sign vault transactions without a prior user confirmation.
-     */
-    bool root_user_approved;
 } vault_context_t;
 
 // ---------------------------------------------------------------------------

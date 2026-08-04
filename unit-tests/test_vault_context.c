@@ -133,86 +133,15 @@ static void test_transition_idle_to_hash_derived(void **state) {
     assert_int_equal(ctx.state, VAULT_STATE_HASH_DERIVED);
 }
 
-static void test_transition_intent_loaded_to_session1(void **state) {
+static void test_transition_intent_loaded_is_terminal(void **state) {
     (void) state;
-    vault_context_t ctx;
-    vault_context_init(&ctx);
-    ctx.state = VAULT_STATE_INTENT_LOADED;
-
-    bool ok = vault_context_transition(&ctx,
-                                       VAULT_STATE_INTENT_LOADED,
-                                       VAULT_STATE_SESSION1_PREPEGIN_EXPECTED);
-    assert_true(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_SESSION1_PREPEGIN_EXPECTED);
-}
-
-static void test_transition_session1_back_to_intent_loaded(void **state) {
-    (void) state;
-    vault_context_t ctx;
-    vault_context_init(&ctx);
-    ctx.state = VAULT_STATE_SESSION1_PREPEGIN_EXPECTED;
-
-    /* SESSION1_PREPEGIN_EXPECTED is terminal — no forward transition is defined;
-     * vault_context_transition must reject this edge and invalidate the context. */
-    bool ok = vault_context_transition(&ctx,
-                                       VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
-                                       VAULT_STATE_INTENT_LOADED);
-    assert_false(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_IDLE);
-}
-
-static void test_transition_intent_loaded_to_session2_pegin(void **state) {
-    (void) state;
-    vault_context_t ctx;
-    vault_context_init(&ctx);
-    ctx.state = VAULT_STATE_INTENT_LOADED;
-
-    bool ok = vault_context_transition(&ctx,
-                                       VAULT_STATE_INTENT_LOADED,
-                                       VAULT_STATE_SESSION2_PEGIN_EXPECTED);
-    assert_true(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_SESSION2_PEGIN_EXPECTED);
-}
-
-static void test_transition_session2_pegin_to_payout(void **state) {
-    (void) state;
-    vault_context_t ctx;
-    vault_context_init(&ctx);
-    ctx.state = VAULT_STATE_SESSION2_PEGIN_EXPECTED;
-
-    bool ok = vault_context_transition(&ctx,
-                                       VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-                                       VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
-    assert_true(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
-}
-
-static void test_transition_session2_payout_to_complete(void **state) {
-    (void) state;
-    vault_context_t ctx;
-    vault_context_init(&ctx);
-    ctx.state = VAULT_STATE_SESSION2_PAYOUT_EXPECTED;
-
-    bool ok = vault_context_transition(&ctx,
-                                       VAULT_STATE_SESSION2_PAYOUT_EXPECTED,
-                                       VAULT_STATE_SESSION2_COMPLETE);
-    assert_true(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_SESSION2_COMPLETE);
-}
-
-static void test_transition_session2_complete_to_idle(void **state) {
-    (void) state;
-    vault_context_t ctx;
-    vault_context_init(&ctx);
-    ctx.state = VAULT_STATE_SESSION2_COMPLETE;
-
-    /* SESSION2_COMPLETE is terminal — no forward transition is defined;
-     * vault_context_transition must reject this edge and invalidate the context. */
-    bool ok = vault_context_transition(&ctx,
-                                       VAULT_STATE_SESSION2_COMPLETE,
-                                       VAULT_STATE_IDLE);
-    assert_false(ok);
-    assert_int_equal(ctx.state, VAULT_STATE_IDLE);
+    /*
+     * INTENT_LOADED has no outgoing legal edges (it is the terminal active state);
+     * any attempted forward transition must invalidate the context.
+     */
+    _assert_illegal(VAULT_STATE_INTENT_LOADED,
+                    VAULT_STATE_INTENT_LOADED,
+                    VAULT_STATE_INTENT_LOADED);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,30 +171,30 @@ static void test_transition_wrong_from_state(void **state) {
     /* Currently IDLE, but `from` claims INTENT_LOADED → mismatch */
     _assert_illegal(VAULT_STATE_IDLE,
                     VAULT_STATE_INTENT_LOADED,
-                    VAULT_STATE_SESSION1_PREPEGIN_EXPECTED);
+                    VAULT_STATE_HASH_DERIVED);
 }
 
 static void test_transition_illegal_to_state(void **state) {
     (void) state;
     /*
-     * from matches current state (IDLE) but target is illegal:
-     * IDLE → SESSION2_PEGIN_EXPECTED skips INTENT_LOADED.
+     * from matches current state (HASH_DERIVED) but target is IDLE — a backwards
+     * step; the only legal from-HASH_DERIVED edge is → INTENT_LOADED.
      * The to-validation must catch this even though from is correct.
      */
-    _assert_illegal(VAULT_STATE_IDLE,
-                    VAULT_STATE_IDLE,
-                    VAULT_STATE_SESSION2_PEGIN_EXPECTED);
+    _assert_illegal(VAULT_STATE_HASH_DERIVED,
+                    VAULT_STATE_HASH_DERIVED,
+                    VAULT_STATE_IDLE);
 }
 
 static void test_transition_backwards_without_valid_edge(void **state) {
     (void) state;
     /*
-     * from matches current state (SESSION2_COMPLETE) but target is an
-     * illegal backwards edge — SESSION2_COMPLETE can only go to IDLE.
+     * from matches current state (INTENT_LOADED) but target is HASH_DERIVED —
+     * a backwards step; INTENT_LOADED is terminal (no outgoing edges).
      */
-    _assert_illegal(VAULT_STATE_SESSION2_COMPLETE,
-                    VAULT_STATE_SESSION2_COMPLETE,
-                    VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
+    _assert_illegal(VAULT_STATE_INTENT_LOADED,
+                    VAULT_STATE_INTENT_LOADED,
+                    VAULT_STATE_HASH_DERIVED);
 }
 
 static void test_transition_double_approve(void **state) {
@@ -348,15 +277,10 @@ int main(void) {
         /* valid transitions */
         cmocka_unit_test(test_transition_idle_to_hash_derived),
         cmocka_unit_test(test_transition_hash_derived_to_intent_loaded),
-        cmocka_unit_test(test_transition_intent_loaded_to_session1),
-        cmocka_unit_test(test_transition_session1_back_to_intent_loaded),
-        cmocka_unit_test(test_transition_intent_loaded_to_session2_pegin),
-        cmocka_unit_test(test_transition_session2_pegin_to_payout),
-        cmocka_unit_test(test_transition_session2_payout_to_complete),
-        cmocka_unit_test(test_transition_session2_complete_to_idle),
 
         /* invalid transitions */
         cmocka_unit_test(test_transition_idle_to_intent_loaded_illegal),
+        cmocka_unit_test(test_transition_intent_loaded_is_terminal),
         cmocka_unit_test(test_transition_wrong_from_state),
         cmocka_unit_test(test_transition_illegal_to_state),
         cmocka_unit_test(test_transition_backwards_without_valid_edge),

@@ -116,19 +116,6 @@ bool display_pop_transaction(dispatcher_context_t *dc,
                              const char *registry);
 
 /**
- * @brief Screen 8 — Payout transaction review.
- *
- * Shows the amount paid out and the transaction fee.
- * Approval gates signing; rejection returns SW_DENY.
- *
- * @param payout_amount  Amount paid to the claimer in satoshis (Out0 value).
- * @param fee            Transaction fee in satoshis.
- * @return true   User approved.
- * @return false  User rejected (SW_DENY already sent).
- */
-bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee);
-
-/**
  * @brief Screen 8 — Payout finalize review.
  *
  * Shown when the depositor self-claims after a successful Claim + Assert chain.

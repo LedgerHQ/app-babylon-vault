@@ -68,10 +68,6 @@ static void _finalize(dispatcher_context_t *dc) {
         return;
     }
 
-    /* Record whether the user approved this derivation; APPROVE_VAULT_INTENT
-     * will refuse to proceed if the root was silently derived (P2=0x01). */
-    G_vault_context.root_user_approved = (G_scratch.derive_ctx.p2_mode == P2_RETURN_ROOT);
-
     /* F2: persist the BIP-32 path so APPROVE_VAULT_INTENT can verify it matches
      * the depositor derivation path in the intent. */
     memcpy(G_vault_context.derivation_path,

@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
+
+Aligns the device application with HLD v22 across twelve tracked discrepancies identified during
+a full spec-vs-code audit.  No wire-format or SW changes for the host; all changes are internal
+security hardening and session-model simplification.
+
+### Security
+
+- **Pre-PegIn txid binding** (`_validate_prepegin`): the device now serialises the non-witness
+  Pre-PegIn transaction from PSBT fields and double-SHA256s it, comparing the result against
+  `intent->prepegin_txid`.  Previously the txid was not independently verified; a malicious host
+  could supply a mismatched PSBT and the device would sign a transaction inconsistent with the
+  approved intent.
+- **PegIn TRUC version enforcement** (`_validate_pegin`): `tx_version` must be exactly `3` (TRUC);
+  values `1`, `2`, or `≥ 4` are now rejected.  Previously `tx_version >= 2` was accepted.
+- **VP commission fee exact match** (`_validate_payout`): Output 1 (VP commission) must equal
+  `intent->groups[gi].commission_fee` exactly; `<= commission_fee` is no longer accepted.  This
+  closes a path where a host could inflate the commission and under-pay the depositor.
+- **NoPayout connector UTXO dust checks** (`_validate_nopayout`): Inputs 1 and 2 witness UTXO
+  values are now verified to be `<= VAULT_DUST_LIMIT`.  Previously only the structural shape of
+  those inputs was checked.
+- **Claim/Assert/WC sequence == 0xFFFFFFFF** (`_validate_display_claim/assert/wc`): Input 0
+  `nSequence` must be exactly `0xFFFFFFFF`.  The spec requires this for all three flows; the
+  check was previously absent.
+- **Pre-PegIn locktime == 0** (`_validate_prepegin`): `locktime` is now required to be `0`.
+  Previously only `tx_version` and `n_inputs / n_outputs` counts were verified.
+- **Multi-vault PegIn group auto-detection** (`_validate_pegin`): `vault_group_index` is now
+  derived from `PSBT_IN_OUTPUT_INDEX` matched against `intent->groups[g].htlc_vout` instead of
+  being hardcoded to `0`.  This fixes signing for PSBTs belonging to vault group `g > 0`.
+- **Payout group/claimer auto-detection** (`_validate_payout`): `vault_group_index` (gi) is
+  derived from `PSBT_IN_PREVIOUS_TXID` vs `vault_compute_pegin_txid`; `payout_index` (claimer)
+  is derived from Input 1's witness UTXO SPK vs `vault_build_assert0_payout_leaf`.  Previously
+  both cursors were advanced sequentially from a fixed start, requiring strict host ordering.
+
+### Changed
+
+- **Connection 2 flow enabled** (`APPROVE_VAULT_INTENT`, `DERIVE_CONTEXT_HASH`): removed the
+  `root_user_approved` gate that blocked `APPROVE_VAULT_INTENT` when `DERIVE_CONTEXT_HASH` was
+  called with `P2=0x01` (silent re-derivation).  Connection 2 — where the host re-derives the
+  root silently after reconnecting — is now fully supported.
+- **Session state machine simplified** (`vault_context.h/c`, all signing handlers): removed
+  `VAULT_STATE_SESSION1_PREPEGIN_EXPECTED`, `SESSION2_PEGIN_EXPECTED`, `SESSION2_PAYOUT_EXPECTED`,
+  and `SESSION2_COMPLETE`.  The state machine is now three states: `IDLE → HASH_DERIVED →
+  INTENT_LOADED`.  `INTENT_LOADED` is the terminal active state; all signing flows (Pre-PegIn,
+  PegIn, Payout, NoPayout, Refund, Claim, Assert, WC) are dispatched solely by PSBT structure
+  with no inter-transaction ordering requirement (v22).
+- **`sign_custom_inputs` routing** (`sign_custom_inputs.c`): replaced session-state gates with
+  PSBT-structure dispatch: PegIn identified by `n_inputs==1 && n_outputs==3`; Payout by
+  `n_inputs==2`; NoPayout by `n_inputs==3 && n_outputs==1`.  The `sgi--` step-back kludge
+  (previously needed because `_validate_payout` advanced `vault_group_index` past the last
+  claimer) is removed — `vault_group_index` and `payout_index` are now written directly by the
+  validator and read as-is by the signer.
+- **`validate_and_display_transaction` dispatch** (`sign_psbt_validate.c`): replaced
+  `SESSION2_PEGIN_EXPECTED / SESSION2_PAYOUT_EXPECTED / SESSION2_COMPLETE` branches with a
+  unified `INTENT_LOADED + has_no_wallet_policy` block that routes by `n_inputs / n_outputs`
+  and, for PegIn disambiguation, matches Input 0's witness UTXO against the HTLC scriptPubKeys
+  reconstructed from the approved intent.
+
+### Fixed
+
+- HTLC refund timelock constant comment: corrected `[72, 1008]` → `[72, 4320]` blocks in
+  `vault_intent_tags.h`.
+- Scalar field count comment: corrected `12` → `13` in `vault_intent_tags.h`.
+- Removed dead `display_payout_transaction` declaration from `display.h`.
+- `cx_hash_no_throw` return values in the Pre-PegIn txid block now suppressed with `(void)`
+  casts via block-scoped `_HASH_FEED` / `_HASH_FINAL` macros, fixing `-Werror,-Wunused-result`
+  build errors on all target devices.
+
 ## [0.9.3] - NAPPS-1465: v22 per-type signature caps
 
 Implements the per-type signature-count caps introduced in HLD v22 as a sampling

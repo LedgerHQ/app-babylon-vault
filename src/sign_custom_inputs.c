@@ -99,13 +99,16 @@ bool sign_custom_inputs(
     const vault_intent_t *const intent = &G_vault_intent;
 
     /* -----------------------------------------------------------------------
-     * PegIn (SESSION2_PEGIN_EXPECTED)
+     * PegIn (INTENT_LOADED, no wallet policy, n_inputs==1, n_outputs==3)
      *
      * Sign HTLC Leaf 0 (input 0) with the depositor key.
-     * State advances to PAYOUT_EXPECTED only after signing succeeds, so the
-     * host can retry on failure without losing session progress.
+     * _validate_pegin stored the detected group index in vault_group_index.
      * ----------------------------------------------------------------------- */
-    if (state == VAULT_STATE_SESSION2_PEGIN_EXPECTED) {
+    if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy &&
+        st->n_inputs == 1 && st->n_outputs == 3) {
+        uint8_t gi = G_vault_context.vault_group_index;
+        LEDGER_ASSERT(gi < intent->vault_count, "_validate_pegin must set vault_group_index");
+
         merkleized_map_commitment_t input_map;
         if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, 0, &input_map) < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -113,8 +116,8 @@ bool sign_custom_inputs(
         }
 
         int leaf_len = vault_build_htlc_leaf0(intent,
-                                              0,
-                                              G_vault_context.htlc_hashlock[0],
+                                              gi,
+                                              G_vault_context.htlc_hashlock[gi],
                                               G_scratch.script_scratch,
                                               VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
@@ -129,8 +132,8 @@ bool sign_custom_inputs(
          * the approved intent, so the sighash commits to a device-known script. */
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (!vault_build_htlc_scriptpubkey(intent,
-                                           0,
-                                           G_vault_context.htlc_hashlock[0],
+                                           gi,
+                                           G_vault_context.htlc_hashlock[gi],
                                            expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -174,26 +177,18 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
-        LEDGER_ASSERT(vault_context_transition(&G_vault_context,
-                                               VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-                                               VAULT_STATE_SESSION2_PAYOUT_EXPECTED),
-                      "Unreachable: state was confirmed before signing");
-        /* vault_group_index was used as a group-ingestion cursor during
-         * approve_vault_intent and is left at vault_count.  Reset it to 0
-         * so _validate_payout can use it as the payout-group cursor. */
-        G_vault_context.vault_group_index = 0;
         return true;
     }
 
     /* -----------------------------------------------------------------------
-     * Payout / NoPayout (SESSION2_PAYOUT_EXPECTED or SESSION2_COMPLETE)
+     * Payout / NoPayout (INTENT_LOADED, no wallet policy, n_inputs 2 or 3)
      *
      * NoPayout (n_inputs==3): sign Input 0 with the depositor NoPayout leaf.
      * Payout   (n_inputs==2): sign Input 0 with the depositor Vault UTXO leaf.
-     * State and indices were already advanced in the corresponding validator.
-     * SESSION2_COMPLETE is reached after the last Payout's _validate_payout runs.
+     * _validate_payout stored vault_group_index (gi) and payout_index (claimer).
      * ----------------------------------------------------------------------- */
-    if (state == VAULT_STATE_SESSION2_PAYOUT_EXPECTED || state == VAULT_STATE_SESSION2_COMPLETE) {
+    if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy &&
+        (st->n_inputs == 3 || (st->n_inputs == 2 && st->n_outputs != 2))) {
         /* -------
          * NoPayout: 3 inputs, 1 output, no wallet policy.
          * Re-read Input 0's TAP_LEAF_SCRIPT (G_scratch.tls clobbered by display).
@@ -272,14 +267,9 @@ bool sign_custom_inputs(
             return false;
         }
 
-        /* _validate_payout advances vault_group_index after the last claimer of each
-         * group and resets payout_index to 0.  Recover the group that was actually
-         * validated and is now being signed: if payout_index is 0 and vault_group_index
-         * is non-zero, the advance already happened — step back by one. */
+        /* vault_group_index and payout_index are set by _validate_payout from the PSBT
+         * structure; use them directly without adjustment. */
         uint8_t sgi = G_vault_context.vault_group_index;
-        if (G_vault_context.payout_index == 0 && sgi > 0) {
-            sgi--;
-        }
 
         int leaf_len = vault_build_vault_utxo_leaf(intent,
                                                    sgi,
@@ -347,9 +337,8 @@ bool sign_custom_inputs(
     }
 
     /* -----------------------------------------------------------------------
-     * Pre-PegIn (SESSION1_PREPEGIN_EXPECTED, has_no_wallet_policy == false,
-     * Input 0 internal): all inputs are BIP-86 wallet-owned and were already
-     * signed by sign_internal_inputs.  Nothing left to sign here.
+     * Pre-PegIn (has_no_wallet_policy == false, Input 0 internal): all inputs are
+     * BIP-86 wallet-owned and were already signed by sign_internal_inputs.
      * WC-with-wallet (has_no_wallet_policy == false, Input 0 external) falls
      * through to the standalone signing section.
      * ----------------------------------------------------------------------- */
