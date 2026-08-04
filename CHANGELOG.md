@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - NAPPS-1465: v22 per-type signature caps
+
+Implements the per-type signature-count caps introduced in HLD v22 as a sampling
+countermeasure.  Within one approved intent the device now signs at most the expected
+number of each intent-bound transaction type; exceeding any cap nullifies the intent
+and returns the new `SW_CAP_EXCEEDED` status word.
+
+### Added
+
+- **Per-type signature counters** in `vault_context_t` (`src/vault_context.h`):
+  `pre_pegin_signed`, `pegin_signed`, `payout_signed`, `nopayout_signed` (all `uint16_t`).
+  All four are zero-initialised on every `vault_context_init` / `vault_context_invalidate`
+  call, so a fresh `APPROVE_VAULT_INTENT` always starts from zero.
+- **`SW_CAP_EXCEEDED` (`0xB00A`)**: returned when a cap is exceeded; intent and
+  `context_root` are nullified and the device returns to IDLE.  Documented in
+  `docs/apdu.md`.
+- Cap enforcement in `sign_psbt_validate.c`:
+  - Pre-PegIn: cap = 1
+  - PegIn: cap = `vault_count`
+  - Payout: cap = `vault_count × (keeper_count + 2)`
+  - NoPayout: cap = `vault_count × (keeper_count + challenger_count)` (previously enforced
+    but returned `SW_BAD_STATE`; now returns `SW_CAP_EXCEEDED`).
+
+### Changed
+
+- NoPayout cap violation now returns `SW_CAP_EXCEEDED` (`0xB00A`) instead of
+  `SW_BAD_STATE` (`0xB007`).  Hosts must update their error handling accordingly.
+
 ## [0.9.2] - NAPPS-1464: PayoutFinalize depositor self-claim (Screen 8)
 
 Adds Screen 8 — the depositor reclaims their deposit after the Claim+Assert chain by

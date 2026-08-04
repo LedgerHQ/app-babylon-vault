@@ -649,6 +649,68 @@ static void test_payout_reject_csv_above_max(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Signature cap boundary — mirrors the production cap check
+ *
+ * Production: if (counter >= cap) { invalidate; SW_CAP_EXCEEDED; return false; }
+ *             counter++;
+ * The helper returns true when the increment succeeds (counter was < cap),
+ * false when the cap is exceeded.
+ * ------------------------------------------------------------------------- */
+
+static bool _test_cap_check(uint16_t *counter, uint16_t cap) {
+    if (*counter >= cap) return false;
+    (*counter)++;
+    return true;
+}
+
+static void test_cap_boundary_prepegin(void **state) {
+    (void) state;
+    /* Pre-PegIn cap: 1 */
+    uint16_t c = 0;
+    assert_true(_test_cap_check(&c, 1));   /* 0 → 1: OK */
+    assert_int_equal(c, 1);
+    assert_false(_test_cap_check(&c, 1));  /* 1 ≥ 1: rejected */
+    assert_int_equal(c, 1);               /* counter not modified on rejection */
+}
+
+static void test_cap_boundary_pegin(void **state) {
+    (void) state;
+    /* PegIn cap: vault_count (10 for the Jira AC example) */
+    uint16_t cap = 10;
+    uint16_t c = 0;
+    for (uint16_t i = 0; i < cap; i++)
+        assert_true(_test_cap_check(&c, cap));
+    assert_int_equal(c, cap);
+    assert_false(_test_cap_check(&c, cap));
+}
+
+static void test_cap_boundary_payout(void **state) {
+    (void) state;
+    /* Payout cap: vault_count × (keeper_count + 2)
+     * Jira AC: vault_count=10, keeper_count=3 → cap = 10 × 5 = 50 */
+    uint16_t cap = (uint16_t)(10u * (3u + 2u));
+    assert_int_equal(cap, 50);
+    uint16_t c = 0;
+    for (uint16_t i = 0; i < cap; i++)
+        assert_true(_test_cap_check(&c, cap));
+    assert_int_equal(c, cap);
+    assert_false(_test_cap_check(&c, cap));
+}
+
+static void test_cap_boundary_nopayout(void **state) {
+    (void) state;
+    /* NoPayout cap: vault_count × (keeper_count + challenger_count)
+     * Jira AC: vault_count=10, keeper_count=3, challenger_count=2 → cap = 10 × 5 = 50 */
+    uint16_t cap = (uint16_t)(10u * (3u + 2u));
+    assert_int_equal(cap, 50);
+    uint16_t c = 0;
+    for (uint16_t i = 0; i < cap; i++)
+        assert_true(_test_cap_check(&c, cap));
+    assert_int_equal(c, cap);
+    assert_false(_test_cap_check(&c, cap));
+}
+
+/* ---------------------------------------------------------------------------
  * _pegin_validate_outputs fee arithmetic — overflow guards
  *
  * The two-step overflow-safe addition in _pegin_validate_outputs is a private
@@ -714,6 +776,12 @@ int main(void) {
         cmocka_unit_test(test_deriv_reject_hash_truncated),
         cmocka_unit_test(test_deriv_reject_path_not_divisible_by_4),
         cmocka_unit_test(test_deriv_reject_too_many_steps),
+
+        /* signature cap boundaries */
+        cmocka_unit_test(test_cap_boundary_prepegin),
+        cmocka_unit_test(test_cap_boundary_pegin),
+        cmocka_unit_test(test_cap_boundary_payout),
+        cmocka_unit_test(test_cap_boundary_nopayout),
 
         /* _pegin_validate_outputs fee arithmetic */
         cmocka_unit_test(test_pegin_fee_sum_overflow_guards),

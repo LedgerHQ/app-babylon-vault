@@ -33,6 +33,7 @@ from test_utils.taproot import tagged_hash, taproot_tweak_pubkey, ser_script, pu
 from .vault_client import (
     SW_BAD_STATE,
     SW_BAD_CPFP_ANCHOR,
+    SW_CAP_EXCEEDED,
     SW_INCORRECT_DATA,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
@@ -2761,11 +2762,11 @@ def test_sign_psbt_nopayout_cap_exhausted(
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
         client.sign_psbt(psbt, dummy_wallet, None)
 
-    # One more exceeds the cap → SW_BAD_STATE
+    # One more exceeds the cap → SW_CAP_EXCEEDED and intent is nullified
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_BAD_STATE
+    assert exc.value.status == SW_CAP_EXCEEDED
 
 
 # ===========================================================================

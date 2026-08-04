@@ -40,6 +40,8 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 
 /* Distinct status word for CPFP anchor output scriptPubKey mismatch in payout */
 #define SW_BAD_CPFP_ANCHOR 0xB009u
+/* Returned when a per-type signature cap is exceeded; intent is nullified on this path */
+#define SW_CAP_EXCEEDED 0xB00Au
 
 /* Payout fee bound constants (NAPPS-1376) */
 #define MAX_PAYOUT_VSIZE_BASE            500u
@@ -356,6 +358,13 @@ static bool _validate_prepegin(
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
+
+    if (G_vault_context.pre_pegin_signed >= 1u) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_CAP_EXCEEDED);
+        return false;
+    }
+    G_vault_context.pre_pegin_signed++;
 
     /* Advance state: INTENT_LOADED → SESSION1_PREPEGIN_EXPECTED.
      * Pre-PegIn is signed silently — the intent approval (Screen 2) already
@@ -1062,6 +1071,13 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     if (!_pegin_validate_input(dc, &input_map, intent, group_idx, &htlc_value)) return false;
     if (!_pegin_validate_outputs(dc, st, intent, htlc_value)) return false;
 
+    if (G_vault_context.pegin_signed >= (uint16_t) G_vault_intent.vault_count) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_CAP_EXCEEDED);
+        return false;
+    }
+    G_vault_context.pegin_signed++;
+
     /* PegIn is silent — no display needed.
      * State transition SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED is deferred
      * to sign_custom_inputs (NAPPS-1377).  Advancing state here would be premature:
@@ -1471,6 +1487,18 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
+    /* Payout cap: vault_count × (keeper_count + 2) — VP + N VK claimers + Depositor */
+    {
+        uint16_t payout_cap =
+            (uint16_t) intent->vault_count * ((uint16_t) intent->keeper_count + 2u);
+        if (G_vault_context.payout_signed >= payout_cap) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_CAP_EXCEEDED);
+            return false;
+        }
+        G_vault_context.payout_signed++;
+    }
+
     /* Advance the payout cursor now that this claimer validated.  Ordering is
      * enforced via claimer_idx == payout_index above; the matching signature is
      * produced afterwards in sign_custom_inputs.  A signing failure there calls
@@ -1604,12 +1632,12 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     uint16_t cap =
         (uint16_t) ((uint16_t) intent->vault_count *
                     ((uint16_t) intent->keeper_count + (uint16_t) intent->challenger_count));
-    if (G_vault_context.nopayout_index >= cap) {
+    if (G_vault_context.nopayout_signed >= cap) {
         vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_BAD_STATE);
+        SEND_SW(dc, SW_CAP_EXCEEDED);
         return false;
     }
-    G_vault_context.nopayout_index++;
+    G_vault_context.nopayout_signed++;
     return true;
 }
 

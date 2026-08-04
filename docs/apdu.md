@@ -261,6 +261,7 @@ Handled by `bitcoin_app_base`. Listed here for completeness.
 | `0x6F00` | `SW_BIP32_FAIL`         | BIP-32 key derivation failed (invalid key at path). |
 | `0xB007` | `SW_BAD_STATE`          | Command not allowed in current session state. |
 | `0xB009` | `SW_BAD_CPFP_ANCHOR`    | `SIGN_PSBT` depositor payout: Output 1 scriptPubKey does not match BIP-86 P2TR(depositor). Only returned for Depositor claimer (claimer index = `keeper_count + 1`). |
+| `0xB00A` | `SW_CAP_EXCEEDED`       | `SIGN_PSBT` per-type signature cap exceeded within one approved intent (Pre-PegIn: 1, PegIn: `vault_count`, Payout: `vault_count×(N+2)`, NoPayout: `vault_count×(N+M)`). Intent and `context_root` are nullified; device returns to IDLE. A fresh `APPROVE_VAULT_INTENT` resets all counters. |
 
 ---
 

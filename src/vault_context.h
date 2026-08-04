@@ -83,11 +83,22 @@ typedef struct {
     uint8_t payout_index;
 
     /**
-     * Number of NoPayout PSBTs signed so far in the current Session 2.
-     * Each vault contributes (keeper_count + challenger_count) NoPayout leaves.
-     * Capped at vault_count × (keeper_count + challenger_count) ≤ 10×64 = 640.
+     * Per-type signature counters (sampling countermeasure, v22).
+     *
+     * Each counter is incremented once a signature is produced and capped at the
+     * expected count for the approved intent.  Exceeding any cap nullifies the intent
+     * and returns SW_CAP_EXCEEDED; all counters reset to zero on each intent approval.
+     *
+     * Caps (vault_count=V, keeper_count=N, challenger_count=M):
+     *   pre_pegin_signed : 1
+     *   pegin_signed     : V
+     *   payout_signed    : V × (N+2)
+     *   nopayout_signed  : V × (N+M)
      */
-    uint16_t nopayout_index;
+    uint16_t pre_pegin_signed;
+    uint16_t pegin_signed;
+    uint16_t payout_signed;
+    uint16_t nopayout_signed;
 
     /**
      * Index of the vault group currently being processed in Session 2.

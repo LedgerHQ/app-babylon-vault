@@ -290,3 +290,4 @@ The depositor reclaims funds from a wrongly-challenged vault by spending the Cha
 | `0x6E00` | `SW_CLA_NOT_SUPPORTED` | Unknown CLA |
 | `0xB007` | `SW_BAD_STATE`      | Command not allowed in current session state |
 | `0xB009` | `SW_BAD_CPFP_ANCHOR` | Depositor payout Output 1 scriptPubKey does not match BIP-86 P2TR(depositor) |
+| `0xB00A` | `SW_CAP_EXCEEDED`    | Per-type signature cap exceeded; intent nullified. Caps per approved intent: Pre-PegIn=1, PegIn=`vault_count`, Payout=`vault_count×(N+2)`, NoPayout=`vault_count×(N+M)`. |

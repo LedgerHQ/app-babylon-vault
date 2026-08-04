@@ -16,7 +16,7 @@
 //   auth_anchor_hash      32 B
 //   state                  4 B  (enum = int)
 //   payout_index           1 B
-//   nopayout_index         2 B  + 1 B pad
+//   sig cap counters       8 B  (pre_pegin/pegin/payout/nopayout _signed, 2 B each)
 //   vault_group_index      1 B  + 3 B pad
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding

@@ -296,6 +296,42 @@ static void test_transition_hash_derived_to_intent_loaded(void **state) {
 }
 
 // ---------------------------------------------------------------------------
+// Signature cap counters
+// ---------------------------------------------------------------------------
+
+static void test_init_zeroes_cap_counters(void **state) {
+    (void) state;
+    vault_context_t ctx;
+    _fill(&ctx);
+    vault_context_init(&ctx);
+
+    assert_int_equal(ctx.pre_pegin_signed, 0);
+    assert_int_equal(ctx.pegin_signed,     0);
+    assert_int_equal(ctx.payout_signed,    0);
+    assert_int_equal(ctx.nopayout_signed,  0);
+}
+
+static void test_invalidate_zeroes_cap_counters(void **state) {
+    (void) state;
+    vault_context_t ctx;
+    vault_context_init(&ctx);
+
+    ctx.pre_pegin_signed = 1;
+    ctx.pegin_signed     = 5;
+    ctx.payout_signed    = 30;
+    ctx.nopayout_signed  = 47;
+    ctx.state            = VAULT_STATE_INTENT_LOADED;
+
+    vault_context_invalidate(&ctx);
+
+    assert_int_equal(ctx.pre_pegin_signed, 0);
+    assert_int_equal(ctx.pegin_signed,     0);
+    assert_int_equal(ctx.payout_signed,    0);
+    assert_int_equal(ctx.nopayout_signed,  0);
+    assert_int_equal(ctx.state,            VAULT_STATE_IDLE);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -325,6 +361,10 @@ int main(void) {
         cmocka_unit_test(test_transition_illegal_to_state),
         cmocka_unit_test(test_transition_backwards_without_valid_edge),
         cmocka_unit_test(test_transition_double_approve),
+
+        /* signature cap counters */
+        cmocka_unit_test(test_init_zeroes_cap_counters),
+        cmocka_unit_test(test_invalidate_zeroes_cap_counters),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

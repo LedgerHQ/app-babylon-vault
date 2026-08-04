@@ -344,6 +344,7 @@ The device **displays** amount reclaimed, fee, and destination address. User mus
 | `0x6A80` | PSBT/TLV validation failure (bad field, wrong output policy, missing auth-anchor, …) | Fix the PSBT; resend. State unchanged if before signing; **invalidated** if during Payout signing |
 | `0x6F00` | BIP-32 derivation failure (connected-pubkey in `DERIVE_CONTEXT_HASH`, or depositor key) | Check the derivation path; session is reset |
 | `0xB007` | Wrong session state (`SW_BAD_STATE`), or HMAC/HKDF failure during `DERIVE_CONTEXT_HASH` | Check current state; run `DERIVE_CONTEXT_HASH` first if a signing step was rejected for a missing root |
+| `0xB00A` | Per-type signature cap exceeded (`SW_CAP_EXCEEDED`) — more signatures were requested than the approved intent allows (Pre-PegIn: 1, PegIn: `vault_count`, Payout: `vault_count×(N+2)`, NoPayout: `vault_count×(N+M)`). Intent is nullified. | Re-run `DERIVE_CONTEXT_HASH` + `APPROVE_VAULT_INTENT` to get fresh user approval and reset all counters. |
 
 **Retry rules:**
 - **Pre-PegIn, PegIn, Refund:** PSBT can be resent after any non-signing failure; state is unchanged.
