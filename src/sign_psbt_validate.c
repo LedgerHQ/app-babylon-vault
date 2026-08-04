@@ -2343,7 +2343,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
  * ---------------------------------------------------------------------- */
 
 static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psbt_state_t *st) {
-    if (st->tx_version != 2 || st->locktime != 0) {
+    if (st->tx_version < 2 || st->locktime != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
