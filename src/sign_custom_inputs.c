@@ -371,6 +371,10 @@ bool sign_custom_inputs(
      * the script tree — an unusable signature (DoS only, no fund redirection).
      * ----------------------------------------------------------------------- */
     if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
+        /* Signing must not silently rely on the validation-phase check: re-assert the
+         * invariant so this remains safe if validation and signing are ever decoupled. */
+        LEDGER_ASSERT(!bitvector_get(internal_inputs, 0),
+                      "PayoutFinalize: Input 0 must be external");
         merkleized_map_commitment_t input1_map;
         if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
 
