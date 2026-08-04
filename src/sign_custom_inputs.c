@@ -364,6 +364,11 @@ bool sign_custom_inputs(
      * Re-read Input 1's TAP_LEAF_SCRIPT via vault_read_payout_leaf_script because
      * display_payout_finalize clobbered G_scratch.tls.  Signing proceeds identically
      * to other standalone flows except the input index is 1.
+     *
+     * The Taproot control block is not re-verified here.  It was verified in
+     * _validate_display_payout_finalize; any leaf substituted by the host between
+     * the two phases would produce a sighash committing to a leaf hash absent from
+     * the script tree — an unusable signature (DoS only, no fund redirection).
      * ----------------------------------------------------------------------- */
     if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
         merkleized_map_commitment_t input1_map;

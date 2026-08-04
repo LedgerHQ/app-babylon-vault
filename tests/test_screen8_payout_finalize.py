@@ -165,7 +165,7 @@ def test_payout_finalize_nonzero_locktime(client: "RaggerClient", bitcoin_networ
 
 
 def test_payout_finalize_wrong_version(client: "RaggerClient", bitcoin_network: str) -> None:
-    """PayoutFinalize fails when nVersion != 2 (version 1 has no CSV semantics)."""
+    """PayoutFinalize fails when nVersion < 2 (version 1 has no CSV semantics)."""
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
     psbt.tx.nVersion = 1
@@ -173,6 +173,39 @@ def test_payout_finalize_wrong_version(client: "RaggerClient", bitcoin_network: 
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_finalize_version3_accepted(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """PayoutFinalize succeeds with nVersion = 3 (firmware requires >= 2, not exactly 2).
+
+    nVersion is not displayed on Screen 8, so the snapshots are identical to the
+    happy-path test.  This test reuses the same reference images.
+    """
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type,
+                                        amount_received=_AMOUNT_RECEIVED)
+    psbt.tx.nVersion = 3
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    tname = "screen8_payout_finalize/screen_" + bitcoin_network
+
+    if device.is_nano:
+        result = client.sign_psbt(
+            psbt, dummy_wallet, None, navigator,
+            testname=tname,
+            instructions=sign_psbt_payout_finalize_approve_instructions(device),
+        )
+        _assert_single_schnorr_sig(result, d_key, expected_input=1)
+    else:
+        sign_psbt_with_nav_and_compare(
+            client, psbt, dummy_wallet, None, navigator,
+            testname=tname,
+            nav_instructions=sign_psbt_payout_finalize_approve_nav(device),
+        )
 
 
 def test_payout_finalize_sequence_below_csv(

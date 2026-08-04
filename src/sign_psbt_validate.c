@@ -2617,7 +2617,9 @@ bool validate_and_display_transaction(
     }
 
     /* PayoutFinalize: 2 inputs, 2 outputs; device signs Input 1, not Input 0.
-     * Reject if the host erroneously requests a signature for Input 0. */
+     * Reject if the host erroneously requests a signature for Input 0.
+     * This shape (2+2, no wallet policy) is unique to PayoutFinalize; any future
+     * 2+2 standalone flow must extend this discriminator before it can be dispatched. */
     if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
         if (bitvector_get(internal_inputs, 0)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
