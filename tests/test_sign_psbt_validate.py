@@ -1964,18 +1964,17 @@ def test_sign_psbt_payout_wrong_claimer_order(
     bitcoin_network: str,
     device,
 ) -> None:
-    """Payout fails when VK PSBT is presented before VP (claimer ordering enforced)."""
+    """VK payout succeeds before VP — no inter-transaction ordering requirement (HLD v22)."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
     _setup_payout_state(client, navigator, device, coin_type)
 
-    # Attempt VK_1 payout without signing VP first (payout_index == 0 expects VP)
+    # VK_1 payout presented before VP must succeed per HLD (no claimer ordering enforced).
     vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(vk_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+    result = client.sign_psbt(vk_psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
 
 
 def test_sign_psbt_payout_fee_too_high(
@@ -2132,7 +2131,7 @@ def test_sign_psbt_payout_vp_commission_at_fc(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VP Payout succeeds when Out1 equals commission_fee exactly (boundary of ≤ Fc check)."""
+    """VP Payout succeeds when Out1 equals commission_fee exactly (exact Fc match required)."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 

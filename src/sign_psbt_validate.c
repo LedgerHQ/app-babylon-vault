@@ -1396,12 +1396,6 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     G_vault_context.vault_group_index = (uint8_t) gi;
     G_vault_context.payout_index = (uint8_t) claimer_idx;
 
-    /* VP (claimer_idx == 0) must be signed before any other claimer. */
-    if (G_vault_context.payout_signed == 0 && claimer_idx != 0) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
-
     /* n_outputs: 3 for VP, 2 for all other claimers */
     const unsigned int expected_n_outputs = (claimer_idx == 0) ? 3u : 2u;
     if (st->n_outputs != expected_n_outputs) {
@@ -2733,7 +2727,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & 0x0000FFFFu) < (csv_value & 0x0000FFFFu)) {
+        if ((nsequence & 0x0000FFFFu) != (csv_value & 0x0000FFFFu)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }

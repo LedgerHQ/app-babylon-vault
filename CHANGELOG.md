@@ -154,16 +154,19 @@ and returns the new `SW_CAP_EXCEEDED` status word.
   no-wallet-policy route likewise moved before the `INTENT_LOADED` guard.  HTLC Leaf 0
   begins with `OP_SIZE` (`0x82`), not `OP_PUSHBYTES_32`, so the leaf dispatcher returned
   `SW_INCORRECT_DATA` instead of the expected `SW_BAD_STATE`.
-- **VP-first payout ordering enforced** (`_validate_payout`): Added check
-  `payout_signed == 0 && claimer_idx != 0 → SW_INCORRECT_DATA`; VP must be signed before
-  any VK or Depositor claimer.  Previously the ordering requirement was unimplemented and
-  a host could sign out-of-order claimers.
+- **PayoutFinalize Input 1 `nSequence` exact match** (`_validate_display_payout_finalize`):
+  `nSequence` must encode the CSV timelock exactly (`!= csv_value` → `SW_INCORRECT_DATA`),
+  consistent with the Refund flow and the HLD requirement that the sequence "encode" the
+  timelock value.  Previously any `nSequence >= csv_value` was accepted.
 - **VK/Depositor Payout routing** (`sign_psbt_validate.c`): The `bitvector_get(internal_inputs, 0)`
   test is always zero for no-wallet-policy flows (`preprocess_inputs` only sets internal-input
   bits for wallet-policy inputs).  Routing for the ambiguous 2-in/2-out case now peeks at
   Input 0's `PSBT_IN_PREVIOUS_TXID` and compares it against `vault_compute_pegin_txid` for
   every vault group; a match routes to `_validate_payout`, a mismatch falls through to
   `_validate_display_payout_finalize`.
+- **`test_sign_psbt_payout_wrong_claimer_order`** (`tests/`): Corrected from expecting
+  `SW_INCORRECT_DATA` to expecting success; the HLD (v22) specifies no inter-transaction
+  ordering requirement, so VK presented before VP must be accepted.
 - **`test_sign_psbt_payout_vp_reduced_commission`** (`tests/`): Corrected from expecting
   success to expecting `SW_INCORRECT_DATA`; reflects the exact-match commission check
   documented in the Security section above.
