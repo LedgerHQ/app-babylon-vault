@@ -45,6 +45,7 @@ from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
     build_group_tlv,
+    sign_psbt_with_nav_and_compare,
     VAULT_APP_NAME,
     vault_hashlock,
     vault_auth_anchor,
@@ -53,6 +54,10 @@ from .vault_client import (
     TEST_VALID_KEYS,
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
+)
+from .instructions import (
+    sign_psbt_nopayout_approve_instructions,
+    sign_psbt_nopayout_approve_nav,
 )
 
 HARDENED = 0x80000000
@@ -2776,7 +2781,7 @@ def test_sign_psbt_nopayout(
     bitcoin_network: str,
     device,
 ) -> None:
-    """NoPayout: device signs Input 0 from VAULT_STATE_INTENT_LOADED."""
+    """NoPayout: device displays challenger info, user approves, Input 0 is signed."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
@@ -2785,7 +2790,18 @@ def test_sign_psbt_nopayout(
 
     # _TEST_KEEPER_PKS[0] is a valid challenger (keeper) in the loaded intent.
     psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
-    result = client.sign_psbt(psbt, dummy_wallet, None)
+    tname = "nopayout/approve_" + bitcoin_network
+
+    if device.is_nano:
+        result = client.sign_psbt(psbt, dummy_wallet, None, navigator,
+                                  testname=tname,
+                                  instructions=sign_psbt_nopayout_approve_instructions(device))
+    else:
+        sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
+                                       testname=tname,
+                                       nav_instructions=sign_psbt_nopayout_approve_nav(device))
+        return
+
     _assert_single_schnorr_sig(result, dep_pk)
 
 
@@ -2803,16 +2819,70 @@ def test_sign_psbt_nopayout_cap_exhausted(
     _setup_payout_state(client, navigator, device, coin_type)
 
     # Cap = 1 × (1 keeper + 1 challenger) = 2.
-    # Sign once per known challenger (keeper and UC challenger).
-    for ch_pk in _TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS:
+    # Navigate through the display for each successful signing (display is now shown).
+    for i, ch_pk in enumerate(_TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS):
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
-        client.sign_psbt(psbt, dummy_wallet, None)
+        tname = f"nopayout/cap_iter_{i}_{bitcoin_network}"
+        if device.is_nano:
+            client.sign_psbt(psbt, dummy_wallet, None, navigator,
+                             testname=tname,
+                             instructions=sign_psbt_nopayout_approve_instructions(device))
+        else:
+            sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
+                                           testname=tname,
+                                           nav_instructions=sign_psbt_nopayout_approve_nav(device))
 
-    # One more exceeds the cap → SW_CAP_EXCEEDED and intent is nullified
+    # One more exceeds the cap → SW_CAP_EXCEEDED before display, no navigation needed.
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
     assert exc.value.status == SW_CAP_EXCEEDED
+
+
+def test_sign_psbt_nopayout_32_challengers(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout succeeds with the maximum 32 challengers in the intent.
+
+    Signs with the last challenger (displayed as #33, 1-based) to exercise
+    the full keeper + challenger key-set iteration in _validate_nopayout.
+
+    Keys are generated as multiples of G starting at 2G (1G = TEST_VP_KEY is excluded),
+    then sorted ascending to satisfy the firmware's strict-ordering requirement.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    # 1 keeper + 32 challengers; skip 1G because TEST_VP_KEY = 1G.
+    all_keys = sorted(pubkey_gen(i.to_bytes(32, 'big')) for i in range(2, 35))
+    keeper_pks    = all_keys[:1]
+    challenger_pks = all_keys[1:]  # 32 keys
+
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID,
+                               keeper_pks=keeper_pks, challenger_pks=challenger_pks)
+    pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID,
+                                   keeper_pks=keeper_pks, challenger_pks=challenger_pks)
+    client.sign_psbt(pegin_psbt, dummy_wallet, None)
+
+    # Sign with the last challenger key — the device must walk all 33 entries to find it.
+    psbt = _build_nopayout_psbt(dep_pk, challenger_pks[-1])
+    tname = "nopayout/32challengers_" + bitcoin_network
+
+    if device.is_nano:
+        result = client.sign_psbt(psbt, dummy_wallet, None, navigator,
+                                  testname=tname,
+                                  instructions=sign_psbt_nopayout_approve_instructions(device))
+    else:
+        sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
+                                       testname=tname,
+                                       nav_instructions=sign_psbt_nopayout_approve_nav(device))
+        return
+
+    _assert_single_schnorr_sig(result, dep_pk)
 
 
 # ===========================================================================
@@ -3076,6 +3146,49 @@ def test_sign_psbt_prepegin_cap_nullifies_intent(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(pegin_psbt, dummy_wallet, None)
     assert exc.value.status == SW_BAD_STATE
+
+
+def test_sign_psbt_prepegin_wrong_txid_binding(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Pre-PegIn fails when intent->prepegin_txid doesn't match hash256 of the PSBT tx.
+
+    The intent commits to a specific Pre-PegIn transaction by storing its txid.
+    Signing a different transaction must be rejected with SW_INCORRECT_DATA.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
+    _, _, _, _, htlc_spk = _htlc_output(
+        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hashlock,
+    )
+    fingerprint, input_key = _prepegin_input_key(client, coin_type)
+    psbt = _build_prepegin_psbt(
+        htlc_spk,
+        input_internal_key=input_key,
+        input_fingerprint=fingerprint,
+        input_coin_type=coin_type,
+        auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
+    )
+
+    # Load intent with a wrong (non-zero) prepegin_txid — doesn't match this PSBT.
+    wrong_txid = bytes([0xFF] * 32)
+    scalars_tlv = _build_intent_tlv_for_test(coin_type, wrong_txid)
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=[_build_group_for_test()],
+    )
+
+    wallet = _standard_taproot_wallet(client, coin_type)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
 
 
 # ===========================================================================
@@ -3646,6 +3759,32 @@ def test_sign_psbt_nopayout_wrong_challenger_key(
     # TEST_VALID_KEYS[4] (2G) is not in _TEST_KEEPER_PKS or _TEST_CHALLENGER_PKS.
     foreign_challenger = TEST_VALID_KEYS[4]
     psbt = _build_nopayout_psbt(dep_pk, foreign_challenger)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_nopayout_wrong_output_spk(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout fails when Output 0 scriptPubKey is not key-path P2TR of the challenger key.
+
+    The device must verify Output 0 belongs to the challenger before signing the
+    NoPayout Assert:0 leaf, preventing an attacker from redirecting funds.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
+    # Replace Output 0 with an attacker-controlled address (arbitrary P2TR).
+    psbt.tx.vout[0].scriptPubKey = bytes([0x51, 0x20]) + bytes([0xAB] * 32)
 
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)

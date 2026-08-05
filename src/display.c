@@ -341,6 +341,54 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
+// NoPayout confirmation screen
+// ---------------------------------------------------------------------------
+
+bool display_nopayout_transaction(dispatcher_context_t *dc,
+                                  uint8_t challenger_idx,
+                                  const uint8_t *challenger_key) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list = {0};
+
+    // txid_str (65 B): challenger x-only key as 64 hex chars + NUL.
+    format_hex(challenger_key, VAULT_XONLY_PUBKEY_LEN, G_scratch.display_tx.txid_str,
+               TX_DISPLAY_TXID_STR_SIZE);
+    // extra_str: challenger index as a small decimal number.
+    snprintf(G_scratch.display_tx.extra_str,
+             TX_DISPLAY_AMOUNT_STR_SIZE,
+             "%u",
+             (unsigned) challenger_idx + 1u);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Challenger",
+                                             .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Challenger key",
+                                             .value = G_scratch.display_tx.txid_str};
+
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Review NoPayout\ntransaction",
+                       NULL,
+                       "Sign NoPayout\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Screen 8 — Payout finalize
 // ---------------------------------------------------------------------------
 

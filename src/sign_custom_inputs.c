@@ -612,6 +612,11 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        /* PoP (BIP-322) is the only standalone flow with tx_version == 0. */
+        if (st->tx_version == 0) {
+            G_vault_context.pop_signed++;
+        }
+
         return true;
     }
 }

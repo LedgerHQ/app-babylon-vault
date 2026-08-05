@@ -82,11 +82,13 @@ typedef struct {
      *   pegin_signed     : V
      *   payout_signed    : V × (N+2)
      *   nopayout_signed  : V × (N+M)
+     *   pop_signed       : VAULT_POP_CAP (state-independent; caps key-correlation exposure)
      */
     uint16_t pre_pegin_signed;
     uint16_t pegin_signed;
     uint16_t payout_signed;
     uint16_t nopayout_signed;
+    uint16_t pop_signed;
 
     /**
      * Dual-use field:

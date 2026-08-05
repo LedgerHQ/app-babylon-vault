@@ -60,7 +60,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 field_idx = 3;
                 if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint64_t rate = U8BE(v, 0);
-                if (rate > UINT32_MAX) return VAULT_TLV_ERR_VALIDATION;
+                if (rate == 0 || rate > UINT32_MAX) return VAULT_TLV_ERR_VALIDATION;
                 out->base_fee_rate = rate;
                 break;
             }

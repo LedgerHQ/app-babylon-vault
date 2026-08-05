@@ -623,11 +623,17 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         return false;
     }
 
-    /* When intent is loaded, the CSV timelock in the leaf must match the
-     * approved htlc_refund_timelock — prevents signing a premature refund with
-     * an attacker-supplied shorter timelock. */
+    /* CSV timelock validation:
+     *   INTENT_LOADED: must equal the approved htlc_refund_timelock exactly.
+     *   IDLE/HASH_DERIVED: no approved value to compare against, but enforce the
+     *     protocol minimum so a short-CSV UTXO (e.g. 1 block) cannot be signed. */
     if (state == VAULT_STATE_INTENT_LOADED) {
         if (csv_value != (uint32_t) G_vault_intent.htlc_refund_timelock) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    } else {
+        if (csv_value < VAULT_TIMELOCK_MIN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1558,11 +1564,28 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
     if (claimer_idx == 0 || claimer_idx == (uint8_t) (intent->keeper_count + 1u)) {
+        /* VP or Depositor claimer: Output 0 must be BIP-86 P2TR(depositor_pk). */
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (!_bip86_p2tr_spk(intent->depositor_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        if (memcmp(out_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    } else {
+        /* VK claimer: Output 0 must be key-path P2TR(keeper_pks[claimer_idx - 1]). */
+        uint8_t parity;
+        uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
+        if (crypto_tr_tweak_pubkey(intent->keeper_pks[claimer_idx - 1], NULL, 0, &parity, tweaked) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        expected_spk[0] = OP_1;
+        expected_spk[1] = OP_PUSHBYTES_32;
+        memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
         if (memcmp(out_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1650,7 +1673,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     uint64_t participants = (uint64_t) intent->keeper_count + intent->challenger_count;
     uint64_t vsize = MAX_PAYOUT_VSIZE_BASE + MAX_PAYOUT_VSIZE_PER_PARTICIPANT * participants;
     /* Overflow check before multiplying: vsize is bounded (~28k max), base_fee_rate is u64. */
-    if (intent->base_fee_rate != 0 && vsize > UINT64_MAX / intent->base_fee_rate) {
+    if (vsize > UINT64_MAX / intent->base_fee_rate) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1840,6 +1863,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         SEND_SW(dc, SW_CAP_EXCEEDED);
         return false;
     }
+
+    if (!display_nopayout_transaction(dc, (uint8_t) challenger_idx, challenger_xonly)) return false;
     return true;
 }
 
@@ -2599,6 +2624,12 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+    }
+
+    if (G_vault_context.pop_signed >= VAULT_POP_CAP) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_CAP_EXCEEDED);
+        return false;
     }
 
     if (!display_pop_transaction(dc, eth_addr, chain_id, registry)) return false;
