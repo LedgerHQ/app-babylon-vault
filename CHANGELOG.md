@@ -177,6 +177,10 @@ and returns the new `SW_CAP_EXCEEDED` status word.
   attribute, silently ignored) corrected to `sighash`; the absent sighash field caused
   firmware to bypass the check and block on the display call.
 
+### Refactored
+
+- Replaced magic numbers with named constants across `src/` and `unit-tests/`.
+
 ## [0.9.2] - NAPPS-1464: PayoutFinalize depositor self-claim (Screen 8)
 
 Adds Screen 8 — the depositor reclaims their deposit after the Claim+Assert chain by

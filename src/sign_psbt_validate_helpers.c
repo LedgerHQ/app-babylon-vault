@@ -18,7 +18,6 @@
 
 /* BIP-86 path shape */
 #define BIP86_PATH_LEN          5
-#define BIP86_PURPOSE           86u
 #define BIP86_MAX_ACCOUNT       100u
 #define BIP86_MAX_ADDRESS_INDEX 10000u
 
@@ -157,7 +156,7 @@ bool parse_payout_leaf_script(const uint8_t *script,
      * > 68 distinguishes this from the 68-byte Assert leaf. */
     if (script_len <= 68) return false;
     if (script[0] != OP_PUSHBYTES_32) return false;
-    if (script[33] != (uint8_t) OP_CHECKSIGVERIFY) return false;
+    if (script[1 + VAULT_XONLY_PUBKEY_LEN] != (uint8_t) OP_CHECKSIGVERIFY) return false;
     if ((uint8_t) script[script_len - 1] != (uint8_t) OP_CHECKSEQUENCEVERIFY) return false;
 
     memcpy(d_key_out, script + 1, VAULT_XONLY_PUBKEY_LEN);
@@ -186,7 +185,8 @@ bool parse_payout_leaf_script(const uint8_t *script,
      * last 3 bytes: [OP_PUSHBYTES_1] [value] [OP_CSV] */
     if ((uint8_t) script[script_len - 3] == OP_PUSHBYTES_1) {
         t2 = (uint32_t) (uint8_t) script[script_len - 2];
-        if (t2 >= VAULT_PAYOUT_TIMELOCK_MIN && t2 <= VAULT_PAYOUT_TIMELOCK_MAX && t2 <= 127u) {
+        if (t2 >= VAULT_PAYOUT_TIMELOCK_MIN && t2 <= VAULT_PAYOUT_TIMELOCK_MAX &&
+            t2 <= (SCRIPT_NUM_SIGN_BIT - 1u)) {
             *csv_value_out = t2;
             return true;
         }

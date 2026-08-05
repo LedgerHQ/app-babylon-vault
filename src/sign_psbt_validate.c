@@ -326,7 +326,7 @@ static bool _validate_prepegin(
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (res == 4 && sighash_type != 0 && sighash_type != 1) {
+        if (res == 4 && sighash_type != SIGHASH_DEFAULT && sighash_type != SIGHASH_ALL) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -396,7 +396,7 @@ static bool _validate_prepegin(
      * groups are in ascending htlc_vout order, so the last group has the highest htlc_vout. */
     uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
     expected_anchor_spk[0] = 0x6A;  // OP_RETURN
-    expected_anchor_spk[1] = 0x20;  // OP_PUSHBYTES_32
+    expected_anchor_spk[1] = OP_PUSHBYTES_32;
     memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
 
     /* Assert vault_count ∈ [1, VAULT_MAX_VAULTS] enforced at parse time.
@@ -521,7 +521,7 @@ static bool _refund_verify_taproot_commitment(dispatcher_context_t *dc,
         return false;
     }
     /* htlc_spk: [0x51, 0x20, tweaked[32]] */
-    if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20 ||
+    if (htlc_spk[0] != OP_1 || htlc_spk[1] != OP_PUSHBYTES_32 ||
         memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -561,7 +561,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
         /* HLD mandates SIGHASH_DEFAULT only; explicit SIGHASH_ALL is rejected even
          * though BIP-341 defines it as equivalent for tapscript, to enforce strict
          * canonical encoding per the protocol spec. */
-        if (res == 4 && sighash_type != 0) {
+        if (res == 4 && sighash_type != SIGHASH_DEFAULT) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -692,12 +692,12 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             return false;
         }
         /* bit 31 set → relative locktime disabled; bit 22 set → time-based unit */
-        if ((nsequence & 0x80000000u) != 0 || (nsequence & 0x00400000u) != 0) {
+        if ((nsequence & BIP68_DISABLE_FLAG) != 0 || (nsequence & BIP68_TIME_BASED_FLAG) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         /* Canonical: sequence must encode exactly the CSV timelock, not just satisfy it. */
-        if ((nsequence & 0x0000FFFFu) != (csv_value & 0x0000FFFFu)) {
+        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -715,7 +715,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
                                              1,
                                              out_script,
                                              VAULT_P2TR_SCRIPTPUBKEY_LEN);
-    if (slen != VAULT_P2TR_SCRIPTPUBKEY_LEN || out_script[0] != 0x51 || out_script[1] != 0x20) {
+    if (slen != VAULT_P2TR_SCRIPTPUBKEY_LEN || out_script[0] != OP_1 ||
+        out_script[1] != OP_PUSHBYTES_32) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -881,7 +882,7 @@ static bool _pegin_check_leaf0_script(dispatcher_context_t *dc,
         return false;
     }
 
-    if (htlc_spk[0] != 0x51 || htlc_spk[1] != 0x20 ||
+    if (htlc_spk[0] != OP_1 || htlc_spk[1] != OP_PUSHBYTES_32 ||
         memcmp(htlc_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN) != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -951,7 +952,7 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
                                              (uint8_t[]) {PSBT_IN_SEQUENCE},
                                              1,
                                              &seq) != 4 ||
-        seq != 0xFFFFFFFEu) {
+        seq != PEGIN_TX_SEQUENCE) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -963,7 +964,7 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
                                                    (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
                                                    1,
                                                    &sighash_type);
-    if ((res >= 0 && res != 4) || (res == 4 && sighash_type != 0)) {
+    if ((res >= 0 && res != 4) || (res == 4 && sighash_type != SIGHASH_DEFAULT)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1084,7 +1085,10 @@ static bool _pegin_validate_outputs(dispatcher_context_t *dc,
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        static const uint8_t P2A_SCRIPT[] = {0x51u, 0x02u, 0x4Eu, 0x73u};
+        static const uint8_t P2A_SCRIPT[] = {OP_1,
+                                             OP_PUSHBYTES_2,
+                                             P2A_WITNESS_PROG_BYTE0,
+                                             P2A_WITNESS_PROG_BYTE1};
         uint8_t p2a_buf[sizeof(P2A_SCRIPT)];
         if ((int) sizeof(P2A_SCRIPT) != call_get_merkleized_map_value(dc,
                                                                       &anchor_map,
@@ -1129,7 +1133,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     const vault_intent_t *intent = &G_vault_intent;
 
     /* PegIn must be a TRUC transaction (BIP-431 version 3) with locktime 0. */
-    if (st->tx_version != 3 || st->locktime != 0) {
+    if (st->tx_version != PEGIN_TX_VERSION || st->locktime != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1279,8 +1283,8 @@ static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
     uint8_t parity;
     uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
     if (crypto_tr_tweak_pubkey(xonly_key, NULL, 0, &parity, tweaked) != 0) return false;
-    out[0] = 0x51;
-    out[1] = 0x20;
+    out[0] = OP_1;
+    out[1] = OP_PUSHBYTES_32;
     memcpy(out + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
     return true;
 }
@@ -1378,8 +1382,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
                 0)
                 continue;
             uint8_t cand_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-            cand_spk[0] = 0x51;
-            cand_spk[1] = 0x20;
+            cand_spk[0] = OP_1;
+            cand_spk[1] = OP_PUSHBYTES_32;
             memcpy(cand_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
             if (memcmp(input1_spk, cand_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
                 claimer_idx = ci;
@@ -1472,8 +1476,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
 
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        expected_spk[0] = 0x51;
-        expected_spk[1] = 0x20;
+        expected_spk[0] = OP_1;
+        expected_spk[1] = OP_PUSHBYTES_32;
         memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
 
         if (!_payout_check_witness_utxo(dc,
@@ -1529,8 +1533,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
 
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        expected_spk[0] = 0x51;
-        expected_spk[1] = 0x20;
+        expected_spk[0] = OP_1;
+        expected_spk[1] = OP_PUSHBYTES_32;
         memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
 
         if (!_payout_check_witness_utxo(dc, &input1_map, expected_spk, VAULT_DUST_LIMIT))
@@ -1701,8 +1705,9 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     int leaf_len = G_scratch.tls.leaf_script_len;
 
     /* Assert:0 leaf: <D>(33B) OP_CHECKSIGVERIFY <Cj>(33B) OP_CHECKSIG = 68 bytes */
-    if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 || leaf[33] != (uint8_t) OP_CHECKSIGVERIFY ||
-        leaf[34] != OP_PUSHBYTES_32 || leaf[67] != (uint8_t) OP_CHECKSIG) {
+    if (leaf_len != VAULT_NOPAYOUT_LEAF_LEN || leaf[0] != OP_PUSHBYTES_32 ||
+        leaf[33] != (uint8_t) OP_CHECKSIGVERIFY || leaf[34] != OP_PUSHBYTES_32 ||
+        leaf[67] != (uint8_t) OP_CHECKSIG) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1809,8 +1814,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             return false;
         }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        expected_spk[0] = 0x51;
-        expected_spk[1] = 0x20;
+        expected_spk[0] = OP_1;
+        expected_spk[1] = OP_PUSHBYTES_32;
         memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
         uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         uint64_t out_value;
@@ -1871,7 +1876,8 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     }
 
     /* G_scratch.tls already populated; dispatcher guarantees leaf is 34 bytes <D> OP_CHECKSIG */
-    LEDGER_ASSERT(G_scratch.tls.leaf_script_len == 34, "unexpected claim leaf length");
+    LEDGER_ASSERT(G_scratch.tls.leaf_script_len == VAULT_DEPOSITOR_CLAIM_LEAF_LEN,
+                  "unexpected claim leaf length");
     const uint8_t *leaf = G_scratch.tls.leaf_script;
     /* Extract D key into a local copy before any use of G_scratch.leaf_check */
     uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
@@ -1987,7 +1993,7 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out_spk[0] != 0x51 || out_spk[1] != 0x20 ||
+        if (out_spk[0] != OP_1 || out_spk[1] != OP_PUSHBYTES_32 ||
             memcmp(out_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2294,7 +2300,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out_spk[0] != 0x51 || out_spk[1] != 0x20 ||
+        if (out_spk[0] != OP_1 || out_spk[1] != OP_PUSHBYTES_32 ||
             memcmp(out_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2723,11 +2729,11 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & 0x80000000u) != 0 || (nsequence & 0x00400000u) != 0) {
+        if ((nsequence & BIP68_DISABLE_FLAG) != 0 || (nsequence & BIP68_TIME_BASED_FLAG) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & 0x0000FFFFu) != (csv_value & 0x0000FFFFu)) {
+        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2967,19 +2973,21 @@ bool validate_and_display_transaction(
     const uint8_t *leaf = G_scratch.tls.leaf_script;
     int leaf_len = G_scratch.tls.leaf_script_len;
 
-    if (leaf_len < 34 || leaf[0] != OP_PUSHBYTES_32) {
+    if (leaf_len < (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN || leaf[0] != OP_PUSHBYTES_32) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
     /* Claim: <D> OP_CHECKSIG */
-    if (leaf_len == 34 && leaf[33] == (uint8_t) OP_CHECKSIG) return _validate_display_claim(dc, st);
+    if (leaf_len == VAULT_DEPOSITOR_CLAIM_LEAF_LEN && leaf[33] == (uint8_t) OP_CHECKSIG)
+        return _validate_display_claim(dc, st);
 
-    if (leaf_len > 34 && leaf[33] == (uint8_t) OP_CHECKSIGVERIFY) {
+    if (leaf_len > (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN &&
+        leaf[33] == (uint8_t) OP_CHECKSIGVERIFY) {
         /* WC: <D> OP_CHECKSIGVERIFY OP_SIZE ... */
         if (leaf[34] == (uint8_t) OP_SIZE) return _validate_display_wc(dc, st);
         /* Assert: exactly 68 bytes, <D> OP_CHECKSIGVERIFY <key>(32B) OP_CSV */
-        if (leaf_len == 68 && leaf[34] == OP_PUSHBYTES_32 &&
+        if (leaf_len == VAULT_NOPAYOUT_LEAF_LEN && leaf[34] == OP_PUSHBYTES_32 &&
             (uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_CSV)
             return _validate_display_assert(dc, st);
         /* Refund: <D> OP_CHECKSIGVERIFY <T> OP_CSV */

@@ -259,7 +259,7 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         return;
     }
 
-    uint8_t depositor_compressed[33];
+    uint8_t depositor_compressed[VAULT_COMPRESSED_PUBKEY_LEN];
     if (crypto_get_compressed_pubkey_at_path(G_vault_intent.depositor_path,
                                              VAULT_DEPOSITOR_PATH_LEN,
                                              depositor_compressed,

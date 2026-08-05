@@ -20,6 +20,7 @@
 #include <cmocka.h>
 
 #include "sign_psbt_validate_helpers.h"
+#include "vault_constants.h"
 
 /* ---------------------------------------------------------------------------
  * Helpers
@@ -62,21 +63,21 @@ static void write_u32_be(uint8_t *buf, size_t offset, uint32_t v) {
 static void test_bip86_valid_minimal(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     assert_true(check_bip86_path(path, 5));
 }
 
 static void test_bip86_valid_change_1(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 1, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 0);
     assert_true(check_bip86_path(path, 5));
 }
 
 static void test_bip86_valid_max_account_and_index(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 100, 0, 10000);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 10000);
     assert_true(check_bip86_path(path, 5));
 }
 
@@ -87,22 +88,22 @@ static void test_bip86_valid_max_account_and_index(void **state) {
 static void test_bip86_reject_short_path(void **state) {
     (void) state;
     uint32_t path[4];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     assert_false(check_bip86_path(path, 4));
 }
 
 static void test_bip86_reject_long_path(void **state) {
     (void) state;
     uint32_t path[6] = {0};
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     assert_false(check_bip86_path(path, 6));
 }
 
 static void test_bip86_reject_purpose_not_hardened(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 0);
-    path[0] = 86; /* strip hardened bit */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[0] = BIP86_PURPOSE; /* strip hardened bit */
     assert_false(check_bip86_path(path, 5));
 }
 
@@ -116,14 +117,14 @@ static void test_bip86_reject_wrong_purpose(void **state) {
 static void test_bip86_reject_wrong_coin_type(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE + 1, 0, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE + 1, 0, 0, 0);
     assert_false(check_bip86_path(path, 5));
 }
 
 static void test_bip86_reject_coin_type_not_hardened(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     path[1] = BIP44_COIN_TYPE; /* strip hardened bit */
     assert_false(check_bip86_path(path, 5));
 }
@@ -131,7 +132,7 @@ static void test_bip86_reject_coin_type_not_hardened(void **state) {
 static void test_bip86_reject_account_not_hardened(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     path[2] = 0; /* strip hardened bit */
     assert_false(check_bip86_path(path, 5));
 }
@@ -139,21 +140,21 @@ static void test_bip86_reject_account_not_hardened(void **state) {
 static void test_bip86_reject_account_too_large(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 101, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 101, 0, 0);
     assert_false(check_bip86_path(path, 5));
 }
 
 static void test_bip86_reject_change_too_large(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 2, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 2, 0);
     assert_false(check_bip86_path(path, 5));
 }
 
 static void test_bip86_reject_index_too_large(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 10001);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 10001);
     assert_false(check_bip86_path(path, 5));
 }
 
@@ -186,7 +187,7 @@ static int build_deriv_val(uint8_t *buf,
 static void test_deriv_valid_n_hashes_1(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 0, 0);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     uint8_t val[1 + 32 + 4 + 5 * 4];
     int len = build_deriv_val(val, sizeof(val), 1, 0xDEADBEEF, path, 5);
     assert_int_equal(len, (int) sizeof(val));
@@ -202,7 +203,7 @@ static void test_deriv_valid_n_hashes_1(void **state) {
 static void test_deriv_valid_n_hashes_0(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 1, 0, 42);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 1, 0, 42);
     uint8_t val[1 + 0 + 4 + 5 * 4];
     int len = build_deriv_val(val, sizeof(val), 0, 0x12345678, path, 5);
     assert_int_equal(len, (int) sizeof(val));
@@ -218,7 +219,7 @@ static void test_deriv_valid_n_hashes_0(void **state) {
 static void test_deriv_valid_n_hashes_2(void **state) {
     (void) state;
     uint32_t path[5];
-    make_bip86_path(path, 86, BIP44_COIN_TYPE, 0, 1, 7);
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 7);
     uint8_t val[1 + 64 + 4 + 5 * 4];
     int len = build_deriv_val(val, sizeof(val), 2, 0xCAFEBABE, path, 5);
     assert_int_equal(len, (int) sizeof(val));
@@ -516,7 +517,7 @@ static void test_payout_valid_1byte_csv(void **state) {
     uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
     uint8_t script[128];
     int len = build_payout_script(script, sizeof(script), key, 35, 0x42, csv_push, 2);
-    assert_true(len > 68);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
 
     uint8_t d_key[32];
     uint32_t csv = 0;
@@ -533,7 +534,7 @@ static void test_payout_valid_2byte_csv(void **state) {
     uint8_t csv_push[] = {OP_PUSHBYTES_2, 0xC0, 0x0F};
     uint8_t script[128];
     int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 3);
-    assert_true(len > 68);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
 
     uint8_t d_key[32];
     uint32_t csv = 0;
@@ -550,7 +551,7 @@ static void test_payout_valid_2byte_csv_with_sign_pad(void **state) {
     uint8_t csv_push[] = {OP_PUSHBYTES_2, 0x80, 0x00};
     uint8_t script[128];
     int len = build_payout_script(script, sizeof(script), key, 35, 0xFF, csv_push, 3);
-    assert_true(len > 68);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
 
     uint8_t d_key[32];
     uint32_t csv = 0;
@@ -570,7 +571,7 @@ static void test_payout_reject_too_short_at_68(void **state) {
     uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
     uint8_t script[128];
     int len = build_payout_script(script, sizeof(script), key, 31, 0x00, csv_push, 2);
-    assert_int_equal(len, 68);
+    assert_int_equal(len, VAULT_NOPAYOUT_LEAF_LEN);
 
     uint8_t d_key[32];
     uint32_t csv = 0;
@@ -626,7 +627,7 @@ static void test_payout_reject_csv_below_min(void **state) {
     uint8_t csv_push[] = {OP_PUSHBYTES_1, 89};
     uint8_t script[128];
     int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
-    assert_true(len > 68);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
 
     uint8_t d_key[32];
     uint32_t csv = 0;
@@ -641,7 +642,7 @@ static void test_payout_reject_csv_above_max(void **state) {
     uint8_t csv_push[] = {OP_PUSHBYTES_2, 0xC1, 0x0F};
     uint8_t script[128];
     int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 3);
-    assert_true(len > 68);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
 
     uint8_t d_key[32];
     uint32_t csv = 0;

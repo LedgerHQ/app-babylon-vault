@@ -39,7 +39,7 @@
 
 /* m/86'/1'/0'/0/0 — coin type matches BIP44_COIN_TYPE=1 */
 static const uint32_t VALID_PATH[5] = {
-    0x80000000u | 86u,
+    0x80000000u | BIP86_PURPOSE,
     0x80000000u | 1u,
     0x80000000u | 0u,
     0u,
@@ -424,7 +424,7 @@ static void test_tlv_depositor_path_coin_type_mismatch(void **state) {
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     /* path[1] = coin_type 99 ≠ BIP44_COIN_TYPE */
-    uint32_t bad_path[5] = { 0x80000000u|86u, 0x80000000u|99u, 0x80000000u, 0u, 0u };
+    uint32_t bad_path[5] = { 0x80000000u|BIP86_PURPOSE, 0x80000000u|99u, 0x80000000u, 0u, 0u };
     for (size_t i = 0; i + 3 <= len; ) {
         uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
         if (t == TAG_DEPOSITOR_DERIVATION_PATH) {
@@ -445,7 +445,7 @@ static void test_tlv_depositor_path_account_not_hardened(void **state) {
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     /* path[2] = 0 (not hardened) */
-    uint32_t bad_path[5] = { 0x80000000u|86u, 0x80000000u|1u, 0u, 0u, 0u };
+    uint32_t bad_path[5] = { 0x80000000u|BIP86_PURPOSE, 0x80000000u|1u, 0u, 0u, 0u };
     for (size_t i = 0; i + 3 <= len; ) {
         uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
         if (t == TAG_DEPOSITOR_DERIVATION_PATH) {

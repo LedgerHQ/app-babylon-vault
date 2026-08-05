@@ -18,6 +18,7 @@
 /* Direct-push pseudo-opcodes (0x01..0x4b): implicit in Bitcoin script encoding,
  * absent from the upstream opcodetype enum.  Bitcoin consensus constants —
  * these values are immutable (changing them would be a hard fork). */
+#define OP_1            0x51u /* SegWit version 1 (first byte of every P2TR scriptPubKey) */
 #define OP_PUSHBYTES_1  0x01u
 #define OP_PUSHBYTES_2  0x02u
 #define OP_PUSHBYTES_32 0x20u
@@ -27,6 +28,13 @@
 #define TAPSCRIPT_LEAF_VERSION      0xC0u /* BIP-341 tapscript leaf version */
 #define VAULT_SCRIPT_MAX_LEN        2560
 #define VAULT_P2TR_SCRIPTPUBKEY_LEN (2 + VAULT_XONLY_PUBKEY_LEN) /* OP_1 OP_PUSHBYTES_32 <key> */
+
+/** Byte length of the depositor-claim leaf: OP_PUSHBYTES_32 <D[32]> OP_CHECKSIG */
+#define VAULT_DEPOSITOR_CLAIM_LEAF_LEN (1u + VAULT_XONLY_PUBKEY_LEN + 1u)
+/** Byte length of the NoPayout / Assert:0 leaf: OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY
+ * OP_PUSHBYTES_32 <C> OP_CHECKSIG */
+#define VAULT_NOPAYOUT_LEAF_LEN \
+    (1u + VAULT_XONLY_PUBKEY_LEN + 1u + 1u + VAULT_XONLY_PUBKEY_LEN + 1u)
 
 /* --------------------------------------------------------------------------
  * Low-level taproot crypto primitives (implemented in vault_script.c)

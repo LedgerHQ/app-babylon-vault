@@ -15,16 +15,12 @@
 #include "cx.h"
 #include "../bitcoin_app_base/src/common/script.h"
 
-#define OP_PUSHBYTES_32 0x20u /* push exactly 32 bytes (x-only pubkey or hash) */
-
 /* Bitcoin compact-size (varint) prefix bytes */
 #define VARINT_PREFIX_2BYTE 0xFDu
 #define VARINT_PREFIX_4BYTE 0xFEu
 #define VARINT_PREFIX_8BYTE 0xFFu
 
-/* PegIn transaction serialization constants */
-#define PEGIN_TX_VERSION  3u          /* TRUC (BIP-431) v3; satisfies CSV (BIP-68) v>=2 */
-#define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
+/* PegIn transaction local constants */
 #define PEGIN_TX_LOCKTIME 0u
 /* 4(ver) + 1(in_cnt) + 41(input) + 1(out_cnt) + 43(vault) + 43(claim) + 13(P2A) + 4(lock) */
 #define PEGIN_TX_SIZE 150u /* exact non-witness serialization length */
@@ -711,7 +707,7 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     tx[off++] = 1u;
     /* prevout txid (LE as stored) */
     memcpy(tx + off, intent->prepegin_txid, VAULT_HASH256_LEN);
-    off += 32;
+    off += VAULT_HASH256_LEN;
     /* prevout index (LE) */
     tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout);
     tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout >> 8);
@@ -742,10 +738,10 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (P2A_ANCHOR_VALUE >> (i * 8));
     tx[off++] = 4u; /* script length */
-    tx[off++] = 0x51u;
-    tx[off++] = 0x02u;
-    tx[off++] = 0x4Eu;
-    tx[off++] = 0x73u;
+    tx[off++] = OP_1;
+    tx[off++] = OP_PUSHBYTES_2;
+    tx[off++] = P2A_WITNESS_PROG_BYTE0;
+    tx[off++] = P2A_WITNESS_PROG_BYTE1;
 
     /* locktime (LE) */
     tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME);
