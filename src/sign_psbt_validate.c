@@ -1396,6 +1396,12 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     G_vault_context.vault_group_index = (uint8_t) gi;
     G_vault_context.payout_index = (uint8_t) claimer_idx;
 
+    /* VP (claimer_idx == 0) must be signed before any other claimer. */
+    if (G_vault_context.payout_signed == 0 && claimer_idx != 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
     /* n_outputs: 3 for VP, 2 for all other claimers */
     const unsigned int expected_n_outputs = (claimer_idx == 0) ? 3u : 2u;
     if (st->n_outputs != expected_n_outputs) {
@@ -2853,15 +2859,25 @@ bool validate_and_display_transaction(
 
     vault_state_t state = G_vault_context.state;
 
+    /* PegIn: 1 input, 3 outputs, no wallet policy.
+     * Routed before the INTENT_LOADED gate so _validate_pegin can return SW_BAD_STATE
+     * when called without an active session, rather than falling through to the standalone
+     * leaf dispatcher which would return SW_INCORRECT_DATA for the HTLC leaf shape. */
+    if (st->has_no_wallet_policy && st->n_inputs == 1 && st->n_outputs == 3)
+        return _validate_pegin(dc, st);
+
+    /* NoPayout: 3 inputs, 1 output, no wallet policy.
+     * Routed before the INTENT_LOADED gate so _validate_nopayout can return SW_BAD_STATE
+     * when invoked without an active session rather than falling through to the leaf dispatcher. */
+    if (st->has_no_wallet_policy && st->n_inputs == 3 && st->n_outputs == 1)
+        return _validate_nopayout(dc, st);
+
     /* Intent-bound flows (no wallet policy, INTENT_LOADED):
-     *   NoPayout          — 3 inputs, 1 output
      *   Payout (all)      — 2 inputs; VP=3 outputs, VK/Depositor=2 outputs with Input 0 internal
-     *   PegIn             — 2 inputs, 3 outputs, Input 0 UTXO matches an HTLC scriptpubkey
      *   PayoutFinalize    — 2 inputs, 2 outputs, Input 0 external (routed after the block below)
      * Any other no-wallet-policy PSBT in INTENT_LOADED falls through to the
      * standalone leaf dispatch (Refund/Claim/Assert/WC also valid from this state). */
     if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy) {
-        if (st->n_inputs == 3 && st->n_outputs == 1) return _validate_nopayout(dc, st);
         /* Payout: 2 inputs, VP=3 outputs / VK+Depositor=2 outputs.
          * VK/Depositor Payout (2+2) is distinguished from PayoutFinalize (also 2+2) by
          * Input 0 being internal (device signs Input 0 for Payout) vs external for

@@ -1766,6 +1766,8 @@ def _build_payout_psbt(
     payout_timelock: int = _PAYOUT_TIMELOCK,
     fee: int = _PAYOUT_FEE,
     htlc_vout: int = _HTLC_VOUT,
+    fingerprint: Optional[bytes] = None,
+    coin_type: int = 0,
 ) -> PSBT:
     """Build a valid Payout PSBTv0 for the given claimer_idx.
 
@@ -1857,6 +1859,11 @@ def _build_payout_psbt(
 
     psbt.inputs[0].witness_utxo = CTxOut(vault_amount, vault_utxo_spk)
     psbt.inputs[0].tap_scripts[(vault_utxo_leaf, 0xC0)] = {vault_cb}
+    if fingerprint is not None:
+        psbt.inputs[0].tap_bip32_paths[depositor_pk] = (
+            {vault_leaf_hash},
+            KeyOriginInfo(fingerprint, depositor_path(coin_type)),
+        )
 
     psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, assert0_spk)
     psbt.inputs[1].tap_scripts[(assert0_leaf, 0xC0)] = {assert0_cb}
@@ -1914,22 +1921,28 @@ def test_sign_psbt_payout_vk(
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
+    fingerprint = client.get_master_fingerprint()
 
     _setup_payout_state(client, navigator, device, coin_type)
 
-    # VP payout — advances payout_index to 1
-    vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    # VP payout — advances payout_index to 1
+    vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0,
+                                 fingerprint=fingerprint, coin_type=coin_type)
     result = client.sign_psbt(vp_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
     # VK_1 payout — advances payout_index to 2
-    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
+    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1,
+                                 fingerprint=fingerprint, coin_type=coin_type)
     result = client.sign_psbt(vk_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
     # Depositor payout — last payout, payout_signed reaches N+2
-    dep_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=len(_TEST_KEEPER_PKS) + 1)
+    dep_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID,
+                                  claimer_idx=len(_TEST_KEEPER_PKS) + 1,
+                                  fingerprint=fingerprint, coin_type=coin_type)
     result = client.sign_psbt(dep_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
@@ -2342,7 +2355,12 @@ def _setup_signet_payout_state(
     client.sign_psbt(psbt, dummy_wallet, None)
 
 
-def _build_signet_payout_psbt(depositor_pk: bytes, claimer_idx: int) -> PSBT:
+def _build_signet_payout_psbt(
+    depositor_pk: bytes,
+    claimer_idx: int,
+    fingerprint: Optional[bytes] = None,
+    coin_type: int = 0,
+) -> PSBT:
     """Build a Payout PSBT for the signet vault (3 keepers, 3 challengers, timelock=432).
 
     VP (idx=0):          Out0=depositor(1_330_072), Out1=VP commission(13_443), Out2=VP CPFP(546).
@@ -2427,6 +2445,11 @@ def _build_signet_payout_psbt(depositor_pk: bytes, claimer_idx: int) -> PSBT:
     psbt.outputs = [PartiallySignedOutput(0)] * len(tx.vout)
     psbt.inputs[0].witness_utxo = CTxOut(_SIGNET_VAULT_AMOUNT, vault_utxo_spk)
     psbt.inputs[0].tap_scripts[(vault_utxo_leaf, 0xC0)] = {vault_cb}
+    if fingerprint is not None:
+        psbt.inputs[0].tap_bip32_paths[depositor_pk] = (
+            {vault_leaf_hash},
+            KeyOriginInfo(fingerprint, depositor_path(coin_type)),
+        )
     psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, assert0_spk)
     psbt.inputs[1].tap_scripts[(assert0_leaf, 0xC0)] = {assert0_cb}
     return psbt
@@ -2723,8 +2746,8 @@ def _build_nopayout_psbt(depositor_pk: bytes, challenger_pk: bytes) -> PSBT:
 
     Input 0: NoPayout leaf <D> OP_CHECKSIGVERIFY <Cj> OP_CHECKSIG (68 bytes),
              single-leaf P2TR (NUMS internal key), value=VAULT_DUST_LIMIT.
-    Inputs 1, 2: ChallengeAssert connectors — WITNESS_UTXO only (device ignores them).
-    Output 0: pays challenger (value and script not validated by device).
+    Inputs 1, 2: ChallengeAssert connectors — WITNESS_UTXO only (device ignores script).
+    Output 0: P2TR(key-path-tweak(challenger_pk)) — device verifies this exact scriptPubKey.
     """
     nopayout_leaf = bytes([0x20]) + depositor_pk + bytes([0xAD, 0x20]) + challenger_pk + bytes([0xAC])
     assert len(nopayout_leaf) == 68, f"NoPayout leaf must be exactly 68 bytes, got {len(nopayout_leaf)}"
@@ -2734,7 +2757,10 @@ def _build_nopayout_psbt(depositor_pk: bytes, challenger_pk: bytes) -> PSBT:
     nopayout_spk = bytes([0x51, 0x20]) + tweaked
     control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY
 
-    dummy_spk = bytes([0x51, 0x20]) + bytes(32)
+    # Output must pay P2TR(key-path-tweak(challenger_pk)) — validated by firmware.
+    _, ch_tweaked = taproot_tweak_pubkey(challenger_pk, b'')
+    out_spk = bytes([0x51, 0x20]) + ch_tweaked
+    connector_spk = bytes([0x51, 0x20]) + bytes(32)
 
     tx = CTransaction()
     tx.nVersion = 2
@@ -2743,7 +2769,7 @@ def _build_nopayout_psbt(depositor_pk: bytes, challenger_pk: bytes) -> PSBT:
     for i, fill in enumerate([b'\xcc', b'\xdd', b'\xee']):
         tx.vin[i].prevout = COutPoint(int.from_bytes(fill * 32, 'little'), 0)
         tx.vin[i].nSequence = 0xFFFFFFFF
-    tx.vout = [CTxOut(1000, dummy_spk)]
+    tx.vout = [CTxOut(1000, out_spk)]
     tx.wit = CTxWitness()
 
     psbt = PSBT()
@@ -2754,8 +2780,8 @@ def _build_nopayout_psbt(depositor_pk: bytes, challenger_pk: bytes) -> PSBT:
 
     psbt.inputs[0].witness_utxo = CTxOut(VAULT_DUST_LIMIT, nopayout_spk)
     psbt.inputs[0].tap_scripts[(nopayout_leaf, 0xC0)] = {control_block}
-    psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, dummy_spk)
-    psbt.inputs[2].witness_utxo = CTxOut(VAULT_DUST_LIMIT, dummy_spk)
+    psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, connector_spk)
+    psbt.inputs[2].witness_utxo = CTxOut(VAULT_DUST_LIMIT, connector_spk)
 
     return psbt
 
@@ -3242,7 +3268,7 @@ def test_sign_psbt_refund_wrong_sighash(
     ).pubkey[1:]
 
     psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
-    psbt.inputs[0].sighash_type = 1  # SIGHASH_ALL
+    psbt.inputs[0].sighash = 1  # SIGHASH_ALL
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
