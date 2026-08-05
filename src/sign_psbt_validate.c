@@ -2446,7 +2446,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
      * no scripts, and we verify the tweaked key against WITNESS_UTXO below —
      * a script-derived alternative SPK would fail that check. */
     {
-        uint8_t dummy[1];
+        uint8_t dummy[32];
         if (call_get_merkleized_map_value(dc,
                                           &input_map,
                                           (uint8_t[]) {PSBT_IN_TAP_MERKLE_ROOT},
