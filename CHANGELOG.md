@@ -145,6 +145,34 @@ and returns the new `SW_CAP_EXCEEDED` status word.
 - NoPayout cap violation now returns `SW_CAP_EXCEEDED` (`0xB00A`) instead of
   `SW_BAD_STATE` (`0xB007`).  Hosts must update their error handling accordingly.
 
+### Fixed
+
+- **NoPayout dispatch without active intent** (`sign_psbt_validate.c`): 3-in/1-out
+  no-wallet-policy route moved before the `INTENT_LOADED` guard; was falling through
+  to the leaf dispatcher and returning `SW_INCORRECT_DATA` instead of `SW_BAD_STATE`.
+- **PegIn dispatch without active intent** (`sign_psbt_validate.c`): 1-in/3-out
+  no-wallet-policy route likewise moved before the `INTENT_LOADED` guard.  HTLC Leaf 0
+  begins with `OP_SIZE` (`0x82`), not `OP_PUSHBYTES_32`, so the leaf dispatcher returned
+  `SW_INCORRECT_DATA` instead of the expected `SW_BAD_STATE`.
+- **VP-first payout ordering enforced** (`_validate_payout`): Added check
+  `payout_signed == 0 && claimer_idx != 0 → SW_INCORRECT_DATA`; VP must be signed before
+  any VK or Depositor claimer.  Previously the ordering requirement was unimplemented and
+  a host could sign out-of-order claimers.
+- **`_build_payout_psbt` / `_build_signet_payout_psbt` Input 0 derivation info** (`tests/`):
+  Added optional `fingerprint` / `coin_type` parameters; sets `PSBT_IN_TAP_BIP32_DERIVATION`
+  on Input 0 so the device marks it as internal (`bitvector_get(internal_inputs, 0) = 1`).
+  Without this, VK/Depositor 2-output payout PSBTs were silently misrouted to the
+  PayoutFinalize path; all VK and Depositor test callers updated accordingly.
+- **`test_sign_psbt_payout_vp_reduced_commission`** (`tests/`): Corrected from expecting
+  success to expecting `SW_INCORRECT_DATA`; reflects the exact-match commission check
+  documented in the Security section above.
+- **`_build_nopayout_psbt` output SPK** (`tests/`): Output 0 corrected to
+  `P2TR(key-path-tweak(challenger_pk))`; the all-zero placeholder failed the firmware's
+  output-script check.
+- **`test_sign_psbt_refund_wrong_sighash` hang** (`tests/`): `sighash_type` (phantom
+  attribute, silently ignored) corrected to `sighash`; the absent sighash field caused
+  firmware to bypass the check and block on the display call.
+
 ## [0.9.2] - NAPPS-1464: PayoutFinalize depositor self-claim (Screen 8)
 
 Adds Screen 8 — the depositor reclaims their deposit after the Claim+Assert chain by
