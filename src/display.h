@@ -125,8 +125,7 @@ bool display_pop_transaction(dispatcher_context_t *dc,
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
-bool display_nopayout_transaction(dispatcher_context_t *dc,
-                                  uint8_t challenger_idx);
+bool display_nopayout_transaction(dispatcher_context_t *dc, uint8_t challenger_idx);
 
 /**
  * @brief Screen 8 — Payout finalize review.

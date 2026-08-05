@@ -403,8 +403,7 @@ static nbgl_contentTagValue_t *_nopayout_key_pair_callback(uint8_t pairIndex) {
 }
 
 static void nopayout_stream_finish(void) {
-    nbgl_useCaseReviewStreamingFinish("Sign NoPayout\ntransaction?",
-                                      review_choice);
+    nbgl_useCaseReviewStreamingFinish("Sign NoPayout\ntransaction?", review_choice);
 }
 
 static void nopayout_after_keys(bool confirm) {
@@ -420,9 +419,7 @@ static void nopayout_stream_intro_choice(bool confirm) {
         review_choice(false);
         return;
     }
-    nbgl_useCaseReviewStreamingContinueExt(&g_nopayout_keys_list,
-                                           nopayout_after_keys,
-                                           NULL);
+    nbgl_useCaseReviewStreamingContinueExt(&g_nopayout_keys_list, nopayout_after_keys, NULL);
 }
 
 bool display_nopayout_transaction(dispatcher_context_t *dc, uint8_t challenger_idx) {
