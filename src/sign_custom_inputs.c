@@ -359,10 +359,11 @@ bool sign_custom_inputs(
      * the two phases would produce a sighash committing to a leaf hash absent from
      * the script tree — an unusable signature (DoS only, no fund redirection).
      * ----------------------------------------------------------------------- */
-    /* VK/Depositor Payout (2+2, Input 0 internal) falls through to the standalone
-     * section below, which signs Input 0 from its TAP_LEAF_SCRIPT. */
-    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2 &&
-        !bitvector_get(internal_inputs, 0)) {
+    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
+        /* Signing must not silently rely on the validation-phase check: re-assert the
+         * invariant so this remains safe if validation and signing are ever decoupled. */
+        LEDGER_ASSERT(!bitvector_get(internal_inputs, 0),
+                      "PayoutFinalize: Input 0 must be external");
         merkleized_map_commitment_t input1_map;
         if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
 
