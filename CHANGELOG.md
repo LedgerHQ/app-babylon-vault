@@ -158,11 +158,12 @@ and returns the new `SW_CAP_EXCEEDED` status word.
   `payout_signed == 0 && claimer_idx != 0 → SW_INCORRECT_DATA`; VP must be signed before
   any VK or Depositor claimer.  Previously the ordering requirement was unimplemented and
   a host could sign out-of-order claimers.
-- **`_build_payout_psbt` / `_build_signet_payout_psbt` Input 0 derivation info** (`tests/`):
-  Added optional `fingerprint` / `coin_type` parameters; sets `PSBT_IN_TAP_BIP32_DERIVATION`
-  on Input 0 so the device marks it as internal (`bitvector_get(internal_inputs, 0) = 1`).
-  Without this, VK/Depositor 2-output payout PSBTs were silently misrouted to the
-  PayoutFinalize path; all VK and Depositor test callers updated accordingly.
+- **VK/Depositor Payout routing** (`sign_psbt_validate.c`): The `bitvector_get(internal_inputs, 0)`
+  test is always zero for no-wallet-policy flows (`preprocess_inputs` only sets internal-input
+  bits for wallet-policy inputs).  Routing for the ambiguous 2-in/2-out case now peeks at
+  Input 0's `PSBT_IN_PREVIOUS_TXID` and compares it against `vault_compute_pegin_txid` for
+  every vault group; a match routes to `_validate_payout`, a mismatch falls through to
+  `_validate_display_payout_finalize`.
 - **`test_sign_psbt_payout_vp_reduced_commission`** (`tests/`): Corrected from expecting
   success to expecting `SW_INCORRECT_DATA`; reflects the exact-match commission check
   documented in the Security section above.

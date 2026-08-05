@@ -2873,17 +2873,46 @@ bool validate_and_display_transaction(
         return _validate_nopayout(dc, st);
 
     /* Intent-bound flows (no wallet policy, INTENT_LOADED):
-     *   Payout (all)      — 2 inputs; VP=3 outputs, VK/Depositor=2 outputs with Input 0 internal
+     *   Payout (all)      — 2 inputs; VP=3 outputs, VK/Depositor=2 outputs
      *   PayoutFinalize    — 2 inputs, 2 outputs, Input 0 external (routed after the block below)
      * Any other no-wallet-policy PSBT in INTENT_LOADED falls through to the
      * standalone leaf dispatch (Refund/Claim/Assert/WC also valid from this state). */
     if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy) {
         /* Payout: 2 inputs, VP=3 outputs / VK+Depositor=2 outputs.
-         * VK/Depositor Payout (2+2) is distinguished from PayoutFinalize (also 2+2) by
-         * Input 0 being internal (device signs Input 0 for Payout) vs external for
-         * PayoutFinalize (device signs Input 1). PayoutFinalize is routed below. */
-        if (st->n_inputs == 2 && (st->n_outputs != 2 || bitvector_get(internal_inputs, 0)))
-            return _validate_payout(dc, st);
+         * VP (n_outputs==3) is unambiguous.
+         * VK/Depositor (n_outputs==2) is distinguished from PayoutFinalize (also 2+2) by
+         * Input 0 PREVIOUS_TXID matching a vault_compute_pegin_txid for some group.
+         * bitvector_get(internal_inputs, 0) cannot be used because internal_inputs is
+         * always zero for no-wallet-policy flows (preprocess_inputs only sets bits for
+         * wallet-policy inputs). */
+        if (st->n_inputs == 2) {
+            if (st->n_outputs != 2) {
+                return _validate_payout(dc, st);
+            }
+            /* n_outputs==2: peek at Input 0 PREVIOUS_TXID to distinguish Payout from
+             * PayoutFinalize.  vault_compute_pegin_txid uses G_scratch.script_scratch
+             * transiently; _validate_payout repeats the computation internally. */
+            {
+                merkleized_map_commitment_t peek_map;
+                uint8_t psbt_txid[VAULT_HASH256_LEN];
+                if (call_get_merkleized_map(dc, st->inputs_root, 2, 0, &peek_map) >= 0 &&
+                    VAULT_HASH256_LEN ==
+                        call_get_merkleized_map_value(dc,
+                                                      &peek_map,
+                                                      (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                      1,
+                                                      psbt_txid,
+                                                      VAULT_HASH256_LEN)) {
+                    uint8_t computed[VAULT_HASH256_LEN];
+                    for (uint8_t g = 0; g < G_vault_intent.vault_count; g++) {
+                        if (vault_compute_pegin_txid(&G_vault_intent, g, computed) &&
+                            memcmp(psbt_txid, computed, VAULT_HASH256_LEN) == 0)
+                            return _validate_payout(dc, st);
+                    }
+                }
+            }
+            /* TXID mismatch: Input 0 is not a Vault UTXO → PayoutFinalize, fall through */
+        }
 
         /* PegIn detection: check Input 0 witness UTXO against all HTLC scriptpubkeys.
          * vault_build_htlc_scriptpubkey uses G_scratch.script_scratch transiently;

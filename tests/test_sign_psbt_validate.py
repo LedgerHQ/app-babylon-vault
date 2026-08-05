@@ -1766,8 +1766,6 @@ def _build_payout_psbt(
     payout_timelock: int = _PAYOUT_TIMELOCK,
     fee: int = _PAYOUT_FEE,
     htlc_vout: int = _HTLC_VOUT,
-    fingerprint: Optional[bytes] = None,
-    coin_type: int = 0,
 ) -> PSBT:
     """Build a valid Payout PSBTv0 for the given claimer_idx.
 
@@ -1859,11 +1857,6 @@ def _build_payout_psbt(
 
     psbt.inputs[0].witness_utxo = CTxOut(vault_amount, vault_utxo_spk)
     psbt.inputs[0].tap_scripts[(vault_utxo_leaf, 0xC0)] = {vault_cb}
-    if fingerprint is not None:
-        psbt.inputs[0].tap_bip32_paths[depositor_pk] = (
-            {vault_leaf_hash},
-            KeyOriginInfo(fingerprint, depositor_path(coin_type)),
-        )
 
     psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, assert0_spk)
     psbt.inputs[1].tap_scripts[(assert0_leaf, 0xC0)] = {assert0_cb}
@@ -1921,28 +1914,24 @@ def test_sign_psbt_payout_vk(
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
-    fingerprint = client.get_master_fingerprint()
 
     _setup_payout_state(client, navigator, device, coin_type)
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     # VP payout — advances payout_index to 1
-    vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0,
-                                 fingerprint=fingerprint, coin_type=coin_type)
+    vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
     result = client.sign_psbt(vp_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
     # VK_1 payout — advances payout_index to 2
-    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1,
-                                 fingerprint=fingerprint, coin_type=coin_type)
+    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
     result = client.sign_psbt(vk_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
     # Depositor payout — last payout, payout_signed reaches N+2
     dep_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID,
-                                  claimer_idx=len(_TEST_KEEPER_PKS) + 1,
-                                  fingerprint=fingerprint, coin_type=coin_type)
+                                  claimer_idx=len(_TEST_KEEPER_PKS) + 1)
     result = client.sign_psbt(dep_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
@@ -1978,13 +1967,11 @@ def test_sign_psbt_payout_wrong_claimer_order(
     """Payout fails when VK PSBT is presented before VP (claimer ordering enforced)."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
-    fingerprint = client.get_master_fingerprint()
 
     _setup_payout_state(client, navigator, device, coin_type)
 
     # Attempt VK_1 payout without signing VP first (payout_index == 0 expects VP)
-    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1,
-                                 fingerprint=fingerprint, coin_type=coin_type)
+    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(vk_psbt, dummy_wallet, None)
@@ -2361,8 +2348,6 @@ def _setup_signet_payout_state(
 def _build_signet_payout_psbt(
     depositor_pk: bytes,
     claimer_idx: int,
-    fingerprint: Optional[bytes] = None,
-    coin_type: int = 0,
 ) -> PSBT:
     """Build a Payout PSBT for the signet vault (3 keepers, 3 challengers, timelock=432).
 
@@ -2448,11 +2433,6 @@ def _build_signet_payout_psbt(
     psbt.outputs = [PartiallySignedOutput(0)] * len(tx.vout)
     psbt.inputs[0].witness_utxo = CTxOut(_SIGNET_VAULT_AMOUNT, vault_utxo_spk)
     psbt.inputs[0].tap_scripts[(vault_utxo_leaf, 0xC0)] = {vault_cb}
-    if fingerprint is not None:
-        psbt.inputs[0].tap_bip32_paths[depositor_pk] = (
-            {vault_leaf_hash},
-            KeyOriginInfo(fingerprint, depositor_path(coin_type)),
-        )
     psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, assert0_spk)
     psbt.inputs[1].tap_scripts[(assert0_leaf, 0xC0)] = {assert0_cb}
     return psbt
@@ -2473,14 +2453,12 @@ def test_sign_psbt_payout_signet_params(
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
-    fingerprint = client.get_master_fingerprint()
 
     _setup_signet_payout_state(client, navigator, device, coin_type)
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     for ci in range(len(_SIGNET_KEEPER_PKS) + 2):  # 0=VP, 1..3=VK, 4=Depositor
-        psbt = _build_signet_payout_psbt(dep_pk, claimer_idx=ci,
-                                         fingerprint=fingerprint, coin_type=coin_type)
+        psbt = _build_signet_payout_psbt(dep_pk, claimer_idx=ci)
         result = client.sign_psbt(psbt, dummy_wallet, None)
         _assert_single_schnorr_sig(result, dep_pk)
 
@@ -2594,19 +2572,16 @@ def test_sign_psbt_payout_vk_wrong_cpfp_anchor_key(
     """VK CPFP anchor is value-only in v22; wrong scriptPubKey key is accepted."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
-    fingerprint = client.get_master_fingerprint()
 
     _setup_payout_state(client, navigator, device, coin_type)
 
     # VP payout first to advance payout_index to 1 (VK turn).
-    vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0,
-                                 fingerprint=fingerprint, coin_type=coin_type)
+    vp_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     client.sign_psbt(vp_psbt, dummy_wallet, None)
 
     # VK payout with a tampered CPFP anchor key — accepted in v22 (value-only check).
-    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1,
-                                 fingerprint=fingerprint, coin_type=coin_type)
+    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
     wrong_key = TEST_VALID_KEYS[2]
     vk_psbt.tx.vout[1] = CTxOut(VAULT_DUST_LIMIT, _bip86_p2tr_spk(wrong_key))
 
@@ -2632,7 +2607,6 @@ def test_sign_psbt_payout_3vault_batch(
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
-    fingerprint = client.get_master_fingerprint()
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     # Derive root and approve a 3-vault intent with uniform group parameters.
@@ -2679,14 +2653,12 @@ def test_sign_psbt_payout_3vault_batch(
     # claimer_idx: 0=VP, 1..keeper_count=VK_i, keeper_count+1=Depositor.
     for gi in range(3):
         for ci in range(len(_TEST_KEEPER_PKS) + 2):  # 0=VP, 1=VK_1, 2=Depositor
-            psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci, htlc_vout=gi,
-                                      fingerprint=fingerprint, coin_type=coin_type)
+            psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci, htlc_vout=gi)
             result = client.sign_psbt(psbt, dummy_wallet, None)
             _assert_single_schnorr_sig(result, dep_pk)
 
     # payout_signed cap is now reached; any further payout must be rejected.
-    extra_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0, htlc_vout=0,
-                                    fingerprint=fingerprint, coin_type=coin_type)
+    extra_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0, htlc_vout=0)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(extra_psbt, dummy_wallet, None)
     assert exc.value.status == SW_CAP_EXCEEDED
@@ -2705,21 +2677,18 @@ def test_sign_psbt_payout_depositor(
     """Depositor claimer (idx=keeper_count+1): both Out0 and Out1 are script-verified BIP-86 P2TR(D)."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
-    fingerprint = client.get_master_fingerprint()
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     _setup_payout_state(client, navigator, device, coin_type)
 
     # Advance past VP and all VK claimers
     for ci in range(len(_TEST_KEEPER_PKS) + 1):
-        psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci,
-                                  fingerprint=fingerprint, coin_type=coin_type)
+        psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci)
         client.sign_psbt(psbt, dummy_wallet, None)
 
     # Depositor payout — claimer_idx = keeper_count + 1
     dep_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID,
-                                  claimer_idx=len(_TEST_KEEPER_PKS) + 1,
-                                  fingerprint=fingerprint, coin_type=coin_type)
+                                  claimer_idx=len(_TEST_KEEPER_PKS) + 1)
     result = client.sign_psbt(dep_psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
@@ -2733,21 +2702,18 @@ def test_sign_psbt_payout_depositor_wrong_cpfp_anchor_key(
     """Depositor payout: wrong Out1 scriptPubKey returns SW_BAD_CPFP_ANCHOR (0xB009)."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
-    fingerprint = client.get_master_fingerprint()
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     _setup_payout_state(client, navigator, device, coin_type)
 
     # Advance past VP and all VK claimers
     for ci in range(len(_TEST_KEEPER_PKS) + 1):
-        psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci,
-                                  fingerprint=fingerprint, coin_type=coin_type)
+        psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci)
         client.sign_psbt(psbt, dummy_wallet, None)
 
     # Depositor payout with tampered Out1 (wrong anchor key) → SW_BAD_CPFP_ANCHOR
     dep_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID,
-                                  claimer_idx=len(_TEST_KEEPER_PKS) + 1,
-                                  fingerprint=fingerprint, coin_type=coin_type)
+                                  claimer_idx=len(_TEST_KEEPER_PKS) + 1)
     wrong_key = TEST_VALID_KEYS[2]
     dep_psbt.tx.vout[1] = CTxOut(VAULT_DUST_LIMIT, _bip86_p2tr_spk(wrong_key))
 
