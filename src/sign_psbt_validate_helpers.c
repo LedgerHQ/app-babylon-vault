@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "vault_constants.h"
+
 /* read_u32_le comes from ledger-secure-sdk/lib_standard_app/read.h (device build)
  * or unit-tests/mocks/read.h (test build). */
 #include "read.h"
@@ -143,4 +145,51 @@ bool parse_refund_leaf_script(const uint8_t *script,
 
     *csv_value_out = csv;
     return true;
+}
+
+bool parse_payout_leaf_script(const uint8_t *script,
+                              int script_len,
+                              uint8_t d_key_out[VAULT_XONLY_PUBKEY_LEN],
+                              uint32_t *csv_value_out) {
+    /* Payout leaf: <OP_PUSHBYTES_32>(1) <D>(32) <OP_CHECKSIGVERIFY>(1)
+     *              [multisig groups] <t2-push> <OP_CSV>(1).
+     * Minimum length is well above 68 bytes for any valid leaf configuration;
+     * > 68 distinguishes this from the 68-byte Assert leaf. */
+    if (script_len <= 68) return false;
+    if (script[0] != OP_PUSHBYTES_32) return false;
+    if (script[33] != (uint8_t) OP_CHECKSIGVERIFY) return false;
+    if ((uint8_t) script[script_len - 1] != (uint8_t) OP_CHECKSEQUENCEVERIFY) return false;
+
+    memcpy(d_key_out, script + 1, VAULT_XONLY_PUBKEY_LEN);
+
+    /* Decode t2 from the tail.  _push_number(t2) for t2 in [VAULT_PAYOUT_TIMELOCK_MIN,
+     * VAULT_PAYOUT_TIMELOCK_MAX] produces either:
+     *   OP_PUSHBYTES_1 (0x01) + 1 data byte  for t2 in [17, 127]  (min >= 90)
+     *   OP_PUSHBYTES_2 (0x02) + 2 data bytes for t2 in [128, ...] (LE, zero sign pad)
+     * Both encodings require at least 4 bytes before the end of script.
+     * OP_PUSHBYTES_2 cannot appear in multisig N-of-N thresholds (those use OP_N
+     * opcodes 0x51-0x60 for N<=16, or OP_PUSHBYTES_1 for N>16), so the push
+     * opcode immediately before <t2 data> <OP_CSV> is unambiguous. */
+    uint32_t t2 = 0;
+    /* Try 2-byte LE CScriptNum (t2 in [128, VAULT_PAYOUT_TIMELOCK_MAX]):
+     * last 4 bytes: [OP_PUSHBYTES_2] [lo] [hi] [OP_CSV]
+     * Sign bit must be clear in the high byte (hi & 0x80 == 0 means positive). */
+    if ((uint8_t) script[script_len - 4] == OP_PUSHBYTES_2 && !(script[script_len - 2] & 0x80u)) {
+        t2 = (uint32_t) (uint8_t) script[script_len - 3] |
+             ((uint32_t) (uint8_t) script[script_len - 2] << 8);
+        if (t2 >= VAULT_PAYOUT_TIMELOCK_MIN && t2 <= VAULT_PAYOUT_TIMELOCK_MAX) {
+            *csv_value_out = t2;
+            return true;
+        }
+    }
+    /* Try 1-byte CScriptNum (t2 in [VAULT_PAYOUT_TIMELOCK_MIN, 127]):
+     * last 3 bytes: [OP_PUSHBYTES_1] [value] [OP_CSV] */
+    if ((uint8_t) script[script_len - 3] == OP_PUSHBYTES_1) {
+        t2 = (uint32_t) (uint8_t) script[script_len - 2];
+        if (t2 >= VAULT_PAYOUT_TIMELOCK_MIN && t2 <= VAULT_PAYOUT_TIMELOCK_MAX && t2 <= 127u) {
+            *csv_value_out = t2;
+            return true;
+        }
+    }
+    return false;
 }

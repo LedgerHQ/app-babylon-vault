@@ -478,6 +478,177 @@ static void test_refund_reject_missing_csv_opcode(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
+ * parse_payout_leaf_script — helpers
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Build a syntactically valid payout leaf:
+ *   OP_PUSHBYTES_32 <key[32]> OP_CHECKSIGVERIFY <filler[filler_len]> <csv_push> OP_CSV
+ * Total length must be > 68.  The filler bytes stand in for the multisig groups.
+ */
+static int build_payout_script(uint8_t *buf, size_t buf_len,
+                                const uint8_t key[32],
+                                int filler_len,
+                                uint8_t filler_byte,
+                                const uint8_t *csv_push, int csv_push_len) {
+    int total = 1 + 32 + 1 + filler_len + csv_push_len + 1;
+    if ((size_t) total > buf_len) return -1;
+    int pos = 0;
+    buf[pos++] = OP_PUSHBYTES_32;
+    memcpy(buf + pos, key, 32); pos += 32;
+    buf[pos++] = OP_CHECKSIGVERIFY;
+    memset(buf + pos, filler_byte, (size_t) filler_len); pos += filler_len;
+    memcpy(buf + pos, csv_push, (size_t) csv_push_len); pos += csv_push_len;
+    buf[pos++] = OP_CHECKSEQUENCEVERIFY;
+    return total;
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_payout_leaf_script — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+static void test_payout_valid_1byte_csv(void **state) {
+    /* t2 = 90 (VAULT_PAYOUT_TIMELOCK_MIN), 1-byte push: OP_PUSHBYTES_1 0x5A */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    /* filler = 35 bytes → total = 34 + 35 + 2 + 1 = 72 > 68 */
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x42, csv_push, 2);
+    assert_true(len > 68);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_true(parse_payout_leaf_script(script, len, d_key, &csv));
+    assert_memory_equal(d_key, key, 32);
+    assert_int_equal((int) csv, 90);
+}
+
+static void test_payout_valid_2byte_csv(void **state) {
+    /* t2 = 4032 (VAULT_PAYOUT_TIMELOCK_MAX), 2-byte push: OP_PUSHBYTES_2 0xC0 0x0F */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xBB, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0xC0, 0x0F};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 3);
+    assert_true(len > 68);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_true(parse_payout_leaf_script(script, len, d_key, &csv));
+    assert_memory_equal(d_key, key, 32);
+    assert_int_equal((int) csv, 4032);
+}
+
+static void test_payout_valid_2byte_csv_with_sign_pad(void **state) {
+    /* t2 = 128 → _push_number emits: OP_PUSHBYTES_2 0x80 0x00 (sign-pad zero) */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xCC, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0x80, 0x00};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0xFF, csv_push, 3);
+    assert_true(len > 68);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_true(parse_payout_leaf_script(script, len, d_key, &csv));
+    assert_int_equal((int) csv, 128);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_payout_leaf_script — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_payout_reject_too_short_at_68(void **state) {
+    /* Exactly 68 bytes must be rejected (Assert leaf length) */
+    (void) state;
+    uint8_t key[32] = {0};
+    /* filler = 32 bytes → total = 34 + 32 + 1 + 1 = 68 */
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 31, 0x00, csv_push, 2);
+    assert_int_equal(len, 68);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_wrong_first_byte(void **state) {
+    /* OP_PUSHBYTES_33 instead of OP_PUSHBYTES_32: key not at expected position */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    script[0] = OP_PUSHBYTES_33; /* wrong push size */
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_wrong_opcode_at_33(void **state) {
+    /* OP_CHECKSIG instead of OP_CHECKSIGVERIFY at position 33 */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    script[33] = OP_CHECKSIG; /* should be OP_CHECKSIGVERIFY */
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_wrong_last_opcode(void **state) {
+    /* No OP_CSV at the end */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    script[len - 1] = OP_CHECKSIG; /* corrupt: replace OP_CSV with OP_CHECKSIG */
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_csv_below_min(void **state) {
+    /* t2 = 89 < VAULT_PAYOUT_TIMELOCK_MIN (90): below valid timelock range */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 89};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    assert_true(len > 68);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_csv_above_max(void **state) {
+    /* t2 = 4033 > VAULT_PAYOUT_TIMELOCK_MAX (4032): above valid timelock range */
+    (void) state;
+    uint8_t key[32] = {0};
+    /* 4033 = 0x0FC1; LE: 0xC1 0x0F; sign bit clear (0x0F & 0x80 == 0) → OP_PUSHBYTES_2 */
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0xC1, 0x0F};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 3);
+    assert_true(len > 68);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+/* ---------------------------------------------------------------------------
  * _pegin_validate_outputs fee arithmetic — overflow guards
  *
  * The two-step overflow-safe addition in _pegin_validate_outputs is a private
@@ -561,6 +732,17 @@ int main(void) {
         cmocka_unit_test(test_refund_reject_csv_unknown_opcode),
         cmocka_unit_test(test_refund_reject_extra_bytes_after_csv),
         cmocka_unit_test(test_refund_reject_missing_csv_opcode),
+
+        /* parse_payout_leaf_script */
+        cmocka_unit_test(test_payout_valid_1byte_csv),
+        cmocka_unit_test(test_payout_valid_2byte_csv),
+        cmocka_unit_test(test_payout_valid_2byte_csv_with_sign_pad),
+        cmocka_unit_test(test_payout_reject_too_short_at_68),
+        cmocka_unit_test(test_payout_reject_wrong_first_byte),
+        cmocka_unit_test(test_payout_reject_wrong_opcode_at_33),
+        cmocka_unit_test(test_payout_reject_wrong_last_opcode),
+        cmocka_unit_test(test_payout_reject_csv_below_min),
+        cmocka_unit_test(test_payout_reject_csv_above_max),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

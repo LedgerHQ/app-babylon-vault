@@ -358,6 +358,122 @@ bool sign_custom_inputs(
     }
 
     /* -----------------------------------------------------------------------
+     * PayoutFinalize (Screen 8): standalone flow that signs Input 1, not Input 0.
+     *
+     * The payout leaf is on Input 1; Input 0 (Assert:0) carries no signing request.
+     * Re-read Input 1's TAP_LEAF_SCRIPT via vault_read_payout_leaf_script because
+     * display_payout_finalize clobbered G_scratch.tls.  Signing proceeds identically
+     * to other standalone flows except the input index is 1.
+     *
+     * The Taproot control block is not re-verified here.  It was verified in
+     * _validate_display_payout_finalize; any leaf substituted by the host between
+     * the two phases would produce a sighash committing to a leaf hash absent from
+     * the script tree — an unusable signature (DoS only, no fund redirection).
+     * ----------------------------------------------------------------------- */
+    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
+        /* Signing must not silently rely on the validation-phase check: re-assert the
+         * invariant so this remains safe if validation and signing are ever decoupled. */
+        LEDGER_ASSERT(!bitvector_get(internal_inputs, 0),
+                      "PayoutFinalize: Input 0 must be external");
+        merkleized_map_commitment_t input1_map;
+        if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
+
+        /* Phase 1: consume G_scratch.tls, populate G_scratch.sign_standalone.
+         * Aliasing rules are the same as the standalone section below. */
+        vault_taproot_leaf_hash(G_scratch.tls.leaf_script,
+                                G_scratch.tls.leaf_script_len,
+                                G_scratch.sign_standalone.leaf_hash);
+
+        if (G_scratch.tls.leaf_script_len <= 68 ||
+            G_scratch.tls.leaf_script[0] != OP_PUSHBYTES_32) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        memcpy(G_scratch.sign_standalone.leaf_key,
+               G_scratch.tls.leaf_script + 1,
+               VAULT_XONLY_PUBKEY_LEN);
+
+        if (!read_p2tr_witness_utxo(dc, &input1_map, NULL, G_scratch.sign_standalone.input_spk)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        /* Phase 2: BIP-32 derivation + key verification */
+        G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
+        memcpy(G_scratch.sign_standalone.deriv_key + 1,
+               G_scratch.sign_standalone.leaf_key,
+               VAULT_XONLY_PUBKEY_LEN);
+
+        int deriv_len = call_get_merkleized_map_value(dc,
+                                                      &input1_map,
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      sizeof(G_scratch.sign_standalone.deriv_key),
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
+        if (deriv_len < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint32_t fingerprint;
+        int path_len = parse_tap_bip32_deriv_value(G_scratch.sign_standalone.deriv_val,
+                                                   deriv_len,
+                                                   &fingerprint,
+                                                   G_scratch.sign_standalone.sign_path,
+                                                   VAULT_STANDALONE_PATH_LEN);
+        if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
+            !check_bip86_path(G_scratch.sign_standalone.sign_path, path_len)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        serialized_extended_pubkey_t *xpub =
+            (serialized_extended_pubkey_t *) G_scratch.sign_standalone.xpub_bytes;
+        if (get_extended_pubkey_at_path(G_scratch.sign_standalone.sign_path,
+                                        (uint8_t) path_len,
+                                        BIP32_PUBKEY_VERSION,
+                                        xpub) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (memcmp(xpub->compressed_pubkey + 1,
+                   G_scratch.sign_standalone.leaf_key,
+                   VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        if (!compute_sighash_segwitv1(dc,
+                                      st,
+                                      tx_hashes,
+                                      &input1_map,
+                                      1,
+                                      G_scratch.sign_standalone.input_spk,
+                                      VAULT_P2TR_SCRIPTPUBKEY_LEN,
+                                      G_scratch.sign_standalone.leaf_hash,
+                                      SIGHASH_DEFAULT,
+                                      G_scratch.sign_standalone.sighash)) {
+            return false; /* SW already sent by callee */
+        }
+
+        if (!sign_sighash_schnorr_and_yield(dc,
+                                            st,
+                                            1,
+                                            G_scratch.sign_standalone.sign_path,
+                                            (size_t) path_len,
+                                            NULL,
+                                            0,
+                                            G_scratch.sign_standalone.leaf_hash,
+                                            SIGHASH_DEFAULT,
+                                            G_scratch.sign_standalone.sighash)) {
+            return false; /* SW already sent by callee */
+        }
+
+        return true;
+    }
+
+    /* -----------------------------------------------------------------------
      * Standalone flows: Refund, Claim (Screen 4), Assert (Screen 5), WC (Screen 6),
      * and WC-with-wallet (has_no_wallet_policy == false, Input 0 external).
      *

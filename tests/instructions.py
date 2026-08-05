@@ -354,3 +354,46 @@ def sign_psbt_pop_reject_nav(device: Device) -> List[NavInsID]:
         NavInsID.USE_CASE_REVIEW_REJECT,
         NavInsID.USE_CASE_CHOICE_CONFIRM,
     ]
+
+
+def sign_psbt_payout_finalize_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 8 (PayoutFinalize) — Nano devices only.
+
+    Touch devices should use sign_psbt_payout_finalize_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_payout_finalize_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 8 (PayoutFinalize) — touch devices.
+
+    Screen 8 shows 2 fields: "Amount received" and "Your address".
+    Both Stax and Flex/Apex render in 2 pages (intro + content), matching the
+    WC (Screen 6) layout pattern.
+    """
+    assert not device.is_nano, "Nano uses sign_psbt_payout_finalize_approve_instructions"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_payout_finalize_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 8 (PayoutFinalize) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_payout_finalize_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 8 (PayoutFinalize) — touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]
