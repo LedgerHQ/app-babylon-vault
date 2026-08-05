@@ -1868,7 +1868,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         return false;
     }
 
-    if (!display_nopayout_transaction(dc, (uint8_t) challenger_idx, challenger_xonly)) return false;
+    if (!display_nopayout_transaction(dc, (uint8_t) challenger_idx)) return false;
     return true;
 }
 

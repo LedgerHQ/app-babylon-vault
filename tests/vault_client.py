@@ -457,6 +457,12 @@ def approve_vault_intent_with_nav(
                     test_case_name=test_case_name,
                     screen_change_before_first_instruction=False,
                 )
+        elif n_swipes is not None:
+            navigator.navigate(
+                instructions=vault_intent_approve_instructions(device, n_swipes),
+                screen_change_before_first_instruction=True,
+                screen_change_after_last_instruction=False,
+            )
         else:
             navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
             navigator.navigate_until_text(

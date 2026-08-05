@@ -26,6 +26,23 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
     return 1 + 1 + 2 * extra + 2 * challenger_count + 2
 
 
+def vault_intent_steps_for_keys(device: Device, total_keys: int) -> int:
+    """n_swipes for a single vault with total_keys key entries (keepers + challengers combined).
+
+    Unlike vault_intent_steps, this handles asymmetric keeper/challenger counts correctly
+    by taking the total key count instead of assuming they are equal.
+
+    Stax (touch):     2 keys per content page  → ceil(total_keys / 2) pages
+    Flex/Apex (touch): 1 key per content page  → total_keys pages
+    Nano:              2 clicks per key
+    """
+    if device.is_nano:
+        return 1 + 4 + 2 * total_keys + 7
+    if device.name == "stax":
+        return 1 + 1 + (total_keys + 1) // 2 + 2
+    return 1 + 1 + total_keys + 2
+
+
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
     """Return the complete navigation instruction list for approving a vault intent.
 
@@ -403,23 +420,30 @@ def sign_psbt_nopayout_approve_instructions(device: Device) -> Instructions:
     """Approve-path Instructions for NoPayout — Nano devices only.
 
     Touch devices should use sign_psbt_nopayout_approve_nav() instead.
+
+    The 64-char hex challenger key spans ~6 Nano screens, so the navigator
+    RIGHT_CLICKs through them before finding "Sign".  That is expected; the
+    resulting snapshot skips are not failures.
     """
     instructions = Instructions(device)
     instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
 
 
-def sign_psbt_nopayout_approve_nav(device: Device) -> List[NavInsID]:
+def sign_psbt_nopayout_approve_nav(device: Device, total_keys: int) -> List[NavInsID]:
     """Flat approve-path navigation for NoPayout — touch devices.
 
-    NoPayout shows 2 fields (Challenger index + Challenger key) in a single
-    nbgl_useCaseReview, so the layout mirrors the PoP screen (intro + content + confirm).
-    Calibrate against --golden_run if Nano step counts need adjustment.
+    NoPayout uses a streaming review showing all keepers and challengers.
+    Layout: intro page + key content pages (no params segment).
+    Stax:      ceil(total_keys / 2) key pages per content screen
+    Flex/Apex: 1 key per content screen
     """
     assert not device.is_nano, "Nano uses sign_psbt_nopayout_approve_instructions"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
-        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
-        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
-    ]
+    if device.name == "stax":
+        n_swipes = 1 + (total_keys + 1) // 2
+    else:
+        n_swipes = 1 + total_keys
+    return (
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * n_swipes
+        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+    )

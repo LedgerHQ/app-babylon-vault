@@ -341,46 +341,103 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
-// NoPayout confirmation screen
+// NoPayout confirmation screen — streaming review showing all keys
 // ---------------------------------------------------------------------------
 
-bool display_nopayout_transaction(dispatcher_context_t *dc,
-                                  uint8_t challenger_idx,
-                                  const uint8_t *challenger_key) {
-    nbgl_layoutTagValue_t *const tx_pairs =
-        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
+static uint8_t g_nopayout_signing_idx;
+static nbgl_layoutTagValueList_t g_nopayout_keys_list;
+/* "Challenger 32 (signing)\0" = 24 bytes */
+static char g_nopayout_signing_label[24];
 
-    // txid_str (65 B): challenger x-only key as 64 hex chars + NUL.
-    format_hex(challenger_key,
+static void nopayout_stream_finish(void);
+static void nopayout_after_keys(bool confirm);
+
+static nbgl_contentTagValue_t *_nopayout_key_pair_callback(uint8_t pairIndex) {
+    const vault_intent_t *intent = &G_vault_intent;
+    LEDGER_ASSERT(pairIndex < (uint8_t) (intent->keeper_count + intent->challenger_count),
+                  "pairIndex out of range");
+    const uint8_t *pk;
+    uint8_t slot = pairIndex % VAULT_KEY_PAIR_SLOTS;
+    char *label_buf;
+
+    if (pairIndex < intent->keeper_count) {
+        pk = intent->keeper_pks[pairIndex];
+        if (pairIndex == g_nopayout_signing_idx) {
+            snprintf(g_nopayout_signing_label,
+                     sizeof(g_nopayout_signing_label),
+                     "Keeper %u (signing)",
+                     (unsigned) (pairIndex + 1u));
+            label_buf = g_nopayout_signing_label;
+        } else {
+            snprintf(G_scratch.display.key_label[slot],
+                     sizeof(G_scratch.display.key_label[slot]),
+                     "Keeper %u",
+                     (unsigned) (pairIndex + 1u));
+            label_buf = G_scratch.display.key_label[slot];
+        }
+    } else {
+        uint8_t ci = pairIndex - intent->keeper_count;
+        pk = intent->challenger_pks[ci];
+        if (pairIndex == g_nopayout_signing_idx) {
+            snprintf(g_nopayout_signing_label,
+                     sizeof(g_nopayout_signing_label),
+                     "Challenger %u (signing)",
+                     (unsigned) (ci + 1u));
+            label_buf = g_nopayout_signing_label;
+        } else {
+            snprintf(G_scratch.display.key_label[slot],
+                     sizeof(G_scratch.display.key_label[slot]),
+                     "Challenger %u",
+                     (unsigned) (ci + 1u));
+            label_buf = G_scratch.display.key_label[slot];
+        }
+    }
+    format_hex(pk,
                VAULT_XONLY_PUBKEY_LEN,
-               G_scratch.display_tx.txid_str,
-               TX_DISPLAY_TXID_STR_SIZE);
-    // extra_str: challenger index as a small decimal number.
-    snprintf(G_scratch.display_tx.extra_str,
-             TX_DISPLAY_AMOUNT_STR_SIZE,
-             "%u",
-             (unsigned) challenger_idx + 1u);
+               G_scratch.display.key_str[slot],
+               sizeof(G_scratch.display.key_str[slot]));
+    nbgl_contentTagValue_t *pair = (nbgl_contentTagValue_t *) G_scratch.display.key_pair_raw[slot];
+    pair->item = label_buf;
+    pair->value = G_scratch.display.key_str[slot];
+    return pair;
+}
 
-    int n = 0;
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Challenger", .value = G_scratch.display_tx.extra_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Challenger key", .value = G_scratch.display_tx.txid_str};
+static void nopayout_stream_finish(void) {
+    nbgl_useCaseReviewStreamingFinish("Sign NoPayout\ntransaction?",
+                                      review_choice);
+}
 
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
+static void nopayout_after_keys(bool confirm) {
+    if (!confirm) {
+        review_choice(false);
+        return;
+    }
+    nopayout_stream_finish();
+}
 
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
+static void nopayout_stream_intro_choice(bool confirm) {
+    if (!confirm) {
+        review_choice(false);
+        return;
+    }
+    nbgl_useCaseReviewStreamingContinueExt(&g_nopayout_keys_list,
+                                           nopayout_after_keys,
+                                           NULL);
+}
 
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review NoPayout\ntransaction",
-                       NULL,
-                       "Sign NoPayout\ntransaction?",
-                       review_choice);
+bool display_nopayout_transaction(dispatcher_context_t *dc, uint8_t challenger_idx) {
+    g_nopayout_signing_idx = challenger_idx;
+    g_nopayout_keys_list.pairs = NULL;
+    g_nopayout_keys_list.callback = _nopayout_key_pair_callback;
+    g_nopayout_keys_list.nbPairs =
+        (uint8_t) (G_vault_intent.keeper_count + G_vault_intent.challenger_count);
+    g_nopayout_keys_list.nbMaxLinesForValue = 0;
+
+    nbgl_useCaseReviewStreamingStart(TYPE_TRANSACTION,
+                                     &ICON_APP_ACTION,
+                                     "Review NoPayout\ntransaction",
+                                     NULL,
+                                     nopayout_stream_intro_choice);
 
     bool approved = io_ui_process(dc);
     if (!approved) {

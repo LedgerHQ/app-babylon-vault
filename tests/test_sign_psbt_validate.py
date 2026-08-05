@@ -58,6 +58,7 @@ from .vault_client import (
 from .instructions import (
     sign_psbt_nopayout_approve_instructions,
     sign_psbt_nopayout_approve_nav,
+    vault_intent_steps_for_keys,
 )
 
 HARDENED = 0x80000000
@@ -635,6 +636,7 @@ def _setup_s2_state(
     prepegin_txid: bytes = _PREPEGIN_TXID,
     keeper_pks: Optional[List[bytes]] = None,
     challenger_pks: Optional[List[bytes]] = None,
+    n_swipes: Optional[int] = None,
 ) -> bytes:
     """Derive root + approve intent with a non-zero prepegin_txid.  Returns the 32-byte hashlock h.
 
@@ -644,6 +646,10 @@ def _setup_s2_state(
 
     keeper_pks / challenger_pks default to the single-keeper / single-challenger
     test sets; pass larger sorted sets to approve a many-participant vault.
+
+    n_swipes: when provided, approve_vault_intent_with_nav uses deterministic navigation
+    (no text search) to avoid the Flex/Apex swipe-animation race condition that can occur
+    with many keys.  Compute with vault_intent_steps_for_keys(device, total_keys).
     """
     if keeper_pks is None:
         keeper_pks = _TEST_KEEPER_PKS
@@ -656,6 +662,7 @@ def _setup_s2_state(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,
         groups=[_build_group_for_test()],
+        n_swipes=n_swipes,
     )
     return hashlock
 
@@ -2799,7 +2806,8 @@ def test_sign_psbt_nopayout(
     else:
         sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
                                        testname=tname,
-                                       nav_instructions=sign_psbt_nopayout_approve_nav(device))
+                                       nav_instructions=sign_psbt_nopayout_approve_nav(
+                                           device, len(_TEST_KEEPER_PKS) + len(_TEST_CHALLENGER_PKS)))
         return
 
     _assert_single_schnorr_sig(result, dep_pk)
@@ -2830,7 +2838,8 @@ def test_sign_psbt_nopayout_cap_exhausted(
         else:
             sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
                                            testname=tname,
-                                           nav_instructions=sign_psbt_nopayout_approve_nav(device))
+                                           nav_instructions=sign_psbt_nopayout_approve_nav(
+                                               device, len(_TEST_KEEPER_PKS) + len(_TEST_CHALLENGER_PKS)))
 
     # One more exceeds the cap → SW_CAP_EXCEEDED before display, no navigation needed.
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
@@ -2862,8 +2871,16 @@ def test_sign_psbt_nopayout_32_challengers(
     keeper_pks    = all_keys[:1]
     challenger_pks = all_keys[1:]  # 32 keys
 
+    # Deterministic step count avoids the Flex/Apex swipe-animation race that can occur
+    # with navigate_until_text when there are many keys (33 here: 1 keeper + 32 challengers).
+    # Nano uses button clicks rather than swipe gestures, so it is not affected; leave it
+    # with text-based navigation (n_swipes=None) to avoid guessing the Nano click count.
+    total_keys = len(keeper_pks) + len(challenger_pks)
+    n_swipes = None if device.is_nano else vault_intent_steps_for_keys(device, total_keys)
+
     hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID,
-                               keeper_pks=keeper_pks, challenger_pks=challenger_pks)
+                               keeper_pks=keeper_pks, challenger_pks=challenger_pks,
+                               n_swipes=n_swipes)
     pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID,
                                    keeper_pks=keeper_pks, challenger_pks=challenger_pks)
     client.sign_psbt(pegin_psbt, dummy_wallet, None)
@@ -2879,7 +2896,7 @@ def test_sign_psbt_nopayout_32_challengers(
     else:
         sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
                                        testname=tname,
-                                       nav_instructions=sign_psbt_nopayout_approve_nav(device))
+                                       nav_instructions=sign_psbt_nopayout_approve_nav(device, total_keys))
         return
 
     _assert_single_schnorr_sig(result, dep_pk)
