@@ -1668,6 +1668,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         G_vault_context.payout_signed++;
     }
 
+    G_vault_context.is_payout_signing = true;
     return true;
 }
 
@@ -2612,6 +2613,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
  * ---------------------------------------------------------------------- */
 
 static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psbt_state_t *st) {
+    G_vault_context.is_payout_signing = false;
     if (st->tx_version < 2 || st->locktime != 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;

@@ -97,6 +97,13 @@ typedef struct {
     uint8_t vault_group_index;
 
     /**
+     * Set to true by _validate_payout, false by _validate_display_payout_finalize.
+     * Allows sign_custom_inputs to distinguish a VK/Depositor Payout (2 inputs, 2 outputs,
+     * Input 0 signed) from a PayoutFinalize (same shape, Input 1 signed).
+     */
+    bool is_payout_signing;
+
+    /**
      * BIP-32 derivation path stored from DERIVE_CONTEXT_HASH.
      * Compared against depositor_derivation_path from the intent at
      * APPROVE_VAULT_INTENT time to enforce path alignment.

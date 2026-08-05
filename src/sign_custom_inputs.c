@@ -185,10 +185,15 @@ bool sign_custom_inputs(
      *
      * NoPayout (n_inputs==3): sign Input 0 with the depositor Assert:0 leaf.
      * Payout   (n_inputs==2): sign Input 0 with the depositor Vault UTXO leaf.
+     *   VP Payout:         n_outputs==3 (distinguishable by output count alone).
+     *   VK/Depositor Payout: n_outputs==2 (same shape as PayoutFinalize; distinguished
+     *   by is_payout_signing set by _validate_payout, cleared by
+     *   _validate_display_payout_finalize).
      * _validate_payout stored vault_group_index (gi) and payout_index (claimer).
      * ----------------------------------------------------------------------- */
     if (state == VAULT_STATE_INTENT_LOADED && st->has_no_wallet_policy &&
-        (st->n_inputs == 3 || (st->n_inputs == 2 && st->n_outputs != 2))) {
+        (st->n_inputs == 3 ||
+         (st->n_inputs == 2 && (st->n_outputs != 2 || G_vault_context.is_payout_signing)))) {
         /* -------
          * NoPayout: 3 inputs, 1 output, no wallet policy.
          * Re-read Input 0's TAP_LEAF_SCRIPT (G_scratch.tls clobbered by display).
