@@ -28,6 +28,13 @@
  * 1B n_hashes + up to 2×32B leaf_hashes + 4B fingerprint + 5*4B path = 89 bytes max */
 #define MAX_TAP_BIP32_DERIV_VALUE_LEN (1 + 2 * 32 + 4 + 5 * 4)
 
+_Static_assert(
+    VAULT_MAX_VAULTS *(VAULT_MAX_KEEPERS + 2) <= UINT16_MAX,
+    "payout cap overflows uint16_t — raise VAULT_MAX_VAULTS or VAULT_MAX_KEEPERS before merging");
+_Static_assert(VAULT_MAX_VAULTS *(VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) <= UINT16_MAX,
+               "nopayout cap overflows uint16_t — raise VAULT_MAX_VAULTS, VAULT_MAX_KEEPERS, or "
+               "VAULT_MAX_CHALLENGERS before merging");
+
 /* Maximum WITNESS_UTXO size: 8B value + 1B script_len varint + 34B P2TR script */
 #define MAX_WITNESS_UTXO_LEN (8 + 1 + 34)
 
@@ -230,8 +237,8 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
         tmp[0] = 0x00;
         if (cx_hash_no_throw(&sha.header, 0, tmp, 1, NULL, 0) != CX_OK) return false;
 
-        /* nSequence (4 bytes LE); absent PSBT_IN_SEQUENCE defaults to 0xFFFFFFFF */
-        uint32_t seq = 0xFFFFFFFFu;
+        /* nSequence (4 bytes LE); absent PSBT_IN_SEQUENCE defaults to SEQUENCE_FINAL */
+        uint32_t seq = SEQUENCE_FINAL;
         int seq_rc = call_get_merkleized_map_value_u32_le(dc,
                                                           &in_map,
                                                           (uint8_t[]) {PSBT_IN_SEQUENCE},
@@ -468,7 +475,6 @@ static bool _validate_prepegin(
         SEND_SW(dc, SW_CAP_EXCEEDED);
         return false;
     }
-    G_vault_context.pre_pegin_signed++;
     return true;
 }
 
@@ -1190,8 +1196,6 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         SEND_SW(dc, SW_CAP_EXCEEDED);
         return false;
     }
-    G_vault_context.pegin_signed++;
-
     return true;
 }
 
@@ -1665,7 +1669,6 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             SEND_SW(dc, SW_CAP_EXCEEDED);
             return false;
         }
-        G_vault_context.payout_signed++;
     }
 
     G_vault_context.is_payout_signing = true;
@@ -1743,9 +1746,10 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
 
     /* Reconstruct the leaf and compare to prevent parameter substitution */
     {
-        uint8_t expected[68];
-        if (vault_build_nopayout_leaf(intent, challenger_idx, expected, sizeof(expected)) != 68 ||
-            memcmp(expected, leaf, 68) != 0) {
+        uint8_t expected[VAULT_NOPAYOUT_LEAF_LEN];
+        if (vault_build_nopayout_leaf(intent, challenger_idx, expected, sizeof(expected)) !=
+                VAULT_NOPAYOUT_LEAF_LEN ||
+            memcmp(expected, leaf, VAULT_NOPAYOUT_LEAF_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1836,7 +1840,6 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         SEND_SW(dc, SW_CAP_EXCEEDED);
         return false;
     }
-    G_vault_context.nopayout_signed++;
     return true;
 }
 
@@ -1849,17 +1852,17 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
  * Output 1: BIP-86 P2TR(D), value DUST (CPFP anchor).
  * ---------------------------------------------------------------------- */
 
-/* Verify Input 0 nSequence == 0xFFFFFFFF (RBF-disabled, no CSV).
- * Absent PSBT_IN_SEQUENCE is treated as the spec-default 0xFFFFFFFF. */
+/* Verify Input 0 nSequence == SEQUENCE_FINAL (RBF-disabled, no CSV).
+ * Absent PSBT_IN_SEQUENCE is treated as the spec-default SEQUENCE_FINAL. */
 static bool _require_sequence_final(dispatcher_context_t *dc,
                                     merkleized_map_commitment_t *input_map) {
-    uint32_t seq = 0xFFFFFFFFu;
+    uint32_t seq = SEQUENCE_FINAL;
     int seq_rc = call_get_merkleized_map_value_u32_le(dc,
                                                       input_map,
                                                       (uint8_t[]) {PSBT_IN_SEQUENCE},
                                                       1,
                                                       &seq);
-    if ((seq_rc >= 0 && seq_rc != 4) || seq != 0xFFFFFFFFu) {
+    if ((seq_rc >= 0 && seq_rc != 4) || seq != SEQUENCE_FINAL) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1891,7 +1894,7 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
         return false;
     }
 
-    /* Input 0 sequence must be 0xFFFFFFFF (RBF-disabled, no CSV). */
+    /* Input 0 sequence must be SEQUENCE_FINAL (RBF-disabled, no CSV). */
     if (!_require_sequence_final(dc, &input_map)) return false;
 
     /* Sighash must be SIGHASH_DEFAULT */
@@ -2061,7 +2064,7 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
         return false;
     }
 
-    /* Input 0 sequence must be 0xFFFFFFFF (RBF-disabled, no CSV). */
+    /* Input 0 sequence must be SEQUENCE_FINAL (RBF-disabled, no CSV). */
     if (!_require_sequence_final(dc, &input_map)) return false;
 
     /* Sighash must be SIGHASH_DEFAULT */
@@ -2211,7 +2214,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
     uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
     memcpy(d_key, leaf + 1, VAULT_XONLY_PUBKEY_LEN);
 
-    /* Input 0 sequence must be 0xFFFFFFFF (RBF-disabled, no CSV). */
+    /* Input 0 sequence must be SEQUENCE_FINAL (RBF-disabled, no CSV). */
     if (!_require_sequence_final(dc, &input_map)) return false;
 
     /* Sighash must be SIGHASH_DEFAULT */
@@ -2719,7 +2722,8 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
     }
 
     /* Validate Input 1 PSBT_IN_SEQUENCE against the payout leaf CSV timelock.
-     * BIP-68: bit 31 enables/disables sequence, bit 22 selects block vs time. */
+     * BIP-68: bit 31 enables/disables sequence, bit 22 selects block vs time.
+     * nSequence must be block-based and satisfy nSequence >= t2 (not exact match). */
     {
         uint32_t nsequence = 0;
         int seq_res = call_get_merkleized_map_value_u32_le(dc,
@@ -2735,7 +2739,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
+        if ((nsequence & BIP68_SEQUENCE_MASK) < (csv_value & BIP68_SEQUENCE_MASK)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }

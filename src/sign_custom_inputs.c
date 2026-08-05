@@ -177,6 +177,7 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        G_vault_context.pegin_signed++;
         return true;
     }
 
@@ -261,6 +262,7 @@ bool sign_custom_inputs(
                 return false;
             }
 
+            G_vault_context.nopayout_signed++;
             return true;
         }
 
@@ -338,6 +340,7 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        G_vault_context.payout_signed++;
         return true;
     }
 
@@ -348,6 +351,7 @@ bool sign_custom_inputs(
      * through to the standalone signing section.
      * ----------------------------------------------------------------------- */
     if (!st->has_no_wallet_policy && bitvector_get(internal_inputs, 0)) {
+        G_vault_context.pre_pegin_signed++;
         return true;
     }
 

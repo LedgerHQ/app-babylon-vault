@@ -132,3 +132,4 @@
 /* PegIn transaction fields (TRUC v3, nLockTime-enabled sequence). */
 #define PEGIN_TX_VERSION  3u          /* TRUC (BIP-431) v3; satisfies CSV (BIP-68) v>=2 */
 #define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
+#define SEQUENCE_FINAL    0xFFFFFFFFu /* RBF-disabled, no CSV, no nLockTime */
