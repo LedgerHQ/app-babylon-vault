@@ -1578,7 +1578,11 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         /* VK claimer: Output 0 must be key-path P2TR(keeper_pks[claimer_idx - 1]). */
         uint8_t parity;
         uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-        if (crypto_tr_tweak_pubkey(intent->keeper_pks[claimer_idx - 1], NULL, 0, &parity, tweaked) != 0) {
+        if (crypto_tr_tweak_pubkey(intent->keeper_pks[claimer_idx - 1],
+                                   NULL,
+                                   0,
+                                   &parity,
+                                   tweaked) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }

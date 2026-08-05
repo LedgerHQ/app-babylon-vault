@@ -119,7 +119,8 @@ bool display_pop_transaction(dispatcher_context_t *dc,
  * Shown before the device signs the NoPayout Assert:0 leaf.  Displays the
  * challenger key so the user can verify this is an expected challenge.
  *
- * @param challenger_idx  0-based index of the challenger in the intent key list; displayed as 1-based.
+ * @param challenger_idx  0-based index of the challenger in the intent key list; displayed as
+ * 1-based.
  * @param challenger_key  32-byte x-only challenger public key.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).

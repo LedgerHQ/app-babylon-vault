@@ -352,7 +352,9 @@ bool display_nopayout_transaction(dispatcher_context_t *dc,
     nbgl_layoutTagValueList_t pair_list = {0};
 
     // txid_str (65 B): challenger x-only key as 64 hex chars + NUL.
-    format_hex(challenger_key, VAULT_XONLY_PUBKEY_LEN, G_scratch.display_tx.txid_str,
+    format_hex(challenger_key,
+               VAULT_XONLY_PUBKEY_LEN,
+               G_scratch.display_tx.txid_str,
                TX_DISPLAY_TXID_STR_SIZE);
     // extra_str: challenger index as a small decimal number.
     snprintf(G_scratch.display_tx.extra_str,
@@ -361,10 +363,10 @@ bool display_nopayout_transaction(dispatcher_context_t *dc,
              (unsigned) challenger_idx + 1u);
 
     int n = 0;
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Challenger",
-                                             .value = G_scratch.display_tx.extra_str};
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Challenger key",
-                                             .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Challenger", .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Challenger key", .value = G_scratch.display_tx.txid_str};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
