@@ -24,8 +24,10 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
 /**
  * @brief Display the loaded vault intent for user review and approval.
  *
- * Shows vault provider key, amounts, fee rate,
- * timelocks, and all keeper / challenger public keys.
+ * Shows vault provider key, amounts, fee rate, timelocks, and all keeper /
+ * challenger public keys.  MUST also display G_vault_context.app_name so the user
+ * can confirm which HKDF appName domain this intent is bound to — this is the only
+ * user-visible confirmation when DERIVE_CONTEXT_HASH was invoked with P2=0x01 (silent).
  *
  * @return true   User approved; caller may proceed.
  * @return false  User rejected; SW_DENY has already been sent to the host.

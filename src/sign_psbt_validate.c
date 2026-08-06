@@ -1879,6 +1879,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
+    if (!display_nopayout_transaction(dc, (uint8_t) challenger_idx)) return false;
+
     /* Cap: vault_count × (keeper_count + challenger_count) */
     uint16_t cap =
         (uint16_t) ((uint16_t) intent->vault_count *
@@ -2060,6 +2062,10 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     uint64_t fee = input_value - st->outputs.total_amount;
 
     /* connector_amount = Out0 value = total outputs minus the VAULT_DUST_LIMIT CPFP anchor */
+    if (st->outputs.total_amount <= VAULT_DUST_LIMIT) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
     uint64_t connector_amount = st->outputs.total_amount - VAULT_DUST_LIMIT;
 
     /* Read PegIn txid (Input 0 prevout) — vault reference shown on Screen 4. */
@@ -2681,6 +2687,15 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
                                   G_scratch.tls.leaf_script_len,
                                   d_key,
                                   &csv_value)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* When the intent is loaded, the leaf's CSV timelock must match the approved
+     * payout_timelock. A mismatch means this UTXO belongs to a different session
+     * or the host tampered with the script after intent approval. */
+    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED &&
+        csv_value != (uint32_t) G_vault_intent.payout_timelock) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }

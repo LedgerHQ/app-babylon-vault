@@ -75,11 +75,22 @@ static void _finalize(dispatcher_context_t *dc) {
            G_scratch.derive_ctx.path_len * sizeof(uint32_t));
     G_vault_context.derivation_path_len = G_scratch.derive_ctx.path_len;
 
+    /* Persist appName so display_vault_intent can show it during APPROVE_VAULT_INTENT,
+     * binding the user confirmation to this specific HKDF domain — even for P2=0x01. */
+    memcpy(G_vault_context.app_name,
+           G_scratch.derive_ctx.app_name_buf,
+           G_scratch.derive_ctx.app_name_len);
+    G_vault_context.app_name_len = G_scratch.derive_ctx.app_name_len;
+
     if (G_scratch.derive_ctx.p2_mode == P2_RETURN_ROOT) {
         /* Return the 32-byte root (the host expands it into per-vault secrets). */
         SEND_RESPONSE(dc, G_vault_context.root, VAULT_HASH256_LEN, SW_OK);
     } else {
-        /* P2=0x01: silent — SW_OK only, no root in response. */
+        /* P2=0x01: silent — SW_OK only, no root in response.
+         * The app_name is persisted in G_vault_context.app_name so that
+         * display_vault_intent() can present it during APPROVE_VAULT_INTENT,
+         * binding the user's approval to this HKDF domain even when Screen 1
+         * was skipped. */
         SEND_SW(dc, SW_OK);
     }
 }

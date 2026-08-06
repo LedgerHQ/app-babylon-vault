@@ -113,6 +113,20 @@ typedef struct {
     /** Number of levels in derivation_path. */
     uint8_t derivation_path_len;
 
+    /**
+     * HKDF appName bytes stored from DERIVE_CONTEXT_HASH.
+     *
+     * Binding the app_name across the full session (from DERIVE_CONTEXT_HASH to
+     * APPROVE_VAULT_INTENT) ensures the user can confirm which application key
+     * domain was used — even when P2=0x01 (silent) was used and no Screen 1
+     * was shown.  display_vault_intent() MUST render this field so the user
+     * sees the appName before approving the intent.
+     */
+    uint8_t app_name[VAULT_APP_NAME_MAX_LEN];
+
+    /** Number of bytes in app_name (0 if DERIVE_CONTEXT_HASH not yet called). */
+    uint8_t app_name_len;
+
 } vault_context_t;
 
 // ---------------------------------------------------------------------------

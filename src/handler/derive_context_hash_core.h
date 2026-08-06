@@ -77,12 +77,19 @@ static inline bool derive_vault_privkey(cx_ecfp_256_private_key_t *privkey) {
  *
  * @param ikm      32-byte IKM (BIP-32 private key bytes).
  * @param prk_out  32-byte output buffer for the PRK.
+ * @return true on success; false if the SDK returns an error (caller must reject).
  */
-static inline void extract_prk(const uint8_t *ikm, uint8_t *prk_out) {
+static inline bool extract_prk(const uint8_t *ikm, uint8_t *prk_out) {
     uint8_t salt_buf[HKDF_SALT_LEN];
     memcpy(salt_buf, HKDF_SALT, HKDF_SALT_LEN);
-    cx_hkdf_extract(CX_SHA256, ikm, VAULT_HASH256_LEN, salt_buf, HKDF_SALT_LEN, prk_out);
+    cx_err_t err =
+        cx_hkdf_extract(CX_SHA256, ikm, VAULT_HASH256_LEN, salt_buf, HKDF_SALT_LEN, prk_out);
     explicit_bzero(salt_buf, sizeof(salt_buf));
+    if (err != CX_OK) {
+        explicit_bzero(prk_out, VAULT_HASH256_LEN);
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +137,10 @@ static inline bool hkdf_derive_root(const uint8_t *app_name,
     }
 
     uint8_t prk[VAULT_HASH256_LEN];
-    extract_prk(privkey.d, prk);
+    if (!extract_prk(privkey.d, prk)) {
+        explicit_bzero(&privkey, sizeof(privkey));
+        return false;
+    }
     explicit_bzero(&privkey, sizeof(privkey));
 
     cx_hmac_sha256_t hmac;

@@ -7,6 +7,16 @@
 
 #include "os_utils.h" /* U2BE, U4BE, U8BE */
 
+/* Timelocks are read as uint32_t from the wire but stored as uint16_t in vault_intent_t.
+ * These asserts catch any future constant increase before it silently wraps at the cast. */
+_Static_assert(VAULT_TIMELOCK_MAX <= UINT16_MAX,
+               "VAULT_TIMELOCK_MAX exceeds uint16_t — update pegin_csv_timelock storage");
+_Static_assert(
+    VAULT_HTLC_REFUND_TIMELOCK_MAX <= UINT16_MAX,
+    "VAULT_HTLC_REFUND_TIMELOCK_MAX exceeds uint16_t — update htlc_refund_timelock storage");
+_Static_assert(VAULT_PAYOUT_TIMELOCK_MAX <= UINT16_MAX,
+               "VAULT_PAYOUT_TIMELOCK_MAX exceeds uint16_t — update payout_timelock storage");
+
 /* BIP-32 hardened-child bit */
 #define HARDENED 0x80000000u
 

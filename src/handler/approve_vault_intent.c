@@ -20,6 +20,8 @@
 /* Spec-defined SW for BIP-32 depositor key derivation failure (see docs/apdu.md). */
 #define SW_BIP32_FAIL ((uint16_t) 0x6F00)
 
+/* No default: -Wswitch-enum/-Werror will catch any new vault_tlv_err_t value that
+ * is not explicitly handled here.  The post-switch return satisfies -Wreturn-type. */
 static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
     switch (err) {
         case VAULT_TLV_OK:
@@ -32,7 +34,7 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
         case VAULT_TLV_ERR_VALIDATION:
             return SW_INCORRECT_DATA;
     }
-    return SW_INCORRECT_DATA;
+    return SW_INCORRECT_DATA; /* unreachable */
 }
 
 /* -------------------------------------------------------------------------
@@ -52,33 +54,30 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
      * it against the intent's depositor path. */
     uint8_t saved_root[VAULT_HASH256_LEN];
     uint32_t saved_path[VAULT_MAX_PATH_DEPTH];
-    uint8_t saved_path_len = 0;
-    bool preserve_root = (G_vault_context.state == VAULT_STATE_HASH_DERIVED);
-    if (preserve_root) {
-        memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
-        saved_path_len = G_vault_context.derivation_path_len;
-        memcpy(saved_path, G_vault_context.derivation_path, saved_path_len * sizeof(uint32_t));
-    }
+    uint8_t saved_app_name[VAULT_APP_NAME_MAX_LEN];
+    uint8_t saved_path_len = G_vault_context.derivation_path_len;
+    uint8_t saved_app_name_len = G_vault_context.app_name_len;
+    memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
+    memcpy(saved_path, G_vault_context.derivation_path, saved_path_len * sizeof(uint32_t));
+    memcpy(saved_app_name, G_vault_context.app_name, saved_app_name_len);
 
     vault_context_invalidate(&G_vault_context);
     explicit_bzero(&G_scratch, sizeof(G_scratch));
 
-    if (preserve_root) {
-        memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
-        explicit_bzero(saved_root, sizeof(saved_root));
-        G_vault_context.derivation_path_len = saved_path_len;
-        memcpy(G_vault_context.derivation_path, saved_path, saved_path_len * sizeof(uint32_t));
-        explicit_bzero(saved_path, sizeof(saved_path));
-        // Restore state to HASH_DERIVED so handle_key_batch can transition
-        // HASH_DERIVED → INTENT_LOADED; without this the transition would fail
-        // because vault_context_invalidate() left state at IDLE.
-        if (!vault_context_transition(&G_vault_context,
-                                      VAULT_STATE_IDLE,
-                                      VAULT_STATE_HASH_DERIVED)) {
-            explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
-            SEND_SW(dc, SW_BAD_STATE);
-            return;
-        }
+    memcpy(G_vault_context.root, saved_root, VAULT_HASH256_LEN);
+    explicit_bzero(saved_root, sizeof(saved_root));
+    G_vault_context.derivation_path_len = saved_path_len;
+    memcpy(G_vault_context.derivation_path, saved_path, saved_path_len * sizeof(uint32_t));
+    explicit_bzero(saved_path, sizeof(saved_path));
+    G_vault_context.app_name_len = saved_app_name_len;
+    memcpy(G_vault_context.app_name, saved_app_name, saved_app_name_len);
+    /* Restore state to HASH_DERIVED so handle_key_batch can transition
+     * HASH_DERIVED → INTENT_LOADED; without this the transition would fail
+     * because vault_context_invalidate() left state at IDLE. */
+    if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED)) {
+        explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
     }
 
     vault_tlv_err_t err = vault_tlv_parse(cmd->data, cmd->lc, &G_vault_intent);

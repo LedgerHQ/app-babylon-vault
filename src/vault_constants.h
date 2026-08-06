@@ -15,12 +15,7 @@
 #error "BIP44_COIN_TYPE is not defined. Pass -DBIP44_COIN_TYPE=<n> via the Makefile."
 #endif
 
-/**
- * Expected value of the structure_type TLV field.
- *
- * TODO: confirm exact value with protocol authors before shipping.
- * Placeholder: 0x01.
- */
+/** Expected value of the structure_type TLV field (spec §3.1: MUST BE 0x01). */
 #define VAULT_STRUCTURE_TYPE ((uint8_t) 0x01)
 
 /**

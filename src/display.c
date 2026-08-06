@@ -722,6 +722,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // and cannot overlap with the hkdf or script_scratch union members.
     nbgl_layoutTagValue_t *const vault_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
+    char vault_app_name_str[VAULT_APP_NAME_MAX_LEN + 1u]; /* +1 for NUL */
     char vault_fee_rate_str[VAULT_FEE_RATE_STR_SIZE];
     char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
@@ -734,6 +735,12 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // Per-vault group fields are streamed one segment at a time by vault_stream_group(),
     // for all vault counts including 1.  This keeps the display path uniform and ensures
     // every vault review shows a "Vault N of M" header regardless of vault_count.
+
+    // App name is shown first so the user can confirm the HKDF domain even when
+    // DERIVE_CONTEXT_HASH was called with P2=0x01 (silent, no Screen 1 shown).
+    memcpy(vault_app_name_str, G_vault_context.app_name, G_vault_context.app_name_len);
+    vault_app_name_str[G_vault_context.app_name_len] = '\0';
+    vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "App name", .value = vault_app_name_str};
 
     snprintf(vault_fee_rate_str,
              sizeof(vault_fee_rate_str),

@@ -462,7 +462,10 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
     if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count + 1) return -1;
 
     /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.
-     * Cannot use G_scratch here — buf already points into it. */
+     * Cannot use G_scratch here — buf already points into it (callers pass
+     * G_scratch.leaf_check.expected_script or G_scratch.script_scratch).
+     * This is called from the PSBT signing path after io_ui_process() returns,
+     * so NBGL's call stack is fully unwound and peak stack headroom is available. */
     _Static_assert(VAULT_MAX_KEEPERS * VAULT_XONLY_PUBKEY_LEN <= 1024u,
                    "AppChallengers scratch exceeds 1 KB; revisit if target RAM shrinks");
     uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];

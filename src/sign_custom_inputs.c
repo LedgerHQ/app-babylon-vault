@@ -227,6 +227,10 @@ bool sign_custom_inputs(
             vault_taproot_leaf_hash(leaf, leaf_len, leaf_hash);
 
             uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+            /* expected_spk=NULL: the taproot commitment check in _validate_nopayout already
+             * bound the UTXO's SPK to the approved Assert:0 leaf.  A substituted WITNESS_UTXO
+             * would produce a sighash that doesn't commit to any leaf in the approved tree —
+             * DoS at worst, no fund redirection.  Same rationale as the standalone branch. */
             if (!read_p2tr_witness_utxo(dc, &input_map, NULL, input_spk)) {
                 vault_context_invalidate(&G_vault_context);
                 SEND_SW(dc, SW_INCORRECT_DATA);
