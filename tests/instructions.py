@@ -11,19 +11,19 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
                  on the params screen; each additional vault adds dedicated screens.
     challenger_count: number of challenger/keeper pairs.
 
-    Stax  (touch):  screens = 1+1 + 2*(vault_count-1) + challenger_count,   total + 2
-    Flex/Apex (touch): screens = 1+1 + 2*(vault_count-1) + 2*challenger_count, total + 2
-    Nano:           screens = 1+4 + 7*(vault_count-1) + 4*challenger_count,  total + 7
+    Stax  (touch):  screens = 1+2 + 2*(vault_count-1) + challenger_count,   total + 2
+    Flex/Apex (touch): screens = 1+2 + 2*(vault_count-1) + 2*challenger_count, total + 2
+    Nano:           screens = 1+5 + 7*(vault_count-1) + 4*challenger_count,  total + 7
 
     n_swipes = total_screens (touch); n_clicks = total_screens (nano).
     Relationship to golden snapshot counts: n_swipes = snapshots - 3, n_clicks = snapshots - 2.
     """
     extra = vault_count - 1
     if device.is_nano:
-        return 1 + 4 + 7 * extra + 4 * challenger_count + 7
+        return 1 + 5 + 7 * extra + 4 * challenger_count + 7
     if device.name == "stax":
         return 1 + 1 + 2 * extra + challenger_count + 2
-    return 1 + 1 + 2 * extra + 2 * challenger_count + 2
+    return 1 + 2 + 2 * extra + 2 * challenger_count + 2
 
 
 def vault_intent_steps_for_keys(device: Device, total_keys: int) -> int:
@@ -37,10 +37,10 @@ def vault_intent_steps_for_keys(device: Device, total_keys: int) -> int:
     Nano:              2 clicks per key
     """
     if device.is_nano:
-        return 1 + 4 + 2 * total_keys + 7
+        return 1 + 5 + 2 * total_keys + 7
     if device.name == "stax":
         return 1 + 1 + (total_keys + 1) // 2 + 2
-    return 1 + 1 + total_keys + 2
+    return 1 + 2 + total_keys + 2
 
 
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
