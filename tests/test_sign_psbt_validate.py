@@ -1174,26 +1174,19 @@ def test_sign_psbt_prepegin_no_hashlock(
     client: "RaggerClient",
     bitcoin_network: str,
 ) -> None:
-    """APPROVE_VAULT_INTENT key-batch is rejected with SW_BAD_STATE when DERIVE_CONTEXT_HASH
-    was not called first.
+    """APPROVE_VAULT_INTENT is rejected with SW_BAD_STATE when DERIVE_CONTEXT_HASH was not called first.
 
-    The state machine requires HASH_DERIVED before INTENT_LOADED.  The firmware detects
-    this before showing the approval screen so no navigation is needed.  As a consequence,
-    it is now impossible to reach INTENT_LOADED with an all-zero htlc_hashlock.
+    The state machine requires HASH_DERIVED before any APPROVE_VAULT_INTENT phase.  The
+    firmware enforces this at P1=0x00 (scalars), so a zero htlc_hashlock intent can never
+    be loaded.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     scalars_tlv = _build_intent_tlv_for_test(coin_type, bytes(32))
-    # P1=0x00 (scalars) succeeds — it does not enforce state.
-    client.transport_client.exchange(
-        cla=CLA_VAULT, ins=INS_APPROVE_VAULT_INTENT,
-        p1=P1_SCALARS, p2=P2_UNUSED, data=scalars_tlv,
-    )
-    # P1=0x02 (key batch) fails — state is IDLE, not HASH_DERIVED.
+    # P1=0x00 on a fresh session (IDLE state) must be rejected before any TLV parsing.
     with pytest.raises(ExceptionRAPDU) as exc:
         client.transport_client.exchange(
             cla=CLA_VAULT, ins=INS_APPROVE_VAULT_INTENT,
-            p1=P1_KEY_BATCH, p2=P2_UNUSED,
-            data=_TEST_KEEPER_PKS[0] + _TEST_CHALLENGER_PKS[0],
+            p1=P1_SCALARS, p2=P2_UNUSED, data=scalars_tlv,
         )
     assert exc.value.status == SW_BAD_STATE
 
