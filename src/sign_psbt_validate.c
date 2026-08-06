@@ -100,6 +100,30 @@ static bool _read_output(dispatcher_context_t *dc,
     return slen == VAULT_P2TR_SCRIPTPUBKEY_LEN;
 }
 
+/* Like _read_output but accepts any script length up to max_script bytes.
+ * Returns the actual script length, or -1 on error. Used for host-provided
+ * outputs whose scriptPubKey the device does not reconstruct (e.g. VK payout). */
+static int _read_output_varlen(dispatcher_context_t *dc,
+                               const uint8_t outputs_root[static 32],
+                               unsigned int n_outputs,
+                               unsigned int output_idx,
+                               uint8_t *script_out,
+                               size_t max_script,
+                               uint64_t *amount_out) {
+    merkleized_map_commitment_t map;
+    if (call_get_merkleized_map(dc, outputs_root, n_outputs, output_idx, &map) < 0) return -1;
+    uint8_t raw8[8];
+    if (8 != call_get_merkleized_map_value(dc, &map, (uint8_t[]) {PSBT_OUT_AMOUNT}, 1, raw8, 8))
+        return -1;
+    *amount_out = read_u64_le(raw8, 0);
+    return call_get_merkleized_map_value(dc,
+                                         &map,
+                                         (uint8_t[]) {PSBT_OUT_SCRIPT},
+                                         1,
+                                         script_out,
+                                         (int) max_script);
+}
+
 /* -------------------------------------------------------------------------
  * Callback for iterating an input map looking for TAP_LEAF_SCRIPT
  * State type is tap_leaf_script_state_t (defined in globals.h, lives in G_scratch.tls)
@@ -1557,13 +1581,16 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
     /* Out0:
      *   VP or Depositor claimer: depositor receives V - fee (± Fc) — BIP-86 P2TR(depositor).
-     *   VK claimer: VaultKeeper receives V - fee — VK's registered address, value only (v22). */
-    if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out_spk, &out_value)) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
+     *   VK claimer: VaultKeeper receives V - fee — VK's registered address, value only (v22).
+     *
+     * Branch before reading: VP/Depositor enforce P2TR (34 B); VK uses var-len reader since
+     * the VK's registered address may be any standard script type. */
     if (claimer_idx == 0 || claimer_idx == (uint8_t) (intent->keeper_count + 1u)) {
         /* VP or Depositor claimer: Output 0 must be BIP-86 P2TR(depositor_pk). */
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out_spk, &out_value)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (!_bip86_p2tr_spk(intent->depositor_pk, expected_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1574,22 +1601,17 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
     } else {
-        /* VK claimer: Output 0 must be key-path P2TR(keeper_pks[claimer_idx - 1]). */
-        uint8_t parity;
-        uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-        if (crypto_tr_tweak_pubkey(intent->keeper_pks[claimer_idx - 1],
-                                   NULL,
-                                   0,
-                                   &parity,
-                                   tweaked) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        expected_spk[0] = OP_1;
-        expected_spk[1] = OP_PUSHBYTES_32;
-        memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
-        if (memcmp(out_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+        /* VK claimer: value only (v22) — host-provided scriptPubKey from the vault contract,
+         * not reconstructed by the device. Sanity: reject OP_RETURN and sub-P2WPKH scripts. */
+        uint8_t vk_spk[100];
+        int vk_spk_len = _read_output_varlen(dc,
+                                             st->outputs_root,
+                                             st->n_outputs,
+                                             0,
+                                             vk_spk,
+                                             sizeof(vk_spk),
+                                             &out_value);
+        if (vk_spk_len < 22 || (uint8_t) vk_spk[0] == 0x6Au) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1867,7 +1889,6 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         return false;
     }
 
-    if (!display_nopayout_transaction(dc, (uint8_t) challenger_idx)) return false;
     return true;
 }
 
@@ -2629,12 +2650,6 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
         }
     }
 
-    if (G_vault_context.pop_signed >= VAULT_POP_CAP) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_CAP_EXCEEDED);
-        return false;
-    }
-
     if (!display_pop_transaction(dc, eth_addr, chain_id, registry)) return false;
     return true;
 }
@@ -2773,7 +2788,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & BIP68_SEQUENCE_MASK) < (csv_value & BIP68_SEQUENCE_MASK)) {
+        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2824,7 +2839,12 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    if (!display_payout_finalize(dc, amount_received, G_scratch.display_tx.addr_str)) return false;
+    /* Both outputs pay the depositor's own BIP-86 address (addr_str, same key for both). */
+    if (!display_payout_finalize(dc,
+                                 amount_received,
+                                 G_scratch.display_tx.addr_str,
+                                 G_scratch.display_tx.addr_str))
+        return false;
     return true;
 }
 

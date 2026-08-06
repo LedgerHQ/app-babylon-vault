@@ -416,34 +416,3 @@ def sign_psbt_payout_finalize_reject_nav(device: Device) -> List[NavInsID]:
     ]
 
 
-def sign_psbt_nopayout_approve_instructions(device: Device) -> Instructions:
-    """Approve-path Instructions for NoPayout — Nano devices only.
-
-    Touch devices should use sign_psbt_nopayout_approve_nav() instead.
-
-    The 64-char hex challenger key spans ~6 Nano screens, so the navigator
-    RIGHT_CLICKs through them before finding "Sign".  That is expected; the
-    resulting snapshot skips are not failures.
-    """
-    instructions = Instructions(device)
-    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
-    return instructions
-
-
-def sign_psbt_nopayout_approve_nav(device: Device, total_keys: int) -> List[NavInsID]:
-    """Flat approve-path navigation for NoPayout — touch devices.
-
-    NoPayout uses a streaming review showing all keepers and challengers.
-    Layout: intro page + key content pages (no params segment).
-    Stax:      ceil(total_keys / 2) key pages per content screen
-    Flex/Apex: 1 key per content screen
-
-    n_swipes = total_keys for Flex/Apex (intro consumes the first swipe;
-    the last key page auto-triggers the finish callback without an extra swipe).
-    """
-    assert not device.is_nano, "Nano uses sign_psbt_nopayout_approve_instructions"
-    n_swipes = 1 + (total_keys + 1) // 2
-    return (
-        [NavInsID.SWIPE_CENTER_TO_LEFT] * n_swipes
-        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
-    )

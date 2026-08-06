@@ -370,6 +370,44 @@ keeper keys by index.
 
 ---
 
+## N=1 compact multisig encoding in tapscript leaves
+
+**Important:** the device uses a compact encoding for tapscript multisig leaves when the
+number of signers (N) is 1. Any host building HTLC or vault scripts with a single keeper or
+challenger MUST match this encoding exactly, or the device will reject the PSBT with a script
+mismatch error.
+
+### General form (N > 1)
+
+Non-final position (followed by more signers in the same leaf):
+```
+<key_1> OP_CHECKSIG <key_2> OP_CHECKSIGADD … <key_N> OP_CHECKSIGADD <N> OP_NUMEQUALVERIFY
+```
+
+Final signer of a leaf:
+```
+<key_1> OP_CHECKSIG <key_2> OP_CHECKSIGADD … <key_N> OP_CHECKSIGADD <N> OP_NUMEQUAL
+```
+
+### Compact form (N = 1)
+
+When there is exactly one signer, the device emits:
+
+| Position | Compact encoding | Naive (non-compact) equivalent |
+|----------|-----------------|-------------------------------|
+| Non-final (e.g. intermediate keeper before another signer) | `<key> OP_CHECKSIGVERIFY` | `<key> OP_CHECKSIG <1> OP_NUMEQUALVERIFY` |
+| Final signer of the leaf | `<key> OP_CHECKSIG` | `<key> OP_CHECKSIG <1> OP_NUMEQUAL` |
+
+The compact and naive forms produce **different TapLeaf hashes** because the script bytes
+differ. A host building an HTLC leaf or vault leaf with a single keeper or challenger that
+uses the naive form will get a different Merkle root, and the device will reject the PSBT
+because the reconstructed script does not match.
+
+This applies to both the HTLC taproot tree and the vault UTXO taproot tree. Whenever
+`keeper_count == 1` or `challenger_count == 1`, use the compact encoding shown above.
+
+---
+
 ## Payout PSBT count and claimer index
 
 `APPROVE_VAULT_INTENT` declares `keeper_count` keepers. The total number of Payout PSBTs

@@ -56,8 +56,6 @@ from .vault_client import (
     TEST_DEPOSITOR_XONLY_TESTNET,
 )
 from .instructions import (
-    sign_psbt_nopayout_approve_instructions,
-    sign_psbt_nopayout_approve_nav,
     vault_intent_steps_for_keys,
 )
 
@@ -2788,7 +2786,7 @@ def test_sign_psbt_nopayout(
     bitcoin_network: str,
     device,
 ) -> None:
-    """NoPayout: device displays challenger info, user approves, Input 0 is signed."""
+    """NoPayout: silent (no display), Input 0 is signed without user confirmation."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
@@ -2797,19 +2795,9 @@ def test_sign_psbt_nopayout(
 
     # _TEST_KEEPER_PKS[0] is a valid challenger (keeper) in the loaded intent.
     psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
-    tname = "nopayout/approve_" + bitcoin_network
 
-    if device.is_nano:
-        result = client.sign_psbt(psbt, dummy_wallet, None, navigator,
-                                  testname=tname,
-                                  instructions=sign_psbt_nopayout_approve_instructions(device))
-    else:
-        sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
-                                       testname=tname,
-                                       nav_instructions=sign_psbt_nopayout_approve_nav(
-                                           device, len(_TEST_KEEPER_PKS) + len(_TEST_CHALLENGER_PKS)))
-        return
-
+    # NoPayout is silent — no display, no navigator interaction required.
+    result = client.sign_psbt(psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
 
@@ -2827,19 +2815,10 @@ def test_sign_psbt_nopayout_cap_exhausted(
     _setup_payout_state(client, navigator, device, coin_type)
 
     # Cap = 1 × (1 keeper + 1 challenger) = 2.
-    # Navigate through the display for each successful signing (display is now shown).
-    for i, ch_pk in enumerate(_TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS):
+    # NoPayout is silent — no navigator interaction for each signing.
+    for ch_pk in (_TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS):
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
-        tname = f"nopayout/cap_iter_{i}_{bitcoin_network}"
-        if device.is_nano:
-            client.sign_psbt(psbt, dummy_wallet, None, navigator,
-                             testname=tname,
-                             instructions=sign_psbt_nopayout_approve_instructions(device))
-        else:
-            sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
-                                           testname=tname,
-                                           nav_instructions=sign_psbt_nopayout_approve_nav(
-                                               device, len(_TEST_KEEPER_PKS) + len(_TEST_CHALLENGER_PKS)))
+        client.sign_psbt(psbt, dummy_wallet, None)
 
     # One more exceeds the cap → SW_CAP_EXCEEDED before display, no navigation needed.
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
@@ -2886,19 +2865,9 @@ def test_sign_psbt_nopayout_32_challengers(
     client.sign_psbt(pegin_psbt, dummy_wallet, None)
 
     # Sign with the last challenger key — the device must walk all 33 entries to find it.
+    # NoPayout is silent — no display, no navigator interaction required.
     psbt = _build_nopayout_psbt(dep_pk, challenger_pks[-1])
-    tname = "nopayout/32challengers_" + bitcoin_network
-
-    if device.is_nano:
-        result = client.sign_psbt(psbt, dummy_wallet, None, navigator,
-                                  testname=tname,
-                                  instructions=sign_psbt_nopayout_approve_instructions(device))
-    else:
-        sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
-                                       testname=tname,
-                                       nav_instructions=sign_psbt_nopayout_approve_nav(device, total_keys))
-        return
-
+    result = client.sign_psbt(psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
 
@@ -3890,19 +3859,11 @@ def test_sign_psbt_cap_recovery_via_new_intent(
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     # Step 1 + 2: load intent, sign PegIn, exhaust NoPayout cap.
+    # NoPayout is silent — no navigator interaction for each signing.
     _setup_payout_state(client, navigator, device, coin_type)
-    n_keys = len(_TEST_KEEPER_PKS) + len(_TEST_CHALLENGER_PKS)
-    for i, ch_pk in enumerate(_TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS):
+    for ch_pk in (_TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS):
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
-        tname = f"nopayout/cap_recovery_iter_{i}_{bitcoin_network}"
-        if device.is_nano:
-            client.sign_psbt(psbt, dummy_wallet, None, navigator,
-                             testname=tname,
-                             instructions=sign_psbt_nopayout_approve_instructions(device))
-        else:
-            sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
-                                           testname=tname,
-                                           nav_instructions=sign_psbt_nopayout_approve_nav(device, n_keys))
+        client.sign_psbt(psbt, dummy_wallet, None)
 
     # Step 3: exceed cap → intent nullified (no screen shown before SW_CAP_EXCEEDED).
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
@@ -3914,14 +3875,7 @@ def test_sign_psbt_cap_recovery_via_new_intent(
     _setup_payout_state(client, navigator, device, coin_type)
 
     # Step 5: NoPayout succeeds — cap counters have been reset.
+    # NoPayout is silent — no navigator interaction required.
     recovery_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
-    tname = "nopayout/cap_recovery_" + bitcoin_network
-    if device.is_nano:
-        result = client.sign_psbt(recovery_psbt, dummy_wallet, None, navigator,
-                                  testname=tname,
-                                  instructions=sign_psbt_nopayout_approve_instructions(device))
-        _assert_single_schnorr_sig(result, dep_pk)
-    else:
-        sign_psbt_with_nav_and_compare(client, recovery_psbt, dummy_wallet, None, navigator,
-                                       testname=tname,
-                                       nav_instructions=sign_psbt_nopayout_approve_nav(device, n_keys))
+    result = client.sign_psbt(recovery_psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)

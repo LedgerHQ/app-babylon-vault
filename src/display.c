@@ -452,7 +452,8 @@ bool display_nopayout_transaction(dispatcher_context_t *dc, uint8_t challenger_i
 
 bool display_payout_finalize(dispatcher_context_t *dc,
                              uint64_t amount_received,
-                             const char *address) {
+                             const char *address,
+                             const char *cpfp_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
@@ -463,6 +464,7 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount received",
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 

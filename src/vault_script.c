@@ -697,7 +697,7 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     uint8_t tx[PEGIN_TX_SIZE];
     int off = 0;
 
-    /* version: 2 (LE) */
+    /* version: 3 TRUC (LE) */
     tx[off++] = (uint8_t) (PEGIN_TX_VERSION);
     tx[off++] = (uint8_t) (PEGIN_TX_VERSION >> 8);
     tx[off++] = (uint8_t) (PEGIN_TX_VERSION >> 16);

@@ -40,9 +40,14 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
  * ---------------------------------------------------------------------- */
 
 static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd) {
-    /* If DERIVE_CONTEXT_HASH completed, preserve the root and derivation path across
-     * the reset. The per-vault commitments (htlc_hashlock, auth_anchor_hash) are
-     * recomputed from the root once htlc_vout is known (see handle_key_batch).
+    if (G_vault_context.state != VAULT_STATE_HASH_DERIVED) {
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+
+    /* Preserve the root and derivation path across the context reset.
+     * The per-vault commitments (htlc_hashlock, auth_anchor_hash) are recomputed
+     * from the root once htlc_vout is known (see handle_key_batch).
      * derivation_path must survive so the F2 check in handle_key_batch can compare
      * it against the intent's depositor path. */
     uint8_t saved_root[VAULT_HASH256_LEN];

@@ -131,15 +131,19 @@ bool display_nopayout_transaction(dispatcher_context_t *dc, uint8_t challenger_i
  * @brief Screen 8 — Payout finalize review.
  *
  * Shown when the depositor self-claims after a successful Claim + Assert chain.
- * Displays the amount received (Output 0 value) and the depositor's bech32m
- * destination address.  Fee is not shown because the device signs Input 1 only
- * and has no attested value for Input 0's prevout.
+ * Displays the amount received (Output 0 value) and both output addresses so the
+ * user can verify both outputs pay their own BIP-86 address.  Fee is not shown
+ * because the device signs Input 1 only and has no attested value for Input 0's
+ * prevout.
  *
  * @param amount_received  Output 0 value in satoshis (funds going to depositor).
- * @param address          NUL-terminated bech32m destination address; caller keeps valid.
+ * @param address          NUL-terminated bech32m address for Output 0; caller keeps valid.
+ * @param cpfp_address     NUL-terminated bech32m address for Output 1 (CPFP anchor);
+ *                         caller keeps valid.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
 bool display_payout_finalize(dispatcher_context_t *dc,
                              uint64_t amount_received,
-                             const char *address);
+                             const char *address,
+                             const char *cpfp_address);
