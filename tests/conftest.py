@@ -49,13 +49,10 @@ configuration.OPTIONAL.CUSTOM_SEED = MNEMONIC
 pytest_plugins = ("ragger.conftest.base_conftest", )
 
 def pytest_sessionstart(session):
-    """Clear stale snapshots-tmp at session start.
-
-    check_no_extra_snapshots walks the entire snapshots-tmp tree after each
-    test.  Without this clear, tmp dirs left by previous sessions cause
-    spurious golden-snapshot deletions when the golden was updated since the
-    last full run.
-    """
+    # snapshots-tmp is the Ragger framework's ephemeral comparison directory,
+    # distinct from the golden snapshots/ tree.  Clearing it here prevents
+    # stale per-test subdirs from a previous session causing spurious deletions
+    # of golden snapshots that were updated between runs.
     tmp_root = TESTS_ROOT_DIR / "snapshots-tmp"
     if tmp_root.exists():
         shutil.rmtree(tmp_root)

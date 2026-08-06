@@ -30,10 +30,10 @@
 
 _Static_assert(
     VAULT_MAX_VAULTS *(VAULT_MAX_KEEPERS + 2) <= UINT16_MAX,
-    "payout cap overflows uint16_t — raise VAULT_MAX_VAULTS or VAULT_MAX_KEEPERS before merging");
+    "payout cap overflows uint16_t — reduce VAULT_MAX_VAULTS or VAULT_MAX_KEEPERS");
 _Static_assert(VAULT_MAX_VAULTS *(VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) <= UINT16_MAX,
-               "nopayout cap overflows uint16_t — raise VAULT_MAX_VAULTS, VAULT_MAX_KEEPERS, or "
-               "VAULT_MAX_CHALLENGERS before merging");
+               "nopayout cap overflows uint16_t — reduce VAULT_MAX_VAULTS, VAULT_MAX_KEEPERS, or "
+               "VAULT_MAX_CHALLENGERS");
 
 /* Maximum WITNESS_UTXO size: 8B value + 1B script_len varint + 34B P2TR script */
 #define MAX_WITNESS_UTXO_LEN (8 + 1 + 34)

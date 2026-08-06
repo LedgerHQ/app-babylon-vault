@@ -346,8 +346,10 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 
 static uint8_t g_nopayout_signing_idx;
 static nbgl_layoutTagValueList_t g_nopayout_keys_list;
-/* "Challenger 32 (signing)\0" = 24 bytes */
-static char g_nopayout_signing_label[24];
+/* "Challenger NNN (signing)\0" — 32 bytes fits up to 3-digit indices. */
+static char g_nopayout_signing_label[32];
+_Static_assert(sizeof(g_nopayout_signing_label) > sizeof("Challenger ") + 3u + sizeof(" (signing)"),
+               "g_nopayout_signing_label too small for 3-digit index");
 
 static void nopayout_stream_finish(void);
 static void nopayout_after_keys(bool confirm);
