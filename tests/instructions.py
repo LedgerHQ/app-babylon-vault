@@ -386,14 +386,23 @@ def sign_psbt_payout_finalize_approve_instructions(device: Device) -> Instructio
 def sign_psbt_payout_finalize_approve_nav(device: Device) -> List[NavInsID]:
     """Flat approve-path navigation for Screen 8 (PayoutFinalize) — touch devices.
 
-    Screen 8 shows 2 fields: "Amount received" and "Your address".
-    Both Stax and Flex/Apex render in 2 pages (intro + content), matching the
-    WC (Screen 6) layout pattern.
+    Screen 8 shows 3 fields: "Amount received", "Destination", and "CPFP address".
+    Stax renders across one more page than Flex/Apex (smaller display area).
     """
     assert not device.is_nano, "Nano uses sign_psbt_payout_finalize_approve_instructions"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+    if device.name == "stax":
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+        ]
+
+    else:
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
+        ]
+    return taps + [
         NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
         NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
     ]

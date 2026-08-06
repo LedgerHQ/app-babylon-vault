@@ -222,36 +222,20 @@ def test_payout_finalize_sequence_below_csv(
 
 
 def test_payout_finalize_sequence_above_csv(
-    client: "RaggerClient",
-    navigator: Navigator,
-    device: Device,
-    bitcoin_network: str,
+    client: "RaggerClient", bitcoin_network: str,
 ) -> None:
-    """PayoutFinalize succeeds when Input 1 nSequence == t2 + 1 (positive CSV boundary).
+    """PayoutFinalize fails when Input 1 nSequence == t2 + 1 (not an exact match).
 
-    HLD requires nSequence >= t2, so t2 + 1 must be accepted.
-    Reuses the same snapshot reference as the happy-path screen test.
+    HLD requires nSequence to encode exactly the CSV timelock t2 from the leaf.
+    Any value other than t2 is rejected, including t2 + 1.
     """
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
-    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type,
-                                        amount_received=_AMOUNT_RECEIVED)
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
     psbt.tx.vin[1].nSequence = _PAYOUT_TIMELOCK + 1
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    tname = "screen8_payout_finalize/sequence_above_csv_" + bitcoin_network
-
-    if device.is_nano:
-        result = client.sign_psbt(
-            psbt, dummy_wallet, None, navigator,
-            testname=tname,
-            instructions=sign_psbt_payout_finalize_approve_instructions(device),
-        )
-        _assert_single_schnorr_sig(result, d_key, expected_input=1)
-    else:
-        sign_psbt_with_nav_and_compare(
-            client, psbt, dummy_wallet, None, navigator,
-            testname=tname,
-            nav_instructions=sign_psbt_payout_finalize_approve_nav(device),
-        )
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
 
 
 def test_payout_finalize_output1_wrong_value(
