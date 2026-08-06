@@ -117,6 +117,20 @@ security hardening, protocol-correctness fixes, and documentation alignment.
   casts via block-scoped `_HASH_FEED` / `_HASH_FINAL` macros, fixing `-Werror,-Wunused-result`
   build errors on all target devices.
 
+### Changed (HLD audit round 2)
+
+- **NoPayout is silent**: removed user-confirmation screen; NoPayout is approved implicitly
+  at `APPROVE_VAULT_INTENT` time per HLD v22.
+- **PoP signature cap removed**: standalone flows carry no intent-bound cap per HLD v22.
+- **VK Payout Output 0 value-only**: device no longer reconstructs the VK's registered
+  address; any standard scriptPubKey is accepted (value enforced).
+- **PayoutFinalize**: nSequence must now match the CSV timelock exactly; display extended
+  to show both output addresses so the user can verify all funds go to their BIP-86 address.
+- **`APPROVE_VAULT_INTENT` prerequisite**: P1=0x00 now rejects with `SW_BAD_STATE` if no
+  prior `DERIVE_CONTEXT_HASH` has run, consistent with the HLD sequencing requirement.
+- `docs/apdu.md`, `APP_SPECIFICATION.md`, and `docs/integration-guide.md` aligned with
+  HLD v22 (corrected tags, phase labels, field counts, state names, HTLC value bounds).
+
 ## [0.9.3] - NAPPS-1465: v22 per-type signature caps
 
 Implements the per-type signature-count caps introduced in HLD v22 as a sampling
