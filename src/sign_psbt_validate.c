@@ -28,9 +28,8 @@
  * 1B n_hashes + up to 2×32B leaf_hashes + 4B fingerprint + 5*4B path = 89 bytes max */
 #define MAX_TAP_BIP32_DERIV_VALUE_LEN (1 + 2 * 32 + 4 + 5 * 4)
 
-_Static_assert(
-    VAULT_MAX_VAULTS *(VAULT_MAX_KEEPERS + 2) <= UINT16_MAX,
-    "payout cap overflows uint16_t — reduce VAULT_MAX_VAULTS or VAULT_MAX_KEEPERS");
+_Static_assert(VAULT_MAX_VAULTS *(VAULT_MAX_KEEPERS + 2) <= UINT16_MAX,
+               "payout cap overflows uint16_t — reduce VAULT_MAX_VAULTS or VAULT_MAX_KEEPERS");
 _Static_assert(VAULT_MAX_VAULTS *(VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) <= UINT16_MAX,
                "nopayout cap overflows uint16_t — reduce VAULT_MAX_VAULTS, VAULT_MAX_KEEPERS, or "
                "VAULT_MAX_CHALLENGERS");
