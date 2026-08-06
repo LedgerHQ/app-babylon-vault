@@ -639,6 +639,27 @@ def test_derive_clears_scalars_loaded(client: RaggerClient, navigator: Navigator
     assert exc.value.status == SW_BAD_STATE
 
 
+def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_network: str):
+    """DERIVE_CONTEXT_HASH P1=0x00 (initial chunk) must clear scalars_loaded.
+
+    Flow: silent DERIVE → APPROVE P1=0x00 (sets scalars_loaded=True) →
+          second silent DERIVE P1=0x00 (must clear G_approve_intent_state) →
+          APPROVE P1=0x02 → SW_BAD_STATE (scalars_loaded cleared, no navigator needed).
+
+    Complements test_derive_clears_scalars_loaded which uses the full interactive flow.
+    """
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Second P1=0x00 initial chunk must zero G_approve_intent_state.
+    _derive_silent(client, bitcoin_network)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
+    assert exc.value.status == SW_BAD_STATE
+
+
 # ---------------------------------------------------------------------------
 # TLV field range validation
 # ---------------------------------------------------------------------------
@@ -799,6 +820,20 @@ def test_scalars_without_context_hash_rejected(client: RaggerClient,
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, scalars)
     assert exc.value.status == SW_BAD_STATE
+
+
+def test_scalars_without_context_hash_accepted(client: RaggerClient, bitcoin_network: str):
+    """P1=0x00 scalar payload after P2=0x01 (silent) DERIVE_CONTEXT_HASH → SW_OK.
+
+    Silent derive (P2=0x01, no confirmation screen) still reaches HASH_DERIVED state,
+    so a subsequent APPROVE_VAULT_INTENT P1=0x00 must be accepted.  The app_name
+    confirmation is deferred to the display_vault_intent step (MEDIUM-1 fix).
+
+    Complements test_scalars_without_context_hash_rejected (no derive at all → rejected).
+    """
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)  # must not raise
 
 
 # ---------------------------------------------------------------------------

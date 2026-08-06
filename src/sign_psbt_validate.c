@@ -1879,8 +1879,6 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    if (!display_nopayout_transaction(dc, (uint8_t) challenger_idx)) return false;
-
     /* Cap: vault_count × (keeper_count + challenger_count) */
     uint16_t cap =
         (uint16_t) ((uint16_t) intent->vault_count *

@@ -116,20 +116,6 @@ bool display_pop_transaction(dispatcher_context_t *dc,
                              const char *registry);
 
 /**
- * @brief NoPayout transaction confirmation screen.
- *
- * Shown before the device signs the NoPayout Assert:0 leaf.  Streams all keepers
- * and challengers from G_vault_intent so the user can verify this is an expected
- * challenge.  The signing entry (identified by challenger_idx) is labelled
- * "(signing)".
- *
- * @param challenger_idx  0-based combined-pool index (keepers first, then challengers).
- * @return true   User approved.
- * @return false  User rejected (SW_DENY already sent).
- */
-bool display_nopayout_transaction(dispatcher_context_t *dc, uint8_t challenger_idx);
-
-/**
  * @brief Screen 8 — Payout finalize review.
  *
  * Shown when the depositor self-claims after a successful Claim + Assert chain.
