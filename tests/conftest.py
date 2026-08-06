@@ -3,6 +3,7 @@ from ragger.backend import RaisePolicy
 from ragger.backend.interface import BackendInterface
 from ragger.conftest import configuration
 import os
+import shutil
 from pathlib import Path
 from typing import Literal, List, Optional, Union
 import pytest
@@ -46,6 +47,19 @@ configuration.OPTIONAL.CUSTOM_SEED = MNEMONIC
 
 # Pull all features from the base ragger conftest using the overridden configuration
 pytest_plugins = ("ragger.conftest.base_conftest", )
+
+def pytest_sessionstart(session):
+    """Clear stale snapshots-tmp at session start.
+
+    check_no_extra_snapshots walks the entire snapshots-tmp tree after each
+    test.  Without this clear, tmp dirs left by previous sessions cause
+    spurious golden-snapshot deletions when the golden was updated since the
+    last full run.
+    """
+    tmp_root = TESTS_ROOT_DIR / "snapshots-tmp"
+    if tmp_root.exists():
+        shutil.rmtree(tmp_root)
+
 
 def pytest_addoption(parser):
     parser.addoption("--network", default="test")

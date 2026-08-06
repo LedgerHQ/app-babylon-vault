@@ -3891,11 +3891,20 @@ def test_sign_psbt_cap_recovery_via_new_intent(
 
     # Step 1 + 2: load intent, sign PegIn, exhaust NoPayout cap.
     _setup_payout_state(client, navigator, device, coin_type)
-    for ch_pk in _TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS:
+    n_keys = len(_TEST_KEEPER_PKS) + len(_TEST_CHALLENGER_PKS)
+    for i, ch_pk in enumerate(_TEST_KEEPER_PKS + _TEST_CHALLENGER_PKS):
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
-        client.sign_psbt(psbt, dummy_wallet, None)
+        tname = f"nopayout/cap_recovery_iter_{i}_{bitcoin_network}"
+        if device.is_nano:
+            client.sign_psbt(psbt, dummy_wallet, None, navigator,
+                             testname=tname,
+                             instructions=sign_psbt_nopayout_approve_instructions(device))
+        else:
+            sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
+                                           testname=tname,
+                                           nav_instructions=sign_psbt_nopayout_approve_nav(device, n_keys))
 
-    # Step 3: exceed cap → intent nullified.
+    # Step 3: exceed cap → intent nullified (no screen shown before SW_CAP_EXCEEDED).
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
@@ -3906,5 +3915,13 @@ def test_sign_psbt_cap_recovery_via_new_intent(
 
     # Step 5: NoPayout succeeds — cap counters have been reset.
     recovery_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
-    result = client.sign_psbt(recovery_psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)
+    tname = "nopayout/cap_recovery_" + bitcoin_network
+    if device.is_nano:
+        result = client.sign_psbt(recovery_psbt, dummy_wallet, None, navigator,
+                                  testname=tname,
+                                  instructions=sign_psbt_nopayout_approve_instructions(device))
+        _assert_single_schnorr_sig(result, dep_pk)
+    else:
+        sign_psbt_with_nav_and_compare(client, recovery_psbt, dummy_wallet, None, navigator,
+                                       testname=tname,
+                                       nav_instructions=sign_psbt_nopayout_approve_nav(device, n_keys))

@@ -191,7 +191,7 @@ def test_payout_finalize_version3_accepted(
                                         amount_received=_AMOUNT_RECEIVED)
     psbt.tx.nVersion = 3
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    tname = "screen8_payout_finalize/screen_" + bitcoin_network
+    tname = "screen8_payout_finalize/version3_" + bitcoin_network
 
     if device.is_nano:
         result = client.sign_psbt(
@@ -237,7 +237,7 @@ def test_payout_finalize_sequence_above_csv(
                                         amount_received=_AMOUNT_RECEIVED)
     psbt.tx.vin[1].nSequence = _PAYOUT_TIMELOCK + 1
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    tname = "screen8_payout_finalize/screen_" + bitcoin_network
+    tname = "screen8_payout_finalize/sequence_above_csv_" + bitcoin_network
 
     if device.is_nano:
         result = client.sign_psbt(
