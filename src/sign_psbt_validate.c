@@ -140,6 +140,7 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     size_t data_len = data->size - data->offset;
     if (data_len < 1) return;
 
+    size_t full_key_start = data->offset;
     uint8_t key_type;
     buffer_read_u8(data, &key_type);
     if (key_type != PSBT_IN_TAP_LEAF_SCRIPT) return;
@@ -156,7 +157,7 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
         state->ambiguous = true; /* treat oversized as error */
         return;
     }
-    state->control_block_len = (uint8_t) cb_len;
+    state->control_block_len = (uint16_t) cb_len;
     memcpy(state->control_block, data->ptr + data->offset, cb_len);
 
     /*
@@ -166,13 +167,12 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
      * temporary full key reconstruction: the full key is key_type || control_block,
      * which is exactly what was in `data` before we read the type byte.
      */
-    uint8_t full_key[1 + sizeof(state->control_block)];
-    full_key[0] = PSBT_IN_TAP_LEAF_SCRIPT;
-    memcpy(full_key + 1, state->control_block, cb_len);
+    /* data->ptr + full_key_start is key_type || control_block — the full map key. */
+    const uint8_t *full_key = data->ptr + full_key_start;
     size_t full_key_len = 1 + cb_len;
 
     /* Use leaf_check.actual_buf (union offset VAULT_SCRIPT_MAX_LEN) as the read buffer.
-     * G_scratch.tls (state) occupies union offsets 0..~2636; actual_buf starts at 2560
+     * G_scratch.tls (state) occupies union offsets 0..~2830; actual_buf starts at 2560
      * so it only aliases the tail of tls.leaf_script and tls.leaf_script_len/leaf_version —
      * fields that haven't been set yet.  Write leaf_version/leaf_script_len AFTER the
      * memcpy so we don't corrupt the source before copying it. */

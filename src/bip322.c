@@ -100,7 +100,7 @@ bool bip322_parse_pop_message(const uint8_t *msg,
  * tagged_hash("BIP0322-signed-message", message) = SHA256(tag||tag||message)
  * where tag = SHA256("BIP0322-signed-message").
  *
- * txid = reverse(SHA256(SHA256(to_spend_bytes))) — Bitcoin wire format.
+ * txid = SHA256(SHA256(to_spend_bytes)) — PSBT/wire byte order (SHA256d output, not reversed).
  */
 bool bip322_compute_to_spend_txid(const uint8_t *message,
                                   int msg_len,
@@ -211,14 +211,6 @@ bool bip322_compute_to_spend_txid(const uint8_t *message,
     cx_sha256_init_no_throw(&sha);
     if (cx_hash_no_throw(&sha.header, CX_LAST, hash1, sizeof(hash1), txid_out, 32) != CX_OK) {
         return false;
-    }
-
-    /* Reverse to Bitcoin wire format (SHA256d output is in natural order;
-     * Bitcoin serializes txids in reversed byte order as used in raw txs and PSBTs). */
-    for (int i = 0; i < 16; i++) {
-        uint8_t tmp = txid_out[i];
-        txid_out[i] = txid_out[31 - i];
-        txid_out[31 - i] = tmp;
     }
 
     return true;

@@ -36,16 +36,16 @@
  * If any assert fires, review the field ordering rules in sign_standalone_scratch_t's
  * comment in globals.h.
  */
-_Static_assert(offsetof(tap_leaf_script_state_t, leaf_script) == 68,
-               "sign_standalone aliasing: tls.leaf_script offset must be 68");
+_Static_assert(offsetof(tap_leaf_script_state_t, leaf_script) == 262,
+               "sign_standalone aliasing: tls.leaf_script offset must be 262");
 _Static_assert(offsetof(sign_standalone_scratch_t, leaf_hash) == 0,
                "sign_standalone layout changed: leaf_hash must be first");
 _Static_assert(offsetof(sign_standalone_scratch_t, leaf_key) == VAULT_HASH256_LEN,
                "sign_standalone layout changed: leaf_key must be at offset 32");
 _Static_assert(offsetof(sign_standalone_scratch_t, input_spk) == 2 * VAULT_XONLY_PUBKEY_LEN,
                "sign_standalone layout changed: input_spk must be at offset 64");
-/* input_spk must start before tls.leaf_script so writes to input_spk[0..3] only
- * hit dead control_block/control_block_len bytes (offsets 64-67), not leaf_script. */
+/* input_spk must start before tls.leaf_script so writes to input_spk[0..33] only
+ * hit dead control_block bytes (offsets 64-97), not leaf_script. */
 _Static_assert(offsetof(sign_standalone_scratch_t, input_spk) <
                    offsetof(tap_leaf_script_state_t, leaf_script),
                "sign_standalone aliasing: input_spk must start before tls.leaf_script");

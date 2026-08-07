@@ -28,8 +28,9 @@
 //   G_scratch (union)             5120 B  (largest member: refund_leaf_check_t =
 //                                          2 × VAULT_SCRIPT_MAX_LEN; was 6224 B when
 //                                          display_vault_intent_scratch_t dominated)
-//                                         tap_leaf_script_state_t tls: 2636 B — in union, no growth
-//                                         display: ~524 B — keys via 4-slot callback ring buffer
+//                                         tap_leaf_script_state_t tls: ~2830 B — in union, grows
+//                                         with VAULT_MAX_TAPTREE_DEPTH display: ~524 B — keys via
+//                                         4-slot callback ring buffer
 //   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
 //                                       ≤ 9128 B  (well within remaining SRAM after min stack)
 // display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
