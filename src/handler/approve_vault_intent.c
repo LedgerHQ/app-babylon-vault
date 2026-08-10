@@ -123,6 +123,11 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
             SEND_SW(dc, tlv_err_to_sw(err));
             return;
         }
+        if (consumed == 0) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
 
         /* Reject vault_provider_pk that is not a valid secp256k1 x-only point. */
         uint8_t tmp_point[65];

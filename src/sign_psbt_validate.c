@@ -1625,10 +1625,29 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* Out1:
      *   VP claimer: commission_fee to VP's registered address — value only (v22).
      *   Depositor claimer: CPFP anchor (DUST) to depositor — BIP-86 P2TR(depositor), verified.
-     *   VK claimer: CPFP anchor (DUST) to VK's registered address — value only (v22). */
-    if (!_read_output(dc, st->outputs_root, st->n_outputs, 1, out_spk, &out_value)) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
+     *   VK claimer: CPFP anchor (DUST) to VK's registered address — value only (v22).
+     *
+     * Only the Depositor's CPFP anchor requires script verification; VP/VK registered addresses
+     * may be any standard script type (v22), so use the var-len reader for those. */
+    if (claimer_idx == (uint8_t) (intent->keeper_count + 1u)) {
+        /* Depositor: need script for BIP-86 P2TR verification. */
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, 1, out_spk, &out_value)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    } else {
+        /* VP/VK: value only (v22) — host-provided registered address, any standard script. */
+        uint8_t tmp_spk[100];
+        if (_read_output_varlen(dc,
+                                st->outputs_root,
+                                st->n_outputs,
+                                1,
+                                tmp_spk,
+                                sizeof(tmp_spk),
+                                &out_value) < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
     }
     {
         if (claimer_idx == 0) {
@@ -1664,9 +1683,16 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     total_out += out_value;
 
     /* VP only: Out2 = CPFP anchor (VAULT_DUST_LIMIT) to VP's registered address — value only (v22).
-     */
+     * VP's registered address may be any standard script type; only value is enforced. */
     if (claimer_idx == 0) {
-        if (!_read_output(dc, st->outputs_root, st->n_outputs, 2, out_spk, &out_value)) {
+        uint8_t tmp_spk[100];
+        if (_read_output_varlen(dc,
+                                st->outputs_root,
+                                st->n_outputs,
+                                2,
+                                tmp_spk,
+                                sizeof(tmp_spk),
+                                &out_value) < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2785,7 +2811,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
 
     /* Validate Input 1 PSBT_IN_SEQUENCE against the payout leaf CSV timelock.
      * BIP-68: bit 31 enables/disables sequence, bit 22 selects block vs time.
-     * nSequence must be block-based and satisfy nSequence >= t2 (not exact match). */
+     * nSequence must be block-based and encode exactly the CSV timelock t2. */
     {
         uint32_t nsequence = 0;
         int seq_res = call_get_merkleized_map_value_u32_le(dc,
