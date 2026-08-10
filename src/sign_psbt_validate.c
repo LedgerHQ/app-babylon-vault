@@ -1329,6 +1329,103 @@ static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
     return true;
 }
 
+/*
+ * Identify the Payout claimer from Input 1's PSBT_IN_TAP_LEAF_SCRIPT.
+ *
+ * The Assert:0 payout leaf always begins OP_PUSHBYTES_32 <claimer_key(32)>
+ * OP_CHECKSIGVERIFY.  Reading the key from the host-provided leaf and matching
+ * it against the approved intent reduces claimer detection from up to
+ * (keeper_count+2) ECC tweaks to a linear key scan plus one leaf rebuild.
+ *
+ * Reads PSBT_IN_TAP_LEAF_SCRIPT into G_scratch.leaf_check.actual_buf;
+ * reconstructs the expected leaf into G_scratch.leaf_check.expected_script
+ * and verifies byte-for-byte so the host cannot forge a different leaf shape.
+ *
+ * Returns claimer_idx (0..keeper_count+1) on success; sends SW and returns -1
+ * on failure.
+ */
+static int _detect_payout_claimer(dispatcher_context_t *dc,
+                                  const merkleized_map_commitment_t *input1_map,
+                                  int gi) {
+    const vault_intent_t *intent = &G_vault_intent;
+
+    /* PSBT key: type(1B) | leaf_version|parity(1B) | NUMS_internal_key(32B).
+     * Parity is unknown until the tweak is computed; try both values. */
+    uint8_t psbt_key[1 + 1 + VAULT_XONLY_PUBKEY_LEN];
+    psbt_key[0] = PSBT_IN_TAP_LEAF_SCRIPT;
+    memcpy(psbt_key + 2, VAULT_NUMS_XONLY, VAULT_XONLY_PUBKEY_LEN);
+
+    int raw_len = -1;
+    for (uint8_t par = 0; par <= 1u; par++) {
+        psbt_key[1] = (uint8_t) (TAPSCRIPT_LEAF_VERSION | par);
+        int n = call_get_merkleized_map_value(dc,
+                                              input1_map,
+                                              psbt_key,
+                                              sizeof(psbt_key),
+                                              G_scratch.leaf_check.actual_buf,
+                                              sizeof(G_scratch.leaf_check.actual_buf));
+        if (n > 1) {
+            raw_len = n;
+            break;
+        }
+    }
+
+    /* Value format: <script_bytes> | <leaf_version(1B)>. */
+    if (raw_len <= 1 || G_scratch.leaf_check.actual_buf[raw_len - 1] != TAPSCRIPT_LEAF_VERSION) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return -1;
+    }
+    int script_len = raw_len - 1;
+
+    /* Minimum valid payout leaf: OP_PUSHBYTES_32 <key(32)> OP_CHECKSIGVERIFY = 34 bytes. */
+    if (script_len < 34 || G_scratch.leaf_check.actual_buf[0] != OP_PUSHBYTES_32) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return -1;
+    }
+    const uint8_t *host_key = G_scratch.leaf_check.actual_buf + 1;
+
+    /* Match host_key against intent keys to determine claimer_idx:
+     *   0             = VP
+     *   1..keeper_count = VK_{i-1}
+     *   keeper_count+1  = Depositor */
+    int claimer_idx = -1;
+    if (memcmp(host_key, intent->groups[gi].vault_provider_pk, VAULT_XONLY_PUBKEY_LEN) == 0)
+        claimer_idx = 0;
+    if (claimer_idx < 0) {
+        for (int i = 0; i < (int) intent->keeper_count; i++) {
+            if (memcmp(host_key, intent->keeper_pks[i], VAULT_XONLY_PUBKEY_LEN) == 0) {
+                claimer_idx = i + 1;
+                break;
+            }
+        }
+    }
+    if (claimer_idx < 0 && memcmp(host_key, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN) == 0)
+        claimer_idx = (int) intent->keeper_count + 1;
+
+    if (claimer_idx < 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return -1;
+    }
+
+    /* Reconstruct the full leaf from the approved intent and verify byte-for-byte.
+     * A key match alone is insufficient — the rest of the script (AppChallengers,
+     * UC multisig, CSV timelock) must also match the intent. */
+    int leaf_len = vault_build_assert0_payout_leaf(intent,
+                                                   gi,
+                                                   claimer_idx,
+                                                   G_scratch.leaf_check.expected_script,
+                                                   VAULT_SCRIPT_MAX_LEN);
+    if (leaf_len < 0 || leaf_len != script_len ||
+        memcmp(G_scratch.leaf_check.actual_buf,
+               G_scratch.leaf_check.expected_script,
+               (size_t) leaf_len) != 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return -1;
+    }
+
+    return claimer_idx;
+}
+
 static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     if (G_vault_context.state != VAULT_STATE_INTENT_LOADED) {
         SEND_SW(dc, SW_BAD_STATE);
@@ -1384,57 +1481,15 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
     ASSERT_GROUP_IDX(dc, intent, gi);
 
-    /* --- Input 1: open and detect claimer_idx from Assert:0 Payout leaf spk ---
-     * Try each claimer_idx; the first whose computed P2TR scriptPubKey matches
-     * Input 1's PSBT_IN_WITNESS_UTXO script is the valid claimer. */
+    /* --- Input 1: open map and detect claimer_idx from TAP_LEAF_SCRIPT --- */
     merkleized_map_commitment_t input1_map;
     if (call_get_merkleized_map(dc, st->inputs_root, 2, 1, &input1_map) < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
-    int claimer_idx = -1;
-    {
-        uint8_t wu1[8 + 1 + VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (call_get_merkleized_map_value(dc,
-                                          &input1_map,
-                                          (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                          1,
-                                          wu1,
-                                          sizeof(wu1)) != (int) sizeof(wu1) ||
-            wu1[8] != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        const uint8_t *input1_spk = wu1 + 9;
-        for (int ci = 0; ci <= (int) intent->keeper_count + 1; ci++) {
-            int leaf_len = vault_build_assert0_payout_leaf(intent,
-                                                           gi,
-                                                           ci,
-                                                           G_scratch.leaf_check.expected_script,
-                                                           VAULT_SCRIPT_MAX_LEN);
-            if (leaf_len < 0) continue;
-            uint8_t lh[VAULT_HASH256_LEN];
-            vault_taproot_leaf_hash(G_scratch.leaf_check.expected_script, leaf_len, lh);
-            uint8_t parity;
-            uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-            if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, lh, VAULT_HASH256_LEN, &parity, tweaked) !=
-                0)
-                continue;
-            uint8_t cand_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-            cand_spk[0] = OP_1;
-            cand_spk[1] = OP_PUSHBYTES_32;
-            memcpy(cand_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
-            if (memcmp(input1_spk, cand_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
-                claimer_idx = ci;
-                break;
-            }
-        }
-    }
-    if (claimer_idx < 0) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
+    int claimer_idx = _detect_payout_claimer(dc, &input1_map, gi);
+    if (claimer_idx < 0) return false;
 
     /* Store detected indices for sign_custom_inputs. */
     G_vault_context.vault_group_index = (uint8_t) gi;
@@ -1556,9 +1611,10 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
     }
 
-    /* Build Assert:0 Payout leaf for claimer_idx, verify WITNESS_UTXO and
-     * TAP_LEAF_SCRIPT.  Overwrites G_scratch.leaf_check.expected_script (safe:
-     * Input 0 checks are complete). */
+    /* Build Assert:0 Payout leaf for claimer_idx and verify WITNESS_UTXO.
+     * TAP_LEAF_SCRIPT was already read and verified byte-for-byte in
+     * _detect_payout_claimer; only the value check remains here.
+     * Overwrites G_scratch.leaf_check.expected_script (safe: Input 0 done). */
     {
         int leaf_len = vault_build_assert0_payout_leaf(intent,
                                                        gi,
@@ -1591,7 +1647,6 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 
         if (!_payout_check_witness_utxo(dc, &input1_map, expected_spk, VAULT_DUST_LIMIT))
             return false;
-        if (!_payout_check_single_leaf_script(dc, &input1_map, leaf_len, parity)) return false;
     }
 
     /* --- Outputs --- */

@@ -39,6 +39,16 @@ security hardening, protocol-correctness fixes, and documentation alignment.
   `pegin_group_mask` (2-byte bitmask) to `vault_context_t`; bit `gi` is checked in
   `_validate_pegin` before accepting the signing and set in `sign_custom_inputs` after the
   signature is produced.  A duplicate triggers `vault_context_invalidate` and `SW_CAP_EXCEEDED`.
+- **Payout claimer detection: O(keeper_count) key scan instead of O(keeper_count) ECC ops**
+  (`sign_psbt_validate.c`, `_detect_payout_claimer`): the previous implementation identified
+  the claimer by trying every candidate's full tapscript commitment — up to 34 secp256k1 tweak
+  operations (~3.4 s at maximum keeper count), risking BLE timeout.  The new implementation
+  reads `PSBT_IN_TAP_LEAF_SCRIPT` for Input 1 directly (the host must supply it for any
+  script-path spend), extracts the claimer key from the fixed offset 1 of the Assert:0 payout
+  leaf, matches it against intent keys with `memcmp`, then reconstructs the full leaf from the
+  intent and verifies byte-for-byte so the host cannot forge a different leaf shape.  Detection
+  is now 2 PSBT lookups + 34 `memcmp` + 1 leaf rebuild, followed by a single ECC tweak for the
+  WITNESS_UTXO scriptPubKey check.  No wire-format or PSBT protocol change.
 - **Refund SIGHASH_DEFAULT only** (`_validate_display_refund`): `SIGHASH_ALL` (`0x01`) is no longer
   accepted for Refund inputs; only `SIGHASH_DEFAULT` (`0x00`, absent or explicit) is valid.
 - **Refund nSequence exact match** (`_validate_display_refund`): Input 0 `nSequence` must equal the
