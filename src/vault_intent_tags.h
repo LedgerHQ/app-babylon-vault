@@ -8,7 +8,7 @@
  *
  * Three-phase loading:
  *
- *   P1=0x00  Scalar payload — 12 mandatory fields.
+ *   P1=0x00  Scalar payload — 13 mandatory fields.
  *            Unknown tags are rejected.
  *
  *   P1=0x01  Per-vault group payload — vault_count groups, each with 6 fields
@@ -41,7 +41,7 @@
 #define TAG_PREPEGIN_TXID \
     ((uint16_t) 0x0027) /**< bytes — Pre-PegIn txid (little-endian)            (32 B)   */
 #define TAG_HTLC_REFUND_TIMELOCK \
-    ((uint16_t) 0x0103) /**< u32   — HTLC refund timelock T_refund [72, 1008]   (4 B BE) */
+    ((uint16_t) 0x0103) /**< u32   — HTLC refund timelock T_refund [72, 4320]   (4 B BE) */
 #define TAG_DEPOSITOR_DERIVATION_PATH \
     ((uint16_t) 0x0069) /**< u32[] — BIP-86 derivation path, exactly 5 levels  (20 B BE) */
 #define TAG_KEEPER_COUNT \

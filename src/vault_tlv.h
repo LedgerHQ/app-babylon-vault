@@ -22,10 +22,10 @@ typedef enum {
 /**
  * Parse and validate the APPROVE_VAULT_INTENT P1=0x00 TLV scalar payload.
  *
- * Accepts the 12 mandatory scalar tags (2-byte tags).  Unknown tags are
+ * Accepts the 13 mandatory scalar tags (2-byte tags).  Unknown tags are
  * rejected with VAULT_TLV_ERR_UNKNOWN_TAG.
  *
- * On success (VAULT_TLV_OK) all 12 scalar fields of @p out are populated.
+ * On success (VAULT_TLV_OK) all 13 scalar fields of @p out are populated.
  *
  * On any error @p out is left in an indeterminate state; the caller must
  * discard it (vault_context_invalidate zeros G_vault_intent).
@@ -37,17 +37,26 @@ typedef enum {
 vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t *out);
 
 /**
- * Parse and validate one APPROVE_VAULT_INTENT P1=0x01 per-vault group payload.
+ * Parse and validate one APPROVE_VAULT_INTENT P1=0x01 per-vault group TLV record.
+ *
+ * A single APDU may carry multiple back-to-back group records; call this function
+ * in a loop, advancing @p data by @p *consumed bytes after each successful return.
  *
  * Accepts the 6 mandatory per-vault group tags (TAG_GRP_* namespace, 2-byte tags).
- * All 6 fields must be present; unknown tags are rejected.
+ * Stops as soon as all 6 fields have been seen; remaining bytes in the buffer are
+ * left for the next call.  All 6 fields must be present; unknown tags are rejected.
  *
- * On success (VAULT_TLV_OK) all 6 wire fields of @p out are populated.
+ * On success (VAULT_TLV_OK) all 6 wire fields of @p out are populated and
+ * @p *consumed holds the number of bytes consumed from @p data.
  *
- * On any error @p out is left in an indeterminate state.
+ * On any error @p out and @p *consumed are left in an indeterminate state.
  *
- * @param data  Pointer to the raw TLV bytes for one group (cmd->data).
- * @param len   Number of bytes in the buffer (cmd->lc).
- * @param out   Destination group struct to fill.
+ * @param data      Pointer to the raw TLV bytes (start of a group record).
+ * @param len       Number of bytes available from @p data.
+ * @param out       Destination group struct to fill.
+ * @param consumed  Set to the number of bytes consumed on success.
  */
-vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_group_t *out);
+vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data,
+                                      size_t len,
+                                      vault_group_t *out,
+                                      size_t *consumed);

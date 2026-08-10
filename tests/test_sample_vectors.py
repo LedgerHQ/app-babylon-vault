@@ -1,19 +1,25 @@
 """
-Parser / size-robustness tests over the real captured Babylon Vault vectors in
-tests/vectors/ (sourced from the signet `sample_tx` capture — see
-tests/vectors/README.txt for the full description of each artifact).
+Parser / size-robustness tests over Babylon Vault vectors in tests/vectors/.
+
+Two vector sets are covered:
+
+  signet/    Captured from the real signet `sample_tx` run (4 VK / 4 UC).
+             See tests/vectors/README.txt for the full description.
+             Signet batches: claimer_payout ×5, depositor_graph ×9.
+
+  generated/ Produced offline by `crates/ledger-vector-gen` (btc-vault repo)
+             using deterministic dummy keys (1 VK / 1 UC).
+             Generated batches: claimer_payout ×1, depositor_graph ×3.
 
 Goal: confirm that both the host-side PSBT/transaction parsers and the device's
-sign_psbt front-end ingest real-world, full-size vectors — in particular the
-multi-PSBT deposit batches (claimer_payout ×5, depositor_graph ×9, the latter
-being the largest deposit-flow payload) — and return a *defined* result rather
-than crashing, hanging, or mis-parsing.
+sign_psbt front-end ingest vectors of varying sizes and return a *defined* result
+rather than crashing, hanging, or mis-parsing.
 
-These captures were produced with a DIFFERENT seed than the Speculos test
-mnemonic (see conftest.py), so the device cannot own the depositor key nor hold
-a matching vault context. We therefore assert a clean, defined rejection (a
-known vault status word), NOT a successful signature: the point is robustness on
-real-world input, not signing it.
+Both sets use a DIFFERENT seed from the Speculos test mnemonic (see conftest.py):
+the signet capture uses a real signet seed; the generated vectors use
+`dummy_pubkey_seeded(5)` as depositor. Neither can be signed by the test device.
+We therefore assert a clean, defined rejection (a known vault status word), NOT
+a successful signature.
 
 The finalized raw transactions (refund / claim / assert / wrongly_challenged)
 are not PSBTs and cannot be fed to sign_psbt — they are covered as host-side
@@ -61,10 +67,16 @@ VECTORS_DIR = Path(__file__).parent.resolve() / "vectors"
 # Device-signable PSBT vectors (BIP-174). .json holds a JSON array of PSBT hexes
 # signed together in one signPsbts call; .txt holds a single PSBT hex.
 PSBT_FILES = [
+    # Signet captures (4 VK / 4 UC — foreign signet seed)
     "deposit-flow/pre_pegin.txt",
     "deposit-flow/pegin.json",
     "deposit-flow/claimer_payout.json",
     "deposit-flow/depositor_graph.json",
+    # Generated vectors (1 VK / 1 UC — dummy_pubkey_seeded(5) depositor)
+    "generated/deposit-flow/pre_pegin.txt",
+    "generated/deposit-flow/pegin.json",
+    "generated/deposit-flow/claimer_payout.json",
+    "generated/deposit-flow/depositor_graph.json",
 ]
 
 # Finalized raw transactions (format references only — cannot be signed).
@@ -156,16 +168,24 @@ def test_sample_psbt_parses(rel: str, idx: int, psbt_hex: str) -> None:
 
 
 def test_sample_batch_counts() -> None:
-    """The batch sizes encode the participant counts in the captured vault.
+    """The batch sizes encode the participant counts in each captured vault.
 
-    claimer_payout = 1 (VP) + N_VaultKeepers; depositor_graph = 1 + (N_VK + N_UC).
-    The capture is the README's 4 VK / 4 UC sample → 5 and 9 PSBTs respectively.
-    Guards against a truncated/extended copy of the vectors.
+    claimer_payout = 1 (VP) + N_VaultKeepers; depositor_graph = 1 (payout)
+    + N_local_challengers + N_universal_challengers (one NoPayout per challenger).
+    Guards against truncated/extended copies of the vector files.
+
+    Signet captures:  4 VK / 4 UC → claimer_payout ×5, depositor_graph ×9.
+    Generated vectors: 1 VK / 1 UC → claimer_payout ×1, depositor_graph ×3.
     """
     assert len(_load_hexes("deposit-flow/pre_pegin.txt")) == 1
     assert len(_load_hexes("deposit-flow/pegin.json")) == 1
     assert len(_load_hexes("deposit-flow/claimer_payout.json")) == 5
     assert len(_load_hexes("deposit-flow/depositor_graph.json")) == 9
+
+    assert len(_load_hexes("generated/deposit-flow/pre_pegin.txt")) == 1
+    assert len(_load_hexes("generated/deposit-flow/pegin.json")) == 1
+    assert len(_load_hexes("generated/deposit-flow/claimer_payout.json")) == 1
+    assert len(_load_hexes("generated/deposit-flow/depositor_graph.json")) == 3
 
 
 @pytest.mark.parametrize("rel", RAW_TX_FILES)

@@ -16,20 +16,26 @@
 //   auth_anchor_hash      32 B
 //   state                  4 B  (enum = int)
 //   payout_index           1 B
-//   nopayout_index         2 B  + 1 B pad
-//   vault_group_index      1 B  + 3 B pad
+//   sig cap counters       8 B  (pre_pegin/pegin/payout/nopayout _signed, 2 B each)
+//   payout_claimer_mask   43 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+2) bits, per-slot dedup)
+//   pegin_group_mask       2 B  (VAULT_MAX_VAULTS=10 bits, per-group dedup)
+//   vault_group_index      1 B  + padding
+//   is_payout_signing      1 B  + padding
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding
-//   total               ~440 B  (sizeof verified at compile time)
+//   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
+//   app_name_len           1 B  + padding
+//   total               ~552 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B
-//   vault_context_t             ≤  512 B
+//   vault_context_t             ≤  576 B
 //   G_scratch (union)             5120 B  (largest member: refund_leaf_check_t =
 //                                          2 × VAULT_SCRIPT_MAX_LEN; was 6224 B when
 //                                          display_vault_intent_scratch_t dominated)
-//                                         tap_leaf_script_state_t tls: 2636 B — in union, no growth
-//                                         display: ~524 B — keys via 4-slot callback ring buffer
+//                                         tap_leaf_script_state_t tls: ~2830 B — in union, grows
+//                                         with VAULT_MAX_TAPTREE_DEPTH display: ~524 B — keys via
+//                                         4-slot callback ring buffer
 //   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
 //                                       ≤ 9128 B  (well within remaining SRAM after min stack)
 // display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
@@ -37,7 +43,7 @@
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
-_Static_assert(sizeof(vault_context_t) <= 512, "vault_context_t exceeds expected size");
+_Static_assert(sizeof(vault_context_t) <= 576, "vault_context_t exceeds expected size");
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
                "vault_scratch_t size != refund_leaf_check_t; check union definition");

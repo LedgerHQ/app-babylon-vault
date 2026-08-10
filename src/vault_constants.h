@@ -15,12 +15,7 @@
 #error "BIP44_COIN_TYPE is not defined. Pass -DBIP44_COIN_TYPE=<n> via the Makefile."
 #endif
 
-/**
- * Expected value of the structure_type TLV field.
- *
- * TODO: confirm exact value with protocol authors before shipping.
- * Placeholder: 0x01.
- */
+/** Expected value of the structure_type TLV field (spec §3.1: MUST BE 0x01). */
 #define VAULT_STRUCTURE_TYPE ((uint8_t) 0x01)
 
 /**
@@ -48,6 +43,8 @@
     "Define VAULT_TARGET_SIGNET to confirm this build targets Bitcoin signet. " \
     "Add a separate #elif guarded by VAULT_TARGET_TESTNET for a testnet3/4 build."
 #endif
+/* Note: the HLD uses the label "bitcoin-testnet"; this app targets Bitcoin signet, so the
+ * correct canonicalNetworkName per the protocol spec is "bitcoin-signet". */
 #define VAULT_CANONICAL_NETWORK_NAME "bitcoin-signet"
 #else
 #error \
@@ -113,3 +110,26 @@
 
 /** P2A anchor output value in satoshis (PegIn Output 2). Floored at relay-dust. */
 #define P2A_ANCHOR_VALUE ((uint64_t) 240u)
+
+/** Two-byte witness program of a P2A (pay-to-anchor / ephemeral anchor) output.
+ *  Full script: OP_1 OP_PUSHBYTES_2 P2A_WITNESS_PROG_BYTE0 P2A_WITNESS_PROG_BYTE1 */
+#define P2A_WITNESS_PROG_BYTE0 0x4Eu
+#define P2A_WITNESS_PROG_BYTE1 0x73u
+
+/* BIP-68 nSequence control bits (§3). */
+#define BIP68_DISABLE_FLAG    0x80000000u /* disables relative-locktime interpretation */
+#define BIP68_TIME_BASED_FLAG 0x00400000u /* 0 = block count; 1 = 512-second units */
+#define BIP68_SEQUENCE_MASK   0x0000FFFFu /* 16-bit block / time-count field */
+
+/* BIP-86 key derivation purpose level (m/86'/…). */
+#define BIP86_PURPOSE 86u
+
+/* PegIn transaction fields (TRUC v3, nLockTime-enabled sequence). */
+#define PEGIN_TX_VERSION  3u          /* TRUC (BIP-431) v3; satisfies CSV (BIP-68) v>=2 */
+#define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
+#define SEQUENCE_FINAL    0xFFFFFFFFu /* RBF-disabled, no CSV, no nLockTime */
+
+/* Maximum taptree depth for host-provided connector UTXOs.
+ * A Huffman tree over 2 + (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) = 66 leaves
+ * has max depth ceil(log2(66)) = 7. */
+#define VAULT_MAX_TAPTREE_DEPTH 7u

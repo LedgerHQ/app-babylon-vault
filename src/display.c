@@ -201,7 +201,6 @@ bool display_claim_transaction(dispatcher_context_t *dc,
 bool display_assert_transaction(dispatcher_context_t *dc,
                                 const uint8_t *claim_txid,
                                 uint64_t amount_carried,
-                                uint32_t n_outputs,
                                 uint64_t fee) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
@@ -210,10 +209,6 @@ bool display_assert_transaction(dispatcher_context_t *dc,
     /* addr_str (80 B) holds 64-char hex txid + NUL. */
     format_hex(claim_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, amount_carried, G_scratch.display_tx.amount_str);
-    snprintf(G_scratch.display_tx.extra_str,
-             TX_DISPLAY_AMOUNT_STR_SIZE,
-             "%lu outputs",
-             (unsigned long) n_outputs);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
@@ -221,8 +216,6 @@ bool display_assert_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Claim txid", .value = G_scratch.display_tx.addr_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Amount", .value = G_scratch.display_tx.amount_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Output count", .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
@@ -318,11 +311,11 @@ bool display_pop_transaction(dispatcher_context_t *dc,
     strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
 
     int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Ethereum address",
+                                             .value = G_scratch.display_tx.addr_str};
     tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "ETH address", .value = G_scratch.display_tx.addr_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Chain ID", .value = G_scratch.display_tx.extra_str};
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry contract",
+        (nbgl_layoutTagValue_t) {.item = "Chain id", .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry address",
                                              .value = G_scratch.display_tx.txid_str};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
@@ -348,52 +341,13 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
-// Screen 8 — Payout transaction
-// ---------------------------------------------------------------------------
-
-bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee) {
-    nbgl_layoutTagValue_t *const tx_pairs =
-        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
-
-    format_sats_amount(COIN_COINID_SHORT, payout_amount, G_scratch.display_tx.amount_str);
-    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
-
-    int n = 0;
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Payout amount", .value = G_scratch.display_tx.amount_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
-
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review payout\ntransaction",
-                       NULL,
-                       "Sign payout\ntransaction?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
-}
-
-// ---------------------------------------------------------------------------
 // Screen 8 — Payout finalize
 // ---------------------------------------------------------------------------
 
 bool display_payout_finalize(dispatcher_context_t *dc,
                              uint64_t amount_received,
-                             const char *address) {
+                             const char *address,
+                             const char *cpfp_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
@@ -404,6 +358,7 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount received",
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -661,6 +616,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // and cannot overlap with the hkdf or script_scratch union members.
     nbgl_layoutTagValue_t *const vault_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
+    char vault_app_name_str[VAULT_APP_NAME_MAX_LEN + 1u]; /* +1 for NUL */
     char vault_fee_rate_str[VAULT_FEE_RATE_STR_SIZE];
     char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
@@ -673,6 +629,12 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     // Per-vault group fields are streamed one segment at a time by vault_stream_group(),
     // for all vault counts including 1.  This keeps the display path uniform and ensures
     // every vault review shows a "Vault N of M" header regardless of vault_count.
+
+    // App name is shown first so the user can confirm the HKDF domain even when
+    // DERIVE_CONTEXT_HASH was called with P2=0x01 (silent, no Screen 1 shown).
+    memcpy(vault_app_name_str, G_vault_context.app_name, G_vault_context.app_name_len);
+    vault_app_name_str[G_vault_context.app_name_len] = '\0';
+    vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "App name", .value = vault_app_name_str};
 
     snprintf(vault_fee_rate_str,
              sizeof(vault_fee_rate_str),

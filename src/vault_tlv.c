@@ -7,6 +7,16 @@
 
 #include "os_utils.h" /* U2BE, U4BE, U8BE */
 
+/* Timelocks are read as uint32_t from the wire but stored as uint16_t in vault_intent_t.
+ * These asserts catch any future constant increase before it silently wraps at the cast. */
+_Static_assert(VAULT_TIMELOCK_MAX <= UINT16_MAX,
+               "VAULT_TIMELOCK_MAX exceeds uint16_t — update pegin_csv_timelock storage");
+_Static_assert(
+    VAULT_HTLC_REFUND_TIMELOCK_MAX <= UINT16_MAX,
+    "VAULT_HTLC_REFUND_TIMELOCK_MAX exceeds uint16_t — update htlc_refund_timelock storage");
+_Static_assert(VAULT_PAYOUT_TIMELOCK_MAX <= UINT16_MAX,
+               "VAULT_PAYOUT_TIMELOCK_MAX exceeds uint16_t — update payout_timelock storage");
+
 /* BIP-32 hardened-child bit */
 #define HARDENED 0x80000000u
 
@@ -49,7 +59,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_COIN_TYPE: {
                 field_idx = 2;
-                if (field_len != 4) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint32_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint32_t val = U4BE(v, 0);
                 if (val != BIP44_COIN_TYPE) return VAULT_TLV_ERR_VALIDATION;
                 out->coin_type = val;
@@ -58,16 +68,16 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_BASE_FEE_RATE: {
                 field_idx = 3;
-                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint64_t rate = U8BE(v, 0);
-                if (rate > UINT32_MAX) return VAULT_TLV_ERR_VALIDATION;
+                if (rate == 0 || rate > UINT32_MAX) return VAULT_TLV_ERR_VALIDATION;
                 out->base_fee_rate = rate;
                 break;
             }
 
             case TAG_PEGIN_CSV_TIMELOCK: {
                 field_idx = 4;
-                if (field_len != 4) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint32_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint32_t val = U4BE(v, 0);
                 if (val < VAULT_TIMELOCK_MIN || val > VAULT_TIMELOCK_MAX)
                     return VAULT_TLV_ERR_VALIDATION;
@@ -77,7 +87,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_PAYOUT_TIMELOCK: {
                 field_idx = 5;
-                if (field_len != 4) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint32_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint32_t val = U4BE(v, 0);
                 if (val <= VAULT_PAYOUT_TIMELOCK_MIN || val >= VAULT_PAYOUT_TIMELOCK_MAX) {
                     return VAULT_TLV_ERR_VALIDATION;
@@ -94,7 +104,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_HTLC_REFUND_TIMELOCK: {
                 field_idx = 7;
-                if (field_len != 4) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint32_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint32_t val = U4BE(v, 0);
                 if (val < VAULT_TIMELOCK_MIN || val > VAULT_HTLC_REFUND_TIMELOCK_MAX)
                     return VAULT_TLV_ERR_VALIDATION;
@@ -109,10 +119,11 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                     return VAULT_TLV_ERR_WRONG_LENGTH;
                 }
                 for (int i = 0; i < VAULT_DEPOSITOR_PATH_LEN; i++) {
-                    out->depositor_path[i] = U4BE(v, (size_t) i * 4);
+                    out->depositor_path[i] = U4BE(v, (size_t) i * sizeof(uint32_t));
                 }
                 /* BIP-86: purpose must be 86' */
-                if (out->depositor_path[0] != (86u | HARDENED)) return VAULT_TLV_ERR_VALIDATION;
+                if (out->depositor_path[0] != (BIP86_PURPOSE | HARDENED))
+                    return VAULT_TLV_ERR_VALIDATION;
                 /* coin_type level must be hardened; exact match vs coin_type field deferred
                  * to post-loop cross-field check (coin_type tag may arrive after this one). */
                 if (!(out->depositor_path[1] & HARDENED)) return VAULT_TLV_ERR_VALIDATION;
@@ -147,7 +158,7 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
 
             case TAG_PREPEGIN_MAX_FEE:
                 field_idx = 12;
-                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 out->prepegin_max_fee = U8BE(v, 0);
                 if (out->prepegin_max_fee == 0) return VAULT_TLV_ERR_VALIDATION;
                 break;
@@ -176,9 +187,14 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
  * vault_tlv_parse_group — P1=0x01 per-vault group payload (6 mandatory fields)
  * ---------------------------------------------------------------------- */
 
-vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_group_t *out) {
+vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data,
+                                      size_t len,
+                                      vault_group_t *out,
+                                      size_t *consumed) {
     uint8_t seen_mask = 0;
+    int last_field_idx = -1; /* for strict ascending-order enforcement */
     size_t pos = 0;
+    const uint8_t complete_mask = (uint8_t) ((1u << VAULT_GROUP_TAG_COUNT) - 1u);
 
     while (pos < len) {
         /* Need at least 3 bytes for 2-byte tag + 1-byte length. */
@@ -209,13 +225,13 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_gro
 
             case TAG_GRP_VAULT_AMOUNT:
                 field_idx = 2;
-                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 out->vault_amount = U8BE(v, 0);
                 break;
 
             case TAG_GRP_COMMISSION_FEE: {
                 field_idx = 3;
-                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint64_t val = U8BE(v, 0);
                 /* The VP commission output must stay above the relay dust limit. */
                 if (val < VAULT_DUST_LIMIT) return VAULT_TLV_ERR_VALIDATION;
@@ -225,7 +241,7 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_gro
 
             case TAG_GRP_DEPOSITOR_CLAIM_VALUE: {
                 field_idx = 4;
-                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint64_t val = U8BE(v, 0);
                 /* The depositor reclaim output must stay above the relay dust limit. */
                 if (val < VAULT_DUST_LIMIT) return VAULT_TLV_ERR_VALIDATION;
@@ -235,7 +251,7 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_gro
 
             case TAG_GRP_PEGIN_MAX_FEE:
                 field_idx = 5;
-                if (field_len != 8) return VAULT_TLV_ERR_WRONG_LENGTH;
+                if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 out->pegin_max_fee = U8BE(v, 0);
                 break;
 
@@ -243,15 +259,21 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data, size_t len, vault_gro
                 return VAULT_TLV_ERR_UNKNOWN_TAG;
         }
 
-        uint8_t bit = (uint8_t) (1u << field_idx);
-        if (seen_mask & bit) return VAULT_TLV_ERR_DUPLICATE_TAG;
-        seen_mask |= bit;
+        /* Enforce strictly ascending order (htlc_vout first); this also catches duplicates. */
+        if ((int) field_idx <= last_field_idx) return VAULT_TLV_ERR_DUPLICATE_TAG;
+        last_field_idx = (int) field_idx;
+        seen_mask |= (uint8_t) (1u << field_idx);
         pos += field_len;
+
+        /* Stop as soon as all 6 fields are present; remaining bytes belong to the
+         * next group record in the same APDU (per-APDU batching per HLD §P1=0x01). */
+        if (seen_mask == complete_mask) break;
     }
 
     /* All 6 mandatory group fields must be present. */
-    if (seen_mask != (uint8_t) ((1u << VAULT_GROUP_TAG_COUNT) - 1u))
-        return VAULT_TLV_ERR_MISSING_FIELD;
+    if (seen_mask != complete_mask) return VAULT_TLV_ERR_MISSING_FIELD;
+
+    *consumed = pos;
 
     /* Cross-field: vault_amount > commission_fee + 2*VAULT_DUST_LIMIT (overflow-safe).
      * Both the commission output and the depositor reclaim output must be fundable

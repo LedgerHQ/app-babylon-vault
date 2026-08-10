@@ -11,19 +11,36 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
                  on the params screen; each additional vault adds dedicated screens.
     challenger_count: number of challenger/keeper pairs.
 
-    Stax  (touch):  screens = 1+1 + 2*(vault_count-1) + challenger_count,   total + 2
-    Flex/Apex (touch): screens = 1+1 + 2*(vault_count-1) + 2*challenger_count, total + 2
-    Nano:           screens = 1+4 + 7*(vault_count-1) + 4*challenger_count,  total + 7
+    Stax  (touch):  screens = 1+2 + 2*(vault_count-1) + challenger_count,   total + 2
+    Flex/Apex (touch): screens = 1+2 + 2*(vault_count-1) + 2*challenger_count, total + 2
+    Nano:           screens = 1+5 + 7*(vault_count-1) + 4*challenger_count,  total + 7
 
     n_swipes = total_screens (touch); n_clicks = total_screens (nano).
     Relationship to golden snapshot counts: n_swipes = snapshots - 3, n_clicks = snapshots - 2.
     """
     extra = vault_count - 1
     if device.is_nano:
-        return 1 + 4 + 7 * extra + 4 * challenger_count + 7
+        return 1 + 5 + 7 * extra + 4 * challenger_count + 7
     if device.name == "stax":
         return 1 + 1 + 2 * extra + challenger_count + 2
-    return 1 + 1 + 2 * extra + 2 * challenger_count + 2
+    return 1 + 2 + 2 * extra + 2 * challenger_count + 2
+
+
+def vault_intent_steps_for_keys(device: Device, total_keys: int) -> int:
+    """n_swipes for a single vault with total_keys key entries (keepers + challengers combined).
+
+    Unlike vault_intent_steps, this handles asymmetric keeper/challenger counts correctly
+    by taking the total key count instead of assuming they are equal.
+
+    Stax (touch):     2 keys per content page  → ceil(total_keys / 2) pages
+    Flex/Apex (touch): 1 key per content page  → total_keys pages
+    Nano:              2 clicks per key
+    """
+    if device.is_nano:
+        return 1 + 5 + 2 * total_keys + 7
+    if device.name == "stax":
+        return 1 + 1 + (total_keys + 1) // 2 + 2
+    return 1 + 2 + total_keys + 2
 
 
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
@@ -369,14 +386,23 @@ def sign_psbt_payout_finalize_approve_instructions(device: Device) -> Instructio
 def sign_psbt_payout_finalize_approve_nav(device: Device) -> List[NavInsID]:
     """Flat approve-path navigation for Screen 8 (PayoutFinalize) — touch devices.
 
-    Screen 8 shows 2 fields: "Amount received" and "Your address".
-    Both Stax and Flex/Apex render in 2 pages (intro + content), matching the
-    WC (Screen 6) layout pattern.
+    Screen 8 shows 3 fields: "Amount received", "Destination", and "CPFP address".
+    Stax renders across one more page than Flex/Apex (smaller display area).
     """
     assert not device.is_nano, "Nano uses sign_psbt_payout_finalize_approve_instructions"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+    if device.name == "stax":
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+        ]
+
+    else:
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
+        ]
+    return taps + [
         NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
         NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
     ]
@@ -397,3 +423,5 @@ def sign_psbt_payout_finalize_reject_nav(device: Device) -> List[NavInsID]:
         NavInsID.USE_CASE_REVIEW_REJECT,
         NavInsID.USE_CASE_CHOICE_CONFIRM,
     ]
+
+

@@ -10,10 +10,12 @@
 /**
  * @brief Validates and displays the transaction for user approval.
  *
- * Dispatches to one of three sub-validators based on session state and PSBT structure:
+ * Dispatches to a sub-validator based on PSBT structure (v22: no inter-transaction ordering):
  *   - Pre-PegIn  (state == INTENT_LOADED, has wallet policy)
- *   - Refund     (any state, no wallet policy, 1 input / 1 output)
- *   - PegIn      (state == SESSION2_PEGIN_EXPECTED, silent)
+ *   - NoPayout   (state == INTENT_LOADED, no wallet policy, 3 inputs, 1 output)
+ *   - Payout     (state == INTENT_LOADED, no wallet policy, 2 inputs)
+ *   - PegIn      (state == INTENT_LOADED, no wallet policy, 1 input, 3 outputs, HTLC match)
+ *   - Standalone (no wallet policy: Refund, Claim, Assert, WC)
  *
  * Overrides the weak default in bitcoin_app_base/src/handler/sign_psbt/sign_input.h.
  */

@@ -123,8 +123,8 @@ typedef struct {
 typedef struct {
     bool found;
     bool ambiguous;
-    uint8_t control_block[1 + VAULT_XONLY_PUBKEY_LEN + VAULT_HASH256_LEN];
-    uint8_t control_block_len;
+    uint8_t control_block[1 + VAULT_XONLY_PUBKEY_LEN + VAULT_MAX_TAPTREE_DEPTH * VAULT_HASH256_LEN];
+    uint16_t control_block_len;
     uint8_t leaf_script[VAULT_SCRIPT_MAX_LEN];
     int leaf_script_len;
     uint8_t leaf_version;
@@ -180,8 +180,7 @@ typedef struct {
  *                        clobbers tls.control_block[30..62] — dead.
  *   input_spk  [64..97]: written by read_p2tr_witness_utxo() only after the
  *                        tls.leaf_script_len check and leaf_key copy are done;
- *                        clobbers tls.control_block_len (67) and
- *                        tls.leaf_script[0..29] (68..97) — dead.
+ *                        clobbers tls.control_block[62..95] (64..97) — dead.
  *   deriv_key … sighash: written only after tls is completely consumed.
  *
  * input_map (merkleized_map_commitment_t, 72 B) is passed as output to

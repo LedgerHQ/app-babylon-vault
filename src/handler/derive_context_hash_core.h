@@ -75,6 +75,9 @@ static inline bool derive_vault_privkey(cx_ecfp_256_private_key_t *privkey) {
  * Uses a stack-local mutable copy of the salt because cx_hkdf_extract
  * takes a non-const salt pointer.
  *
+ * cx_hkdf_extract returns void (infallible in this SDK version); callers
+ * rely on hkdf_derive_root's HMAC chain for error detection.
+ *
  * @param ikm      32-byte IKM (BIP-32 private key bytes).
  * @param prk_out  32-byte output buffer for the PRK.
  */

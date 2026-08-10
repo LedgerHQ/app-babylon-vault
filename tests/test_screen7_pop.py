@@ -73,11 +73,11 @@ def _bip322_tagged_hash(message: bytes) -> bytes:
 
 
 def _bip322_to_spend_txid(message: bytes, tweaked_key: bytes) -> bytes:
-    """Compute the BIP-322 to_spend txid in Bitcoin wire format (reversed SHA256d).
+    """Compute the BIP-322 to_spend txid in PSBT/wire byte order (raw SHA256d).
 
-    Builds the 128-byte legacy to_spend transaction, then returns
-    SHA256(SHA256(to_spend)) reversed — matching the 32-byte value the firmware
-    stores in PSBT_IN_PREVIOUS_TXID.
+    Builds the 128-byte legacy to_spend transaction, then returns the raw
+    SHA256(SHA256(to_spend)) output — matching the 32-byte value the firmware
+    stores in PSBT_IN_PREVIOUS_TXID (not display-reversed).
     """
     msg_hash = _bip322_tagged_hash(message)
 
@@ -101,7 +101,7 @@ def _bip322_to_spend_txid(message: bytes, tweaked_key: bytes) -> bytes:
 
     hash1 = hashlib.sha256(bytes(to_spend)).digest()
     hash2 = hashlib.sha256(hash1).digest()
-    return hash2[::-1]   # reverse to Bitcoin wire format
+    return hash2
 
 
 # ---------------------------------------------------------------------------
@@ -109,11 +109,12 @@ def _bip322_to_spend_txid(message: bytes, tweaked_key: bytes) -> bytes:
 #
 # Provided by the Babylon team; sourced from vault
 # d93596e78999e88e93a328ab44f176834e1e2ff797cffd176ecca37e024b322d on signet.
+# txid is raw SHA256d output (PSBT/wire byte order, not display-reversed).
 # ---------------------------------------------------------------------------
 
 _BABYLON_MSG          = "0xcabdce2a2010a9a88c75506a86dba669716d47fa:11155111:pegin:0xb331467c4db13dccc77fa66c2d185b74ed57ab80"
 _BABYLON_TWEAKED_KEY  = bytes.fromhex("3ba1d14c8716be7930aebf51cd0866ac56af9b85078df5fc31756a094ba55c6f")
-_BABYLON_TO_SPEND_TXID = bytes.fromhex("9c12fc2451c22053afab00c6b2e56c62495c9fda61942eca124ee79bfe4f4ce5")
+_BABYLON_TO_SPEND_TXID = bytes.fromhex("e54c4ffe9be74e12ca2e9461da9f5c49626ce5b2c600abaf5320c25124fc129c")
 
 
 def test_pop_babylon_canonical_txid() -> None:
@@ -156,7 +157,7 @@ def _build_pop_psbt(
     msg_bytes = message.encode("ascii")
     _, tweaked_key = taproot_tweak_pubkey(internal_key, b"")  # BIP-86: empty script tree
 
-    to_spend_txid = _bip322_to_spend_txid(msg_bytes, tweaked_key)  # 32 bytes, wire format
+    to_spend_txid = _bip322_to_spend_txid(msg_bytes, tweaked_key)  # 32 bytes, raw SHA256d (PSBT byte order)
 
     # to_sign input scriptPubKey: P2TR(BIP-86 tweaked internal_key)
     witness_spk = bytes([0x51, 0x20]) + tweaked_key
@@ -534,6 +535,27 @@ def test_pop_max_length_chain_id(client: "RaggerClient", bitcoin_network: str) -
     assert len(msg.encode("ascii")) == 112       # exactly BIP322_POP_MSG_MAX_LEN
     psbt = _build_pop_psbt(fingerprint, internal_key, coin_type, message=msg)
     psbt.tx.vin[0].prevout = COutPoint(0, 0)     # zero txid → firmware rejects at txid check
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_tap_merkle_root_present(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when TAP_MERKLE_ROOT is present; key-path-only spend must have no script tree."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    psbt.inputs[0].tap_merkle_root = bytes([0xDE] * 32)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pop_bad_grammar_uppercase_registry(client: "RaggerClient", bitcoin_network: str) -> None:
+    """PoP fails when the registry address contains uppercase hex characters."""
+    fingerprint, internal_key, coin_type, wallet = _pop_keys(client, bitcoin_network)
+    psbt = _build_pop_psbt(fingerprint, internal_key, coin_type)
+    bad = f"{_ETH_ADDR}:{_CHAIN_ID}:pegin:0xABCDEF1234567890abcdef1234567890abcdef12"
+    psbt.unknown[_POP_MSG_KEY] = bad.encode("ascii")
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA

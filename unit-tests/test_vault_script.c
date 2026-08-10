@@ -19,6 +19,7 @@
 #include "../../bitcoin_app_base/src/common/script.h"
 #include "vault_script.h"
 #include "vault_intent.h"
+#include "vault_constants.h"
 #include "cx.h"  /* mock SHA-256 / tagged-hash helpers for cross-validation tests */
 
 /* ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ static void test_depositor_claim_leaf_length(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[64];
     int len = vault_build_depositor_claim_leaf(&intent, buf, sizeof(buf));
-    assert_int_equal(len, 34);
+    assert_int_equal(len, VAULT_DEPOSITOR_CLAIM_LEAF_LEN);
 }
 
 static void test_depositor_claim_leaf_bytes(void **state) {
@@ -424,7 +425,7 @@ static void test_depositor_claim_leaf_buf_too_small(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[64];
     assert_int_equal(vault_build_depositor_claim_leaf(&intent, buf, 33), -1);
-    assert_int_equal(vault_build_depositor_claim_leaf(&intent, buf, 34), 34); /* boundary: ok */
+    assert_int_equal(vault_build_depositor_claim_leaf(&intent, buf, VAULT_DEPOSITOR_CLAIM_LEAF_LEN), VAULT_DEPOSITOR_CLAIM_LEAF_LEN); /* boundary: ok */
 }
 
 static void test_htlc_leaf1_buf_too_small(void **state) {
@@ -562,7 +563,7 @@ static void test_leaf_hash_matches_bip341_formula(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     int len = vault_build_depositor_claim_leaf(&intent, script, sizeof(script));
-    assert_int_equal(len, 34);
+    assert_int_equal(len, VAULT_DEPOSITOR_CLAIM_LEAF_LEN);
 
     /* Reference: manually feed BIP-341 TapLeaf formula */
     cx_sha256_t ref_ctx;
@@ -604,8 +605,9 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     uint8_t tx[150];
     int off = 0;
 
-    /* version: 3 LE (TRUC, BIP-431) */
-    tx[off++] = 0x03u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
+    /* version: PEGIN_TX_VERSION LE */
+    tx[off++] = (uint8_t)(PEGIN_TX_VERSION);       tx[off++] = (uint8_t)(PEGIN_TX_VERSION >> 8);
+    tx[off++] = (uint8_t)(PEGIN_TX_VERSION >> 16); tx[off++] = (uint8_t)(PEGIN_TX_VERSION >> 24);
     /* input count: 1 */
     tx[off++] = 0x01u;
     /* prevout txid (as stored in intent — LE) */
@@ -614,8 +616,9 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     for (int i = 0; i < 4; i++) tx[off++] = (uint8_t)(intent.groups[0].htlc_vout >> (i * 8));
     /* scriptSig: empty */
     tx[off++] = 0x00u;
-    /* sequence: 0xFFFFFFFE LE */
-    tx[off++] = 0xFEu; tx[off++] = 0xFFu; tx[off++] = 0xFFu; tx[off++] = 0xFFu;
+    /* sequence: PEGIN_TX_SEQUENCE LE */
+    tx[off++] = (uint8_t)(PEGIN_TX_SEQUENCE);       tx[off++] = (uint8_t)(PEGIN_TX_SEQUENCE >> 8);
+    tx[off++] = (uint8_t)(PEGIN_TX_SEQUENCE >> 16); tx[off++] = (uint8_t)(PEGIN_TX_SEQUENCE >> 24);
     /* output count: 3 */
     tx[off++] = 0x03u;
     /* output 0: Vault UTXO */
@@ -628,7 +631,7 @@ static void test_pegin_txid_matches_manual_serialization(void **state) {
     memcpy(tx + off, claim_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN); off += VAULT_P2TR_SCRIPTPUBKEY_LEN;
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73, P2A_ANCHOR_VALUE sats) */
     { uint64_t v = P2A_ANCHOR_VALUE; for (int i = 0; i < 8; i++) tx[off++] = (uint8_t)(v >> (i * 8)); }
-    tx[off++] = 0x04u; tx[off++] = 0x51u; tx[off++] = 0x02u; tx[off++] = 0x4Eu; tx[off++] = 0x73u;
+    tx[off++] = 0x04u; tx[off++] = OP_1; tx[off++] = OP_PUSHBYTES_2; tx[off++] = P2A_WITNESS_PROG_BYTE0; tx[off++] = P2A_WITNESS_PROG_BYTE1;
     /* locktime: 0 */
     tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u; tx[off++] = 0x00u;
 

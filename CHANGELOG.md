@@ -5,6 +5,223 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
+
+Aligns the device application with HLD v22 across twenty tracked discrepancies identified during
+a full spec-vs-code audit.  No wire-format or SW changes for the host; all changes are internal
+security hardening, protocol-correctness fixes, and documentation alignment.
+
+### Security
+
+- **VK / Depositor Payout routing** (`sign_psbt_validate.c`, `sign_custom_inputs.c`): PSBTs with
+  `n_inputs==2 && n_outputs==2` are now routed to `_validate_payout` when Input 0 is internal
+  (`bitvector_get(internal_inputs, 0)`), not to `_validate_display_payout_finalize`.  Previously
+  both VK and Depositor Payout shapes were misrouted to the PayoutFinalize path and signed
+  Input 1 instead of Input 0.
+- **NoPayout input-count guard** (`_validate_nopayout`): rejects any PSBT where `n_inputs != 3`
+  or `n_outputs != 1`.  Previously only output count was implicit and extra inputs were silently accepted.
+- **NoPayout Output 0 P2TR verification** (`_validate_nopayout`): Output 0 scriptPubKey is now
+  verified against `P2TR(Challenger_j)` via `crypto_tr_tweak_pubkey` with no scripts.  Previously
+  the output script was not checked and funds could have been redirected to an arbitrary address.
+- **Payout fee-bound overflow guard** (`_validate_payout`): `vsize` is computed as an intermediate
+  `uint64_t`; overflow (`base_fee_rate * vsize > UINT64_MAX`) and zero-fee (`fee == 0`) are now
+  explicitly rejected.
+- **Payout per-slot deduplication** (`sign_psbt_validate.c`, `sign_custom_inputs.c`,
+  `vault_context.h`): Payout is a silent signing with no confirmation screen.  A malicious host
+  could replay the same `(group, claimer)` PSBT to exhaust the flat `payout_signed` cap and
+  prevent legitimate claimers from receiving signatures.  Added `payout_claimer_mask`
+  (43-byte bitmask) to `vault_context_t`; bit `gi*(keeper_count+2)+claimer_idx` is checked in
+  `_validate_payout` before accepting the signing and set in `sign_custom_inputs` after the
+  signature is produced.  A duplicate triggers `vault_context_invalidate` and `SW_CAP_EXCEEDED`.
+- **PegIn per-group deduplication** (`sign_psbt_validate.c`, `sign_custom_inputs.c`,
+  `vault_context.h`): the flat `pegin_signed` cap allowed a malicious host to replay the same
+  group's PegIn PSBT with `vault_count > 1`, exhausting the cap while wasting one slot.  Added
+  `pegin_group_mask` (2-byte bitmask) to `vault_context_t`; bit `gi` is checked in
+  `_validate_pegin` before accepting the signing and set in `sign_custom_inputs` after the
+  signature is produced.  A duplicate triggers `vault_context_invalidate` and `SW_CAP_EXCEEDED`.
+- **Payout claimer detection: O(keeper_count) key scan instead of O(keeper_count) ECC ops**
+  (`sign_psbt_validate.c`, `_detect_payout_claimer`): the previous implementation identified
+  the claimer by trying every candidate's full tapscript commitment — up to 34 secp256k1 tweak
+  operations (~3.4 s at maximum keeper count), risking BLE timeout.  The new implementation
+  reads `PSBT_IN_TAP_LEAF_SCRIPT` for Input 1 directly (the host must supply it for any
+  script-path spend), extracts the claimer key from the fixed offset 1 of the Assert:0 payout
+  leaf, matches it against intent keys with `memcmp`, then reconstructs the full leaf from the
+  intent and verifies byte-for-byte so the host cannot forge a different leaf shape.  Detection
+  is now 2 PSBT lookups + 34 `memcmp` + 1 leaf rebuild, followed by a single ECC tweak for the
+  WITNESS_UTXO scriptPubKey check.  No wire-format or PSBT protocol change.
+- **Refund SIGHASH_DEFAULT only** (`_validate_display_refund`): `SIGHASH_ALL` (`0x01`) is no longer
+  accepted for Refund inputs; only `SIGHASH_DEFAULT` (`0x00`, absent or explicit) is valid.
+- **Refund nSequence exact match** (`_validate_display_refund`): Input 0 `nSequence` must equal the
+  CSV timelock value exactly; values greater than the timelock are now rejected (`!=` instead of `<`).
+- **NoPayout Input 0 UTXO dust alignment** (`_validate_nopayout`): Input 0 witness UTXO value
+  check changed from `!= VAULT_DUST_LIMIT` to `> VAULT_DUST_LIMIT`, consistent with Inputs 1–2.
+- **Payout Output 0 dust check** (`_validate_payout`): Output 0 value is now verified to be
+  strictly greater than `VAULT_DUST_LIMIT`.
+- **PoP TAP_MERKLE_ROOT absence enforced** (`_validate_display_pop`): an explicit
+  `call_get_merkleized_map_value` check rejects any PoP PSBT that carries a `PSBT_IN_TAP_MERKLE_ROOT`
+  entry, confirming key-path-only spend.
+- **Pre-PegIn txid binding** (`_validate_prepegin`): the device now serialises the non-witness
+  Pre-PegIn transaction from PSBT fields and double-SHA256s it, comparing the result against
+  `intent->prepegin_txid`.  Previously the txid was not independently verified; a malicious host
+  could supply a mismatched PSBT and the device would sign a transaction inconsistent with the
+  approved intent.
+- **PegIn TRUC version enforcement** (`_validate_pegin`): `tx_version` must be exactly `3` (TRUC);
+  values `1`, `2`, or `≥ 4` are now rejected.  Previously `tx_version >= 2` was accepted.
+- **VP commission fee exact match** (`_validate_payout`): Output 1 (VP commission) must equal
+  `intent->groups[gi].commission_fee` exactly; `<= commission_fee` is no longer accepted.  This
+  closes a path where a host could inflate the commission and under-pay the depositor.
+- **NoPayout connector UTXO dust checks** (`_validate_nopayout`): Inputs 1 and 2 witness UTXO
+  values are now verified to be `<= VAULT_DUST_LIMIT`.  Previously only the structural shape of
+  those inputs was checked.
+- **Claim/Assert/WC sequence == 0xFFFFFFFF** (`_validate_display_claim/assert/wc`): Input 0
+  `nSequence` must be exactly `0xFFFFFFFF`.  The spec requires this for all three flows; the
+  check was previously absent.
+- **Pre-PegIn locktime == 0** (`_validate_prepegin`): `locktime` is now required to be `0`.
+  Previously only `tx_version` and `n_inputs / n_outputs` counts were verified.
+- **Multi-vault PegIn group auto-detection** (`_validate_pegin`): `vault_group_index` is now
+  derived from `PSBT_IN_OUTPUT_INDEX` matched against `intent->groups[g].htlc_vout` instead of
+  being hardcoded to `0`.  This fixes signing for PSBTs belonging to vault group `g > 0`.
+- **Payout group/claimer auto-detection** (`_validate_payout`): `vault_group_index` (gi) is
+  derived from `PSBT_IN_PREVIOUS_TXID` vs `vault_compute_pegin_txid`; `payout_index` (claimer)
+  is derived from Input 1's witness UTXO SPK vs `vault_build_assert0_payout_leaf`.  Previously
+  both cursors were advanced sequentially from a fixed start, requiring strict host ordering.
+
+### Changed
+
+- **Multi-group per APDU** (`approve_vault_intent.c`, `vault_tlv.c`): `vault_tlv_parse_group` now
+  accepts a `size_t *consumed` output parameter and stops as soon as all 6 fields are seen, allowing
+  back-to-back group records in one APDU payload.  `handle_group_payload` loops over all complete
+  groups in the APDU instead of returning after the first.  Per-group TLV fields must now appear in
+  strictly ascending tag order (htlc_vout first); out-of-order or duplicate tags are rejected.
+- **`_pegin_validate_outputs` group index** (`sign_psbt_validate.c`): `group_idx` is now passed as
+  a parameter rather than hardcoded to `0`.  PegIn outputs for `vault_count > 1` are validated
+  against the correct vault group's VP key, vault amount, and fee parameters.
+- **Connection 2 flow enabled** (`APPROVE_VAULT_INTENT`, `DERIVE_CONTEXT_HASH`): removed the
+  `root_user_approved` gate that blocked `APPROVE_VAULT_INTENT` when `DERIVE_CONTEXT_HASH` was
+  called with `P2=0x01` (silent re-derivation).  Connection 2 — where the host re-derives the
+  root silently after reconnecting — is now fully supported.
+- **Session state machine simplified** (`vault_context.h/c`, all signing handlers): removed
+  `VAULT_STATE_SESSION1_PREPEGIN_EXPECTED`, `SESSION2_PEGIN_EXPECTED`, `SESSION2_PAYOUT_EXPECTED`,
+  and `SESSION2_COMPLETE`.  The state machine is now three states: `IDLE → HASH_DERIVED →
+  INTENT_LOADED`.  `INTENT_LOADED` is the terminal active state; all signing flows (Pre-PegIn,
+  PegIn, Payout, NoPayout, Refund, Claim, Assert, WC) are dispatched solely by PSBT structure
+  with no inter-transaction ordering requirement (v22).
+- **`sign_custom_inputs` routing** (`sign_custom_inputs.c`): replaced session-state gates with
+  PSBT-structure dispatch: PegIn identified by `n_inputs==1 && n_outputs==3`; Payout by
+  `n_inputs==2`; NoPayout by `n_inputs==3 && n_outputs==1`.  The `sgi--` step-back kludge
+  (previously needed because `_validate_payout` advanced `vault_group_index` past the last
+  claimer) is removed — `vault_group_index` and `payout_index` are now written directly by the
+  validator and read as-is by the signer.
+- **`validate_and_display_transaction` dispatch** (`sign_psbt_validate.c`): replaced
+  `SESSION2_PEGIN_EXPECTED / SESSION2_PAYOUT_EXPECTED / SESSION2_COMPLETE` branches with a
+  unified `INTENT_LOADED + has_no_wallet_policy` block that routes by `n_inputs / n_outputs`
+  and, for PegIn disambiguation, matches Input 0's witness UTXO against the HTLC scriptPubKeys
+  reconstructed from the approved intent.
+
+### Fixed
+
+- **Screen 7 (PoP) field labels** (`display.c`): corrected "ETH address" → "Ethereum address",
+  "Chain ID" → "Chain id", "Registry contract" → "Registry address" to match HLD v22 screen spec.
+- **Screen 5 (Assert) field count** (`display.c`, `display.h`, `sign_psbt_validate.c`): removed the
+  spurious "Output count" field; Assert screen now shows exactly three fields: Claim txid, Amount,
+  Transaction fee.  `display_assert_transaction` no longer takes an `n_outputs` parameter.
+- **`approve_vault_intent.h` docstring**: updated from "Two-phase APDU / 17 fields / tag 1B" to
+  "Three-phase APDU / 13 fields / tag 2B" with correct P1=0x01 description.
+- **`vault_tlv.h` scalar-count docstring**: corrected "12 mandatory scalar tags" → "13".
+- **`vault_script.c` comment constant**: corrected `VAULT_TIMELOCK_MAX=1008` →
+  `VAULT_HTLC_REFUND_TIMELOCK_MAX=4320` in the `vault_build_htlc_leaf1` size comment.
+- **Assert:0 leaf naming**: renamed "NoPayout leaf" → "Assert:0 leaf" in comments across
+  `vault_script.h`, `sign_custom_inputs.c`, and `sign_psbt_validate.c` to match HLD v22 terminology.
+- HTLC refund timelock constant comment: corrected `[72, 1008]` → `[72, 4320]` blocks in
+  `vault_intent_tags.h`.
+- Scalar field count comment: corrected `12` → `13` in `vault_intent_tags.h`.
+- Removed dead `display_payout_transaction` declaration from `display.h`.
+- `cx_hash_no_throw` return values in the Pre-PegIn txid block now suppressed with `(void)`
+  casts via block-scoped `_HASH_FEED` / `_HASH_FINAL` macros, fixing `-Werror,-Wunused-result`
+  build errors on all target devices.
+
+### Changed (HLD audit round 2)
+
+- **NoPayout is silent**: removed user-confirmation screen; NoPayout is approved implicitly
+  at `APPROVE_VAULT_INTENT` time per HLD v22.
+- **PoP signature cap removed**: standalone flows carry no intent-bound cap per HLD v22.
+- **VP/VK Payout non-depositor outputs accept any standard script** (`sign_psbt_validate.c`):
+  Out1 (VP commission / VK CPFP anchor) and VP Out2 (VP CPFP anchor) were read with
+  `_read_output`, which hard-fails on any non-P2TR scriptPubKey.  VP, VK, and Keeper registered
+  addresses may be any standard type (P2WPKH, P2SH-P2WPKH, etc.) per HLD v22.  Switched to
+  `_read_output_varlen` (value enforced, script accepted as any standard type); Depositor Out1
+  retains `_read_output` (BIP-86 P2TR script verified).
+- **PayoutFinalize**: nSequence must now match the CSV timelock exactly; display extended
+  to show both output addresses so the user can verify all funds go to their BIP-86 address.
+- **`APPROVE_VAULT_INTENT` prerequisite**: P1=0x00 now rejects with `SW_BAD_STATE` if no
+  prior `DERIVE_CONTEXT_HASH` has run, consistent with the HLD sequencing requirement.
+- `docs/apdu.md`, `APP_SPECIFICATION.md`, and `docs/integration-guide.md` aligned with
+  HLD v22 (corrected tags, phase labels, field counts, state names, HTLC value bounds).
+
+## [0.9.3] - NAPPS-1465: v22 per-type signature caps
+
+Implements the per-type signature-count caps introduced in HLD v22 as a sampling
+countermeasure.  Within one approved intent the device now signs at most the expected
+number of each intent-bound transaction type; exceeding any cap nullifies the intent
+and returns the new `SW_CAP_EXCEEDED` status word.
+
+### Added
+
+- **Per-type signature counters** in `vault_context_t` (`src/vault_context.h`):
+  `pre_pegin_signed`, `pegin_signed`, `payout_signed`, `nopayout_signed` (all `uint16_t`).
+  All four are zero-initialised on every `vault_context_init` / `vault_context_invalidate`
+  call, so a fresh `APPROVE_VAULT_INTENT` always starts from zero.
+- **`SW_CAP_EXCEEDED` (`0xB00A`)**: returned when a cap is exceeded; intent and
+  `context_root` are nullified and the device returns to IDLE.  Documented in
+  `docs/apdu.md`.
+- Cap enforcement in `sign_psbt_validate.c`:
+  - Pre-PegIn: cap = 1
+  - PegIn: cap = `vault_count`
+  - Payout: cap = `vault_count × (keeper_count + 2)`
+  - NoPayout: cap = `vault_count × (keeper_count + challenger_count)` (previously enforced
+    but returned `SW_BAD_STATE`; now returns `SW_CAP_EXCEEDED`).
+
+### Changed
+
+- NoPayout cap violation now returns `SW_CAP_EXCEEDED` (`0xB00A`) instead of
+  `SW_BAD_STATE` (`0xB007`).  Hosts must update their error handling accordingly.
+
+### Fixed
+
+- **NoPayout dispatch without active intent** (`sign_psbt_validate.c`): 3-in/1-out
+  no-wallet-policy route moved before the `INTENT_LOADED` guard; was falling through
+  to the leaf dispatcher and returning `SW_INCORRECT_DATA` instead of `SW_BAD_STATE`.
+- **PegIn dispatch without active intent** (`sign_psbt_validate.c`): 1-in/3-out
+  no-wallet-policy route likewise moved before the `INTENT_LOADED` guard.  HTLC Leaf 0
+  begins with `OP_SIZE` (`0x82`), not `OP_PUSHBYTES_32`, so the leaf dispatcher returned
+  `SW_INCORRECT_DATA` instead of the expected `SW_BAD_STATE`.
+- **PayoutFinalize Input 1 `nSequence` exact match** (`_validate_display_payout_finalize`):
+  `nSequence` must encode the CSV timelock exactly (`!= csv_value` → `SW_INCORRECT_DATA`),
+  consistent with the Refund flow and the HLD requirement that the sequence "encode" the
+  timelock value.  Previously any `nSequence >= csv_value` was accepted.
+- **VK/Depositor Payout routing** (`sign_psbt_validate.c`): The `bitvector_get(internal_inputs, 0)`
+  test is always zero for no-wallet-policy flows (`preprocess_inputs` only sets internal-input
+  bits for wallet-policy inputs).  Routing for the ambiguous 2-in/2-out case now peeks at
+  Input 0's `PSBT_IN_PREVIOUS_TXID` and compares it against `vault_compute_pegin_txid` for
+  every vault group; a match routes to `_validate_payout`, a mismatch falls through to
+  `_validate_display_payout_finalize`.
+- **`test_sign_psbt_payout_wrong_claimer_order`** (`tests/`): Corrected from expecting
+  `SW_INCORRECT_DATA` to expecting success; the HLD (v22) specifies no inter-transaction
+  ordering requirement, so VK presented before VP must be accepted.
+- **`test_sign_psbt_payout_vp_reduced_commission`** (`tests/`): Corrected from expecting
+  success to expecting `SW_INCORRECT_DATA`; reflects the exact-match commission check
+  documented in the Security section above.
+- **`_build_nopayout_psbt` output SPK** (`tests/`): Output 0 corrected to
+  `P2TR(key-path-tweak(challenger_pk))`; the all-zero placeholder failed the firmware's
+  output-script check.
+- **`test_sign_psbt_refund_wrong_sighash` hang** (`tests/`): `sighash_type` (phantom
+  attribute, silently ignored) corrected to `sighash`; the absent sighash field caused
+  firmware to bypass the check and block on the display call.
+
+### Refactored
+
+- Replaced magic numbers with named constants across `src/` and `unit-tests/`.
+
 ## [0.9.2] - NAPPS-1464: PayoutFinalize depositor self-claim (Screen 8)
 
 Adds Screen 8 — the depositor reclaims their deposit after the Claim+Assert chain by

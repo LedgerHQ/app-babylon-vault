@@ -191,7 +191,7 @@ def test_payout_finalize_version3_accepted(
                                         amount_received=_AMOUNT_RECEIVED)
     psbt.tx.nVersion = 3
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    tname = "screen8_payout_finalize/screen_" + bitcoin_network
+    tname = "screen8_payout_finalize/version3_" + bitcoin_network
 
     if device.is_nano:
         result = client.sign_psbt(
@@ -215,6 +215,23 @@ def test_payout_finalize_sequence_below_csv(
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
     psbt.tx.vin[1].nSequence = _PAYOUT_TIMELOCK - 1   # one block short of the timelock
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_finalize_sequence_above_csv(
+    client: "RaggerClient", bitcoin_network: str,
+) -> None:
+    """PayoutFinalize fails when Input 1 nSequence == t2 + 1 (not an exact match).
+
+    HLD requires nSequence to encode exactly the CSV timelock t2 from the leaf.
+    Any value other than t2 is rejected, including t2 + 1.
+    """
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
+    psbt.tx.vin[1].nSequence = _PAYOUT_TIMELOCK + 1
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)

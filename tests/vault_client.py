@@ -54,6 +54,7 @@ SW_WRONG_DATA_LENGTH = _HexInt(0x6A87)
 SW_WRONG_P1P2        = _HexInt(0x6A86)
 SW_BAD_STATE              = _HexInt(0xB007)
 SW_BAD_CPFP_ANCHOR        = _HexInt(0xB009)
+SW_CAP_EXCEEDED           = _HexInt(0xB00A)
 
 # P1=0x00 scalar 2-byte tags — must match src/vault_intent_tags.h (v21 scheme)
 TAG_STRUCTURE_TYPE            = 0x0001
@@ -456,6 +457,12 @@ def approve_vault_intent_with_nav(
                     test_case_name=test_case_name,
                     screen_change_before_first_instruction=False,
                 )
+        elif n_swipes is not None:
+            navigator.navigate(
+                instructions=vault_intent_approve_instructions(device, n_swipes),
+                screen_change_before_first_instruction=True,
+                screen_change_after_last_instruction=False,
+            )
         else:
             navigate_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
             navigator.navigate_until_text(

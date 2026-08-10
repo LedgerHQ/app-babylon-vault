@@ -209,11 +209,11 @@ def test_sign_psbt_wc_sighash_all(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_sign_psbt_wc_extra_input(
+def test_sign_psbt_wc_extra_input_missing_witness_utxo(
     client: "RaggerClient",
     bitcoin_network: str,
 ) -> None:
-    """WC (no-wallet variant) fails when n_inputs != 1."""
+    """WC fails when an extra input has no WITNESS_UTXO. Extra wallet inputs are only permitted when they carry a valid WITNESS_UTXO."""
     fingerprint, leaf_key, coin_type = _wc_keys(client, bitcoin_network)
     psbt = _build_wc_psbt(fingerprint, leaf_key, coin_type)
     psbt.tx.vin.append(CTxIn())
@@ -345,6 +345,55 @@ def test_sign_psbt_wc_output_exceeds_input(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_wc_wrong_nsequence(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """WC fails when Input 0 nSequence is not 0xFFFFFFFF."""
+    fingerprint, leaf_key, coin_type = _wc_keys(client, bitcoin_network)
+    psbt = _build_wc_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.vin[0].nSequence = 0
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_wc_wrong_output_count(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """WC fails when n_outputs != 1."""
+    fingerprint, leaf_key, coin_type = _wc_keys(client, bitcoin_network)
+    psbt = _build_wc_psbt(fingerprint, leaf_key, coin_type)
+    psbt.tx.vout.append(CTxOut(546, bytes([0x51, 0x20]) + bytes(32)))
+    psbt.outputs.append(PartiallySignedOutput(0))
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.skip(
+    reason=(
+        "Requires btcext key material for Input 1 signing — the device would sign "
+        "Input 0 (WC) and forward Input 1 (BIP-86 P2TR) to the bitcoin base app. "
+        "Driving the full btcext signing path for Input 1 needs wallet-policy HMAC "
+        "material not available in the no-wallet-policy test fixture."
+    )
+)
+def test_sign_psbt_wc_with_wallet_input(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """WC accepts a second external input that carries a valid WITNESS_UTXO (wallet input).
+
+    The device signs Input 0 (WC tapscript) and ignores Input 1 (external BIP-86 P2TR).
+    """
 
 
 # ===========================================================================

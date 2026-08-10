@@ -38,22 +38,11 @@ static inline bool vault_transition_allowed(vault_state_t from, vault_state_t to
         case VAULT_STATE_IDLE:
             return (to == VAULT_STATE_HASH_DERIVED);
         case VAULT_STATE_HASH_DERIVED:
-            // APPROVE_VAULT_INTENT saves/restores root across invalidate and re-sets
-            // state to HASH_DERIVED before transitioning here.
+            /* APPROVE_VAULT_INTENT saves/restores root across invalidate and re-sets
+             * state to HASH_DERIVED before transitioning here. */
             return (to == VAULT_STATE_INTENT_LOADED);
         case VAULT_STATE_INTENT_LOADED:
-            return (to == VAULT_STATE_SESSION1_PREPEGIN_EXPECTED ||
-                    to == VAULT_STATE_SESSION2_PEGIN_EXPECTED);
-        case VAULT_STATE_SESSION1_PREPEGIN_EXPECTED:
-            /* Terminal within the session: no forward transition is defined.
-             * The only exit is vault_context_invalidate (full reset to IDLE). */
-            return false;
-        case VAULT_STATE_SESSION2_PEGIN_EXPECTED:
-            return (to == VAULT_STATE_SESSION2_PAYOUT_EXPECTED);
-        case VAULT_STATE_SESSION2_PAYOUT_EXPECTED:
-            return (to == VAULT_STATE_SESSION2_COMPLETE);
-        case VAULT_STATE_SESSION2_COMPLETE:
-            /* Terminal state: no forward transition is defined.
+            /* Terminal active state: all signing flows accepted without ordering.
              * The only exit is vault_context_invalidate (full reset to IDLE). */
             return false;
             /* no default */

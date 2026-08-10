@@ -24,8 +24,10 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
 /**
  * @brief Display the loaded vault intent for user review and approval.
  *
- * Shows vault provider key, amounts, fee rate,
- * timelocks, and all keeper / challenger public keys.
+ * Shows vault provider key, amounts, fee rate, timelocks, and all keeper /
+ * challenger public keys.  MUST also display G_vault_context.app_name so the user
+ * can confirm which HKDF appName domain this intent is bound to — this is the only
+ * user-visible confirmation when DERIVE_CONTEXT_HASH was invoked with P2=0x01 (silent).
  *
  * @return true   User approved; caller may proceed.
  * @return false  User rejected; SW_DENY has already been sent to the host.
@@ -71,7 +73,6 @@ bool display_claim_transaction(dispatcher_context_t *dc,
  *
  * @param claim_txid      32-byte Claim txid (shown as hex); caller must keep valid.
  * @param amount_carried  Amount carried into the Assert output in satoshis.
- * @param n_outputs       Number of outputs in the Assert transaction.
  * @param fee             Transaction fee in satoshis.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
@@ -79,7 +80,6 @@ bool display_claim_transaction(dispatcher_context_t *dc,
 bool display_assert_transaction(dispatcher_context_t *dc,
                                 const uint8_t *claim_txid,
                                 uint64_t amount_carried,
-                                uint32_t n_outputs,
                                 uint64_t fee);
 
 /**
@@ -116,31 +116,22 @@ bool display_pop_transaction(dispatcher_context_t *dc,
                              const char *registry);
 
 /**
- * @brief Screen 8 — Payout transaction review.
- *
- * Shows the amount paid out and the transaction fee.
- * Approval gates signing; rejection returns SW_DENY.
- *
- * @param payout_amount  Amount paid to the claimer in satoshis (Out0 value).
- * @param fee            Transaction fee in satoshis.
- * @return true   User approved.
- * @return false  User rejected (SW_DENY already sent).
- */
-bool display_payout_transaction(dispatcher_context_t *dc, uint64_t payout_amount, uint64_t fee);
-
-/**
  * @brief Screen 8 — Payout finalize review.
  *
  * Shown when the depositor self-claims after a successful Claim + Assert chain.
- * Displays the amount received (Output 0 value) and the depositor's bech32m
- * destination address.  Fee is not shown because the device signs Input 1 only
- * and has no attested value for Input 0's prevout.
+ * Displays the amount received (Output 0 value) and both output addresses so the
+ * user can verify both outputs pay their own BIP-86 address.  Fee is not shown
+ * because the device signs Input 1 only and has no attested value for Input 0's
+ * prevout.
  *
  * @param amount_received  Output 0 value in satoshis (funds going to depositor).
- * @param address          NUL-terminated bech32m destination address; caller keeps valid.
+ * @param address          NUL-terminated bech32m address for Output 0; caller keeps valid.
+ * @param cpfp_address     NUL-terminated bech32m address for Output 1 (CPFP anchor);
+ *                         caller keeps valid.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
 bool display_payout_finalize(dispatcher_context_t *dc,
                              uint64_t amount_received,
-                             const char *address);
+                             const char *address,
+                             const char *cpfp_address);

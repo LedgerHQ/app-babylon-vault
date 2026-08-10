@@ -14,18 +14,11 @@
  *     └─(DERIVE_CONTEXT_HASH complete)──► HASH_DERIVED   [root held, no intent yet]
  *           │
  *           └─(APPROVE_VAULT_INTENT accepted)──► INTENT_LOADED   [root zeroed after
- *                 │                                htlc_hashlock + auth_anchor_hash computed]
- *                 ├─(Session 1: prepegin_txid == 0)─► INTENT_LOADED
- *                 │         └─(Pre-PegIn SIGN_PSBT)──► SESSION1_PREPEGIN_EXPECTED ──► INTENT_LOADED
- *                 │
- *                 └─(Session 2: prepegin_txid != 0)─► SESSION2_PEGIN_EXPECTED
- *                           │
- *                           └─(PegIn SIGN_PSBT)──► SESSION2_PAYOUT_EXPECTED
- *                                                    │  (payout_index 0..N)
- *                                                    └─(last Payout signed)──► SESSION2_COMPLETE
+ *                                                 htlc_hashlock + auth_anchor_hash computed]
  *
- * The host receives the root from DERIVE_CONTEXT_HASH and expands the per-vault
- * secrets itself; there is no on-device secret-release step.
+ * INTENT_LOADED is the terminal active state.  All signing flows (Pre-PegIn, PegIn,
+ * Payout, NoPayout, Refund, Claim, Assert, WC) are dispatched by PSBT structure alone;
+ * there is no inter-transaction ordering requirement (v22).
  *
  * Invalidation triggers (any of these → explicit_bzero(root) + IDLE):
  *   - Signing error in any hook
@@ -34,13 +27,8 @@
  */
 typedef enum {
     VAULT_STATE_IDLE = 0,
-    VAULT_STATE_HASH_DERIVED,  // DERIVE_CONTEXT_HASH complete; root held, no intent yet
-    VAULT_STATE_INTENT_LOADED,
-    VAULT_STATE_SESSION1_PREPEGIN_EXPECTED,
-    VAULT_STATE_SESSION2_PEGIN_EXPECTED,
-    VAULT_STATE_SESSION2_PAYOUT_EXPECTED,  // payout_index tracks claimer (0=VP, 1..N=VK,
-                                           // N+1=Depositor)
-    VAULT_STATE_SESSION2_COMPLETE,
+    VAULT_STATE_HASH_DERIVED,   // DERIVE_CONTEXT_HASH complete; root held, no intent yet
+    VAULT_STATE_INTENT_LOADED,  // intent loaded; all signing flows accepted
 } vault_state_t;
 
 /**
@@ -76,25 +64,62 @@ typedef struct {
     vault_state_t state;
 
     /**
-     * Payout iteration index within the active vault group.
+     * Claimer index for the payout currently being validated/signed.
      * 0 = VP claimer, 1..keeper_count = VK claimers, keeper_count+1 = Depositor.
-     * Only meaningful in VAULT_STATE_SESSION2_PAYOUT_EXPECTED.
+     * Set by _validate_payout from PSBT structure; read by sign_custom_inputs.
      */
     uint8_t payout_index;
 
     /**
-     * Number of NoPayout PSBTs signed so far in the current Session 2.
-     * Each vault contributes (keeper_count + challenger_count) NoPayout leaves.
-     * Capped at vault_count × (keeper_count + challenger_count) ≤ 10×64 = 640.
+     * Per-type signature counters (sampling countermeasure, v22).
+     *
+     * Each counter is incremented once a signature is produced and capped at the
+     * expected count for the approved intent.  Exceeding any cap nullifies the intent
+     * and returns SW_CAP_EXCEEDED; all counters reset to zero on each intent approval.
+     *
+     * Caps (vault_count=V, keeper_count=N, challenger_count=M):
+     *   pre_pegin_signed : 1
+     *   pegin_signed     : V
+     *   payout_signed    : V × (N+2)
+     *   nopayout_signed  : V × (N+M)
      */
-    uint16_t nopayout_index;
+    uint16_t pre_pegin_signed;
+    uint16_t pegin_signed;
+    uint16_t payout_signed;
+    uint16_t nopayout_signed;
 
     /**
-     * Index of the vault group currently being processed in Session 2.
-     * Advances after the last payout of each group (0..vault_count-1).
-     * Only meaningful when state >= VAULT_STATE_SESSION2_PEGIN_EXPECTED.
+     * Per-slot payout deduplication bitmask.
+     *
+     * Bit (gi*(keeper_count+2)+claimer_idx) is set once the corresponding Payout
+     * PSBT is signed, preventing a malicious host from exhausting the flat
+     * payout_signed cap by replaying the same PSBT.  Cleared by vault_context_invalidate.
+     */
+    uint8_t payout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + 2u) + 7u) / 8u];
+
+    /**
+     * Per-group PegIn deduplication bitmask.
+     *
+     * Bit gi is set once the PegIn PSBT for vault group gi is signed, preventing
+     * a malicious host from replaying the same PegIn PSBT to exhaust the flat
+     * pegin_signed cap.  Cleared by vault_context_invalidate.
+     */
+    uint8_t pegin_group_mask[(VAULT_MAX_VAULTS + 7u) / 8u];
+
+    /**
+     * Dual-use field:
+     *   - During APPROVE_VAULT_INTENT P1=0x01: counts groups received (0..vault_count).
+     *   - During Payout signing: group index currently being validated/signed (set by
+     *     _validate_payout from PSBT structure, read by sign_custom_inputs).
      */
     uint8_t vault_group_index;
+
+    /**
+     * Set to true by _validate_payout, false by _validate_display_payout_finalize.
+     * Allows sign_custom_inputs to distinguish a VK/Depositor Payout (2 inputs, 2 outputs,
+     * Input 0 signed) from a PayoutFinalize (same shape, Input 1 signed).
+     */
+    bool is_payout_signing;
 
     /**
      * BIP-32 derivation path stored from DERIVE_CONTEXT_HASH.
@@ -107,12 +132,19 @@ typedef struct {
     uint8_t derivation_path_len;
 
     /**
-     * True when the root was derived with user approval (P2=0x00 on
-     * DERIVE_CONTEXT_HASH).  False for silent re-derivation (P2=0x01).
-     * APPROVE_VAULT_INTENT requires this to be true; a silently-derived root
-     * cannot be used to sign vault transactions without a prior user confirmation.
+     * HKDF appName bytes stored from DERIVE_CONTEXT_HASH.
+     *
+     * Binding the app_name across the full session (from DERIVE_CONTEXT_HASH to
+     * APPROVE_VAULT_INTENT) ensures the user can confirm which application key
+     * domain was used — even when P2=0x01 (silent) was used and no Screen 1
+     * was shown.  display_vault_intent() MUST render this field so the user
+     * sees the appName before approving the intent.
      */
-    bool root_user_approved;
+    uint8_t app_name[VAULT_APP_NAME_MAX_LEN];
+
+    /** Number of bytes in app_name (0 if DERIVE_CONTEXT_HASH not yet called). */
+    uint8_t app_name_len;
+
 } vault_context_t;
 
 // ---------------------------------------------------------------------------

@@ -39,7 +39,7 @@
 
 /* m/86'/1'/0'/0/0 — coin type matches BIP44_COIN_TYPE=1 */
 static const uint32_t VALID_PATH[5] = {
-    0x80000000u | 86u,
+    0x80000000u | BIP86_PURPOSE,
     0x80000000u | 1u,
     0x80000000u | 0u,
     0u,
@@ -424,7 +424,7 @@ static void test_tlv_depositor_path_coin_type_mismatch(void **state) {
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     /* path[1] = coin_type 99 ≠ BIP44_COIN_TYPE */
-    uint32_t bad_path[5] = { 0x80000000u|86u, 0x80000000u|99u, 0x80000000u, 0u, 0u };
+    uint32_t bad_path[5] = { 0x80000000u|BIP86_PURPOSE, 0x80000000u|99u, 0x80000000u, 0u, 0u };
     for (size_t i = 0; i + 3 <= len; ) {
         uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
         if (t == TAG_DEPOSITOR_DERIVATION_PATH) {
@@ -445,7 +445,7 @@ static void test_tlv_depositor_path_account_not_hardened(void **state) {
     uint8_t buf[256]; vault_intent_t out;
     size_t len = build_valid_tlv(buf);
     /* path[2] = 0 (not hardened) */
-    uint32_t bad_path[5] = { 0x80000000u|86u, 0x80000000u|1u, 0u, 0u, 0u };
+    uint32_t bad_path[5] = { 0x80000000u|BIP86_PURPOSE, 0x80000000u|1u, 0u, 0u, 0u };
     for (size_t i = 0; i + 3 <= len; ) {
         uint16_t t = (uint16_t)(((uint16_t)buf[i] << 8) | buf[i+1]);
         if (t == TAG_DEPOSITOR_DERIVATION_PATH) {
@@ -547,9 +547,9 @@ static void test_tlv_overflow(void **state) {
 
 static void test_tlv_parse_group_valid(void **state) {
     (void) state;
-    uint8_t buf[128]; vault_group_t grp;
+    uint8_t buf[128]; vault_group_t grp; size_t consumed;
     size_t len = build_valid_group(buf);
-    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_OK);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp, &consumed), VAULT_TLV_OK);
     assert_int_equal(grp.htlc_vout, TEST_HTLC_VOUT);
     assert_memory_equal(grp.vault_provider_pk, VALID_VP_PK, 32);
     assert_int_equal(grp.vault_amount, TEST_VAULT_AMOUNT);
@@ -559,7 +559,7 @@ static void test_tlv_parse_group_valid(void **state) {
 static void test_tlv_parse_group_missing_field(void **state) {
     (void) state;
     /* Build without TAG_GRP_VAULT_AMOUNT */
-    uint8_t buf[128]; vault_group_t grp;
+    uint8_t buf[128]; vault_group_t grp; size_t consumed;
     uint8_t *p = buf;
     p = tlv_u8    (p, TAG_GRP_HTLC_VOUT,             TEST_HTLC_VOUT);
     p = tlv_bytes (p, TAG_GRP_VAULT_PROVIDER_PK,     VALID_VP_PK, 32);
@@ -567,46 +567,46 @@ static void test_tlv_parse_group_missing_field(void **state) {
     p = tlv_u64be (p, TAG_GRP_COMMISSION_FEE,        TEST_COMMISSION_FEE);
     p = tlv_u64be (p, TAG_GRP_DEPOSITOR_CLAIM_VALUE, TEST_DEPOSITOR_CLAIM);
     p = tlv_u64be (p, TAG_GRP_PEGIN_MAX_FEE,         TEST_PEGIN_MAX_FEE);
-    assert_int_equal(vault_tlv_parse_group(buf, (size_t)(p - buf), &grp),
+    assert_int_equal(vault_tlv_parse_group(buf, (size_t)(p - buf), &grp, &consumed),
                      VAULT_TLV_ERR_MISSING_FIELD);
 }
 
 static void test_tlv_parse_group_commission_below_dust(void **state) {
     (void) state;
-    uint8_t buf[128]; vault_group_t grp;
+    uint8_t buf[128]; vault_group_t grp; size_t consumed;
     size_t len = build_valid_group(buf);
 
     /* commission_fee == 0 → the VP commission output would be empty → fail */
     patch_tlv_u64be(buf, len, TAG_GRP_COMMISSION_FEE, 0);
-    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_ERR_VALIDATION);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp, &consumed), VAULT_TLV_ERR_VALIDATION);
 
     /* commission_fee just below the relay dust limit → fail */
     patch_tlv_u64be(buf, len, TAG_GRP_COMMISSION_FEE, VAULT_DUST_LIMIT - 1);
-    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_ERR_VALIDATION);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp, &consumed), VAULT_TLV_ERR_VALIDATION);
 
     /* commission_fee exactly at the relay dust limit → OK */
     patch_tlv_u64be(buf, len, TAG_GRP_COMMISSION_FEE, VAULT_DUST_LIMIT);
-    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_OK);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp, &consumed), VAULT_TLV_OK);
 }
 
 static void test_tlv_parse_group_amount_exactly_at_boundary(void **state) {
     (void) state;
     /* vault_amount == commission_fee + 2*DUST is not strictly greater → fail */
-    uint8_t buf[128]; vault_group_t grp;
+    uint8_t buf[128]; vault_group_t grp; size_t consumed;
     size_t len = build_valid_group(buf);
     patch_tlv_u64be(buf, len, TAG_GRP_VAULT_AMOUNT,
                     TEST_COMMISSION_FEE + 2 * VAULT_DUST_LIMIT);
-    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_ERR_VALIDATION);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp, &consumed), VAULT_TLV_ERR_VALIDATION);
 }
 
 static void test_tlv_parse_group_amount_just_above_boundary(void **state) {
     (void) state;
     /* vault_amount == commission_fee + 2*DUST + 1 → OK */
-    uint8_t buf[128]; vault_group_t grp;
+    uint8_t buf[128]; vault_group_t grp; size_t consumed;
     size_t len = build_valid_group(buf);
     patch_tlv_u64be(buf, len, TAG_GRP_VAULT_AMOUNT,
                     TEST_COMMISSION_FEE + 2 * VAULT_DUST_LIMIT + 1);
-    assert_int_equal(vault_tlv_parse_group(buf, len, &grp), VAULT_TLV_OK);
+    assert_int_equal(vault_tlv_parse_group(buf, len, &grp, &consumed), VAULT_TLV_OK);
 }
 
 /* =========================================================================

@@ -3,6 +3,7 @@ from ragger.backend import RaisePolicy
 from ragger.backend.interface import BackendInterface
 from ragger.conftest import configuration
 import os
+import shutil
 from pathlib import Path
 from typing import Literal, List, Optional, Union
 import pytest
@@ -46,6 +47,16 @@ configuration.OPTIONAL.CUSTOM_SEED = MNEMONIC
 
 # Pull all features from the base ragger conftest using the overridden configuration
 pytest_plugins = ("ragger.conftest.base_conftest", )
+
+def pytest_sessionstart(session):
+    # snapshots-tmp is the Ragger framework's ephemeral comparison directory,
+    # distinct from the golden snapshots/ tree.  Clearing it here prevents
+    # stale per-test subdirs from a previous session causing spurious deletions
+    # of golden snapshots that were updated between runs.
+    tmp_root = TESTS_ROOT_DIR / "snapshots-tmp"
+    if tmp_root.exists():
+        shutil.rmtree(tmp_root)
+
 
 def pytest_addoption(parser):
     parser.addoption("--network", default="test")

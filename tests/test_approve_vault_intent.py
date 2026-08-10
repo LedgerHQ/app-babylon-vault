@@ -23,20 +23,24 @@ from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
-from .instructions import vault_intent_steps
+from .instructions import vault_intent_steps, vault_intent_reject_instructions
 from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
     build_group_tlv,
     derive_for_intent,
+    derive_context_hash,
     depositor_path,
+    VAULT_APP_NAME,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
     P1_SCALARS,
     P1_GROUP,
     P1_KEY_BATCH,
     P2_UNUSED,
+    P2_SILENT,
     SW_OK,
+    SW_DENY,
     SW_INCORRECT_DATA,
     SW_WRONG_P1P2,
     SW_BAD_STATE,
@@ -55,6 +59,8 @@ from .vault_client import (
     TEST_DEPOSITOR_XONLY_TESTNET,
     _ktlv,
 )
+
+HARDENED = 0x80000000
 
 
 SCREENSHOT_PATH = Path(__file__).parent.resolve()
@@ -122,6 +128,13 @@ def _raw_exchange(client, p1: int, data: bytes):
         p2=P2_UNUSED,
         data=data,
     )
+
+
+def _derive_silent(client, bitcoin_network: str) -> None:
+    """Silently reach HASH_DERIVED state — no screen, no navigator/device needed."""
+    ct = 0 if bitcoin_network == "main" else 1
+    derive_context_hash(client, VAULT_APP_NAME, depositor_path(ct), b"\xde\xad\xbe\xef",
+                        None, None, p2=P2_SILENT)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +350,7 @@ def test_invalid_p1(client: RaggerClient):
 
 def test_wrong_structure_type(client: RaggerClient, bitcoin_network: str):
     """Wrong structure_type constant must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
     bad_tlv = _make_scalars(bitcoin_network).replace(
         bytes([TAG_STRUCTURE_TYPE, 1, VAULT_STRUCTURE_TYPE]),
         bytes([TAG_STRUCTURE_TYPE, 1, VAULT_STRUCTURE_TYPE + 1]),
@@ -348,6 +362,7 @@ def test_wrong_structure_type(client: RaggerClient, bitcoin_network: str):
 
 def test_wrong_coin_type(client: RaggerClient, bitcoin_network: str):
     """coin_type field not matching the active network must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
     wrong_ct = 99
     scalars = _make_scalars(
         bitcoin_network,
@@ -361,6 +376,7 @@ def test_wrong_coin_type(client: RaggerClient, bitcoin_network: str):
 
 def test_pegin_csv_below_min(client: RaggerClient, bitcoin_network: str):
     """pegin_csv_timelock = 71 (below minimum 72) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, pegin_csv_timelock=71)
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, scalars)
@@ -369,12 +385,14 @@ def test_pegin_csv_below_min(client: RaggerClient, bitcoin_network: str):
 
 def test_htlc_refund_timelock_at_max(client: RaggerClient, bitcoin_network: str):
     """htlc_refund_timelock = 4320 (maximum per v22) must be accepted."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=4320)
     _raw_exchange(client, P1_SCALARS, scalars)  # must not raise
 
 
 def test_htlc_refund_timelock_over_max(client: RaggerClient, bitcoin_network: str):
     """htlc_refund_timelock = 4321 (above v22 maximum 4320) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=4321)
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, scalars)
@@ -383,6 +401,7 @@ def test_htlc_refund_timelock_over_max(client: RaggerClient, bitcoin_network: st
 
 def test_keeper_count_zero(client: RaggerClient, bitcoin_network: str):
     """keeper_count = 0 must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=0)
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, scalars)
@@ -391,6 +410,7 @@ def test_keeper_count_zero(client: RaggerClient, bitcoin_network: str):
 
 def test_duplicate_tlv_tag(client: RaggerClient, bitcoin_network: str):
     """TLV payload with a duplicate tag must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network)
     # Append a second TAG_VERSION (0x0002) at the end — 2-byte tag, 1-byte length, value.
     # The parser sees the first TAG_VERSION during normal field collection, then hits the
@@ -490,6 +510,7 @@ def test_key_equals_vault_provider_pk(client: RaggerClient, navigator: Navigator
 
 def test_invalid_ec_point_vault_provider_pk_rejected(client: RaggerClient, bitcoin_network: str):
     """vault_provider_pk whose x-coordinate is not on secp256k1 must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -596,26 +617,44 @@ def test_depositor_key_collision_as_challenger(client: RaggerClient, navigator: 
 # Session state isolation
 # ---------------------------------------------------------------------------
 
-def test_derive_initial_clears_scalars_loaded(client: RaggerClient, navigator: Navigator,
-                                               device: Device, bitcoin_network: str):
-    """DERIVE_CONTEXT_HASH P1=0x00 must clear G_approve_intent_state even when state is IDLE.
+def test_derive_clears_scalars_loaded(client: RaggerClient, navigator: Navigator,
+                                      device: Device, bitcoin_network: str):
+    """A second DERIVE_CONTEXT_HASH must clear scalars_loaded set by a prior APPROVE_VAULT_INTENT.
 
-    Before the fix, handle_initial_chunk only called vault_context_invalidate() when
-    state != IDLE, so G_approve_intent_state.scalars_loaded survived a mid-approve
-    injection of DERIVE_CONTEXT_HASH P1=0x00.  A subsequent APPROVE_VAULT_INTENT P1=0x01
-    would then pass its scalars_loaded gate with stale state.
-
-    After the fix, handle_initial_chunk unconditionally zeroes G_approve_intent_state,
-    so the key-batch must be rejected with SW_BAD_STATE.
+    Flow: DERIVE → APPROVE_VAULT_INTENT P1=0x00 (sets scalars_loaded=true) →
+          second DERIVE (must clear G_approve_intent_state) →
+          APPROVE_VAULT_INTENT P1=0x02 → SW_BAD_STATE (scalars_loaded was cleared).
     """
-    # Send APPROVE_VAULT_INTENT P1=0x00 — sets scalars_loaded=true, state stays IDLE.
+    # Reach HASH_DERIVED and send scalars.
+    derive_for_intent(client, navigator, device, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
 
-    # Inject DERIVE_CONTEXT_HASH P1=0x00 — must clear G_approve_intent_state.
+    # Second DERIVE_CONTEXT_HASH must clear G_approve_intent_state.
     derive_for_intent(client, navigator, device, bitcoin_network)
 
-    # APPROVE_VAULT_INTENT P1=0x02 must now fail because scalars_loaded == false.
+    # P1=0x02 must fail because scalars_loaded was cleared by the second DERIVE.
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
+    assert exc.value.status == SW_BAD_STATE
+
+
+def test_derive_initial_clears_scalars_loaded(client: RaggerClient, bitcoin_network: str):
+    """DERIVE_CONTEXT_HASH P1=0x00 (initial chunk) must clear scalars_loaded.
+
+    Flow: silent DERIVE → APPROVE P1=0x00 (sets scalars_loaded=True) →
+          second silent DERIVE P1=0x00 (must clear G_approve_intent_state) →
+          APPROVE P1=0x02 → SW_BAD_STATE (scalars_loaded cleared, no navigator needed).
+
+    Complements test_derive_clears_scalars_loaded which uses the full interactive flow.
+    """
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Second P1=0x00 initial chunk must zero G_approve_intent_state.
+    _derive_silent(client, bitcoin_network)
+
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_KEY_BATCH, KEY_A + KEY_B)
     assert exc.value.status == SW_BAD_STATE
@@ -631,6 +670,7 @@ def test_base_fee_rate_overflow_rejected(client: RaggerClient, bitcoin_network: 
     The field is encoded as a uint64 on the wire; the firmware rejects values that
     exceed UINT32_MAX so the display cast to (unsigned) is always safe.
     """
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, base_fee_rate=0x100000000)  # 2^32
     with pytest.raises(ExceptionRAPDU) as exc:
         _raw_exchange(client, P1_SCALARS, scalars)
@@ -682,6 +722,7 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
 
 def test_htlc_vout_equal_rejected(client: RaggerClient, bitcoin_network: str):
     """Two groups with equal htlc_vout must return SW_INCORRECT_DATA (not strictly ascending)."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=3))
@@ -692,6 +733,7 @@ def test_htlc_vout_equal_rejected(client: RaggerClient, bitcoin_network: str):
 
 def test_missing_group_phase_rejected(client: RaggerClient, bitcoin_network: str):
     """P1=0x02 sent with no prior P1=0x01 groups must return SW_BAD_STATE."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, vault_count=1, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     # Skip P1=0x01 entirely — vault_group_index=0, vault_count=1 → mismatch
@@ -702,6 +744,7 @@ def test_missing_group_phase_rejected(client: RaggerClient, bitcoin_network: str
 
 def test_extra_group_beyond_vault_count(client: RaggerClient, bitcoin_network: str):
     """Sending vault_count+1 P1=0x02 APDUs must return SW_INCORRECT_DATA on the extra one."""
+    _derive_silent(client, bitcoin_network)
     scalars = _make_scalars(bitcoin_network, vault_count=1, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=0))   # group 0 — accepted
@@ -731,4 +774,286 @@ def test_depositor_path_mismatch_rejected(client: RaggerClient, navigator: Navig
         _raw_exchange(client, P1_KEY_BATCH,
                       _ktlv(TAG_KEEPER_PK, KEY_A) +
                       _ktlv(TAG_CHALLENGER_PK, KEY_B))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# User rejection
+# ---------------------------------------------------------------------------
+
+def test_user_rejects_intent_approval(client: RaggerClient, navigator: Navigator,
+                                      device: Device, bitcoin_network: str):
+    """User navigates to reject on the approval screen → SW_DENY (0x6985)."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
+    n_steps = vault_intent_steps(device, 1, 1)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        with client.transport_client.exchange_async(
+            cla=CLA_VAULT,
+            ins=INS_APPROVE_VAULT_INTENT,
+            p1=P1_KEY_BATCH,
+            p2=P2_UNUSED,
+            data=payload,
+        ):
+            navigator.navigate(
+                vault_intent_reject_instructions(device, n_steps),
+                screen_change_before_first_instruction=True,
+            )
+    assert exc.value.status == SW_DENY
+
+
+# ---------------------------------------------------------------------------
+# State machine — scalars before HASH_DERIVED
+# ---------------------------------------------------------------------------
+
+def test_scalars_without_context_hash_rejected(client: RaggerClient,
+                                                bitcoin_network: str):
+    """P1=0x00 scalar payload on a fresh session (no DERIVE_CONTEXT_HASH) → SW_BAD_STATE.
+
+    handle_scalar_payload requires HASH_DERIVED state.  Callers that skip
+    DERIVE_CONTEXT_HASH are rejected before TLV parsing begins.
+    """
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_BAD_STATE
+
+
+def test_scalars_without_context_hash_accepted(client: RaggerClient, bitcoin_network: str):
+    """P1=0x00 scalar payload after P2=0x01 (silent) DERIVE_CONTEXT_HASH → SW_OK.
+
+    Silent derive (P2=0x01, no confirmation screen) still reaches HASH_DERIVED state,
+    so a subsequent APPROVE_VAULT_INTENT P1=0x00 must be accepted.  The app_name
+    confirmation is deferred to the display_vault_intent step (MEDIUM-1 fix).
+
+    Complements test_scalars_without_context_hash_rejected (no derive at all → rejected).
+    """
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Scalar range validation — payout and pegin_csv timelocks
+# ---------------------------------------------------------------------------
+
+def test_payout_timelock_at_min_rejected(client: RaggerClient, bitcoin_network: str):
+    """payout_timelock = 90 (≤ VAULT_PAYOUT_TIMELOCK_MIN) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, payout_timelock=90)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_timelock_above_max_rejected(client: RaggerClient, bitcoin_network: str):
+    """payout_timelock = 4032 (≥ VAULT_PAYOUT_TIMELOCK_MAX) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, payout_timelock=4032)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pegin_csv_above_max_rejected(client: RaggerClient, bitcoin_network: str):
+    """pegin_csv_timelock = 1009 (above maximum 1008) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, pegin_csv_timelock=1009)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_pegin_csv_at_max_accepted(client: RaggerClient, navigator: Navigator,
+                                   device: Device, bitcoin_network: str):
+    """pegin_csv_timelock = 1008 (maximum allowed) must complete the full approve flow."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, pegin_csv_timelock=1008,
+                            keeper_count=1, challenger_count=1)
+    approve_vault_intent_with_nav(client, navigator, device, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  groups=[_make_group()])
+
+
+def test_htlc_refund_timelock_below_min_rejected(client: RaggerClient, bitcoin_network: str):
+    """htlc_refund_timelock = 71 (below minimum 72) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=71)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_htlc_refund_timelock_at_min_accepted(client: RaggerClient, navigator: Navigator,
+                                              device: Device, bitcoin_network: str):
+    """htlc_refund_timelock = 72 (minimum allowed) must complete the full approve flow."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, htlc_refund_timelock=72,
+                            keeper_count=1, challenger_count=1)
+    approve_vault_intent_with_nav(client, navigator, device, scalars,
+                                  keeper_pks=[KEY_A], challenger_pks=[KEY_B],
+                                  groups=[_make_group()])
+
+
+# ---------------------------------------------------------------------------
+# Scalar range validation — counts
+# ---------------------------------------------------------------------------
+
+def test_vault_count_zero_rejected(client: RaggerClient, bitcoin_network: str):
+    """vault_count = 0 must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=0)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_vault_count_above_max_rejected(client: RaggerClient, bitcoin_network: str):
+    """vault_count = 11 (above VAULT_MAX_VAULTS = 10) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=11)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_challenger_count_zero_rejected(client: RaggerClient, bitcoin_network: str):
+    """challenger_count = 0 must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, challenger_count=0)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_keeper_count_above_max_rejected(client: RaggerClient, bitcoin_network: str):
+    """keeper_count = 33 (above VAULT_MAX_KEEPERS = 32) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=33)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_challenger_count_above_max_rejected(client: RaggerClient, bitcoin_network: str):
+    """challenger_count = 33 (above VAULT_MAX_CHALLENGERS = 32) must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, challenger_count=33)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# Scalar TLV structure — unknown and missing tags
+# ---------------------------------------------------------------------------
+
+def test_unknown_tag_in_scalars_rejected(client: RaggerClient, bitcoin_network: str):
+    """TLV payload with an unknown tag appended must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network)
+    bad_tlv = scalars + bytes([0x02, 0xFF, 1, 0x00])  # tag 0x02FF — unknown
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, bad_tlv)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_missing_required_scalar_field_rejected(client: RaggerClient, bitcoin_network: str):
+    """TLV payload missing TAG_COIN_TYPE must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    ct = _coin_type(bitcoin_network)
+    # Remove the 7-byte TAG_COIN_TYPE entry: 2B tag + 1B len + 4B u32
+    coin_type_entry = bytes([TAG_COIN_TYPE >> 8, TAG_COIN_TYPE & 0xFF, 4]) + ct.to_bytes(4, "big")
+    scalars = _make_scalars(bitcoin_network)
+    bad_tlv = scalars.replace(coin_type_entry, b"")
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, bad_tlv)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# Scalar TLV — depositor path validation
+# ---------------------------------------------------------------------------
+
+def test_depositor_path_wrong_purpose_rejected(client: RaggerClient, bitcoin_network: str):
+    """depositor_path with purpose=44' instead of 86' must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    ct = _coin_type(bitcoin_network)
+    wrong_path = [HARDENED | 44, HARDENED | ct, HARDENED | 0, 0, 0]
+    scalars = _make_scalars(bitcoin_network, depositor_path=wrong_path)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_depositor_path_coin_type_mismatch_rejected(client: RaggerClient, bitcoin_network: str):
+    """coin_type=0 in TAG_COIN_TYPE but depositor_path using coin_type=1 must return SW_INCORRECT_DATA."""
+    _derive_silent(client, bitcoin_network)
+    wrong_path = [HARDENED | 86, HARDENED | 1, HARDENED | 0, 0, 0]
+    scalars = _make_scalars(bitcoin_network, coin_type=0, depositor_path=wrong_path)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# P1=0x01 vault-group phase — multi-group and ordering
+# ---------------------------------------------------------------------------
+
+def test_multi_group_per_p1_01_apdu_accepted(client: RaggerClient, navigator: Navigator,
+                                              device: Device, bitcoin_network: str):
+    """Two group TLVs concatenated into a single P1=0x01 APDU must be accepted."""
+    from .instructions import vault_intent_approve_nav
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    grp0 = _make_group(htlc_vout=0)
+    grp1 = _make_group(htlc_vout=1, vault_amount=200_000)
+    _raw_exchange(client, P1_GROUP, grp0 + grp1)   # both groups in one APDU
+    payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
+    nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=payload,
+    ):
+        navigator.navigate_until_text(
+            navigate_instruction=nav_instr,
+            validation_instructions=confirm_instrs,
+            text=search_text,
+            screen_change_before_first_instruction=False,
+        )
+    _sw, _ = client.last_async_response()
+    assert _sw == SW_OK
+
+
+def test_htlc_vout_descending_rejected(client: RaggerClient, navigator: Navigator,
+                                        device: Device, bitcoin_network: str):
+    """Group 1 with htlc_vout < group 0 (descending order) must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=5))
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=3))  # 3 < 5 — descending
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_vault_amount_below_min_rejected(client: RaggerClient, navigator: Navigator,
+                                          device: Device, bitcoin_network: str):
+    """vault_amount = commission_fee + 2*DUST - 1 (strictly below minimum) must return SW_INCORRECT_DATA."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    DUST = 546
+    commission_fee = 1_000
+    below_min = commission_fee + 2 * DUST - 1   # 2091 — just below threshold
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP,
+                      _make_group(vault_amount=below_min, commission_fee=commission_fee))
     assert exc.value.status == SW_INCORRECT_DATA

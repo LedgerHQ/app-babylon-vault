@@ -15,16 +15,12 @@
 #include "cx.h"
 #include "../bitcoin_app_base/src/common/script.h"
 
-#define OP_PUSHBYTES_32 0x20u /* push exactly 32 bytes (x-only pubkey or hash) */
-
 /* Bitcoin compact-size (varint) prefix bytes */
 #define VARINT_PREFIX_2BYTE 0xFDu
 #define VARINT_PREFIX_4BYTE 0xFEu
 #define VARINT_PREFIX_8BYTE 0xFFu
 
-/* PegIn transaction serialization constants */
-#define PEGIN_TX_VERSION  3u          /* TRUC (BIP-431) v3; satisfies CSV (BIP-68) v>=2 */
-#define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
+/* PegIn transaction local constants */
 #define PEGIN_TX_LOCKTIME 0u
 /* 4(ver) + 1(in_cnt) + 41(input) + 1(out_cnt) + 43(vault) + 43(claim) + 13(P2A) + 4(lock) */
 #define PEGIN_TX_SIZE 150u /* exact non-witness serialization length */
@@ -269,7 +265,8 @@ int vault_build_depositor_claim_leaf(const vault_intent_t *intent, uint8_t *buf,
  * ----------------------------------------------------------------------- */
 
 int vault_build_htlc_leaf1(const vault_intent_t *intent, uint8_t *buf, int buf_max) {
-    /* Max output: 1 + 32 + 1 + _push_number(VAULT_TIMELOCK_MAX=1008)=3 + 1 = 38 bytes */
+    /* Max output: 1 + 32 + 1 + _push_number(VAULT_HTLC_REFUND_TIMELOCK_MAX=4320)=3 + 1 = 38 bytes
+     */
     if (buf_max < 38) return -1;
     int off = 0;
     buf[off++] = OP_PUSHBYTES_32;
@@ -465,7 +462,10 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
     if (claimer_idx < 0 || claimer_idx > (int) intent->keeper_count + 1) return -1;
 
     /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.
-     * Cannot use G_scratch here — buf already points into it. */
+     * Cannot use G_scratch here — buf already points into it (callers pass
+     * G_scratch.leaf_check.expected_script or G_scratch.script_scratch).
+     * This is called from the PSBT signing path after io_ui_process() returns,
+     * so NBGL's call stack is fully unwound and peak stack headroom is available. */
     _Static_assert(VAULT_MAX_KEEPERS * VAULT_XONLY_PUBKEY_LEN <= 1024u,
                    "AppChallengers scratch exceeds 1 KB; revisit if target RAM shrinks");
     uint8_t _app_challengers[VAULT_MAX_KEEPERS][VAULT_XONLY_PUBKEY_LEN];
@@ -700,7 +700,7 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     uint8_t tx[PEGIN_TX_SIZE];
     int off = 0;
 
-    /* version: 2 (LE) */
+    /* version: 3 TRUC (LE) */
     tx[off++] = (uint8_t) (PEGIN_TX_VERSION);
     tx[off++] = (uint8_t) (PEGIN_TX_VERSION >> 8);
     tx[off++] = (uint8_t) (PEGIN_TX_VERSION >> 16);
@@ -710,7 +710,7 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     tx[off++] = 1u;
     /* prevout txid (LE as stored) */
     memcpy(tx + off, intent->prepegin_txid, VAULT_HASH256_LEN);
-    off += 32;
+    off += VAULT_HASH256_LEN;
     /* prevout index (LE) */
     tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout);
     tx[off++] = (uint8_t) (intent->groups[group_idx].htlc_vout >> 8);
@@ -741,10 +741,10 @@ bool vault_compute_pegin_txid(const vault_intent_t *intent,
     /* output 2: P2A anchor (OP_1 OP_PUSHBYTES_2 0x4e73) */
     for (int i = 0; i < 8; i++) tx[off++] = (uint8_t) (P2A_ANCHOR_VALUE >> (i * 8));
     tx[off++] = 4u; /* script length */
-    tx[off++] = 0x51u;
-    tx[off++] = 0x02u;
-    tx[off++] = 0x4Eu;
-    tx[off++] = 0x73u;
+    tx[off++] = OP_1;
+    tx[off++] = OP_PUSHBYTES_2;
+    tx[off++] = P2A_WITNESS_PROG_BYTE0;
+    tx[off++] = P2A_WITNESS_PROG_BYTE1;
 
     /* locktime (LE) */
     tx[off++] = (uint8_t) (PEGIN_TX_LOCKTIME);
