@@ -1220,6 +1220,13 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     if (!_pegin_validate_input(dc, &input_map, intent, group_idx, &htlc_value)) return false;
     if (!_pegin_validate_outputs(dc, st, intent, group_idx, htlc_value)) return false;
 
+    /* Per-group deduplication: reject if this group was already signed. */
+    if (G_vault_context.pegin_group_mask[group_idx / 8u] & (1u << (group_idx % 8u))) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_CAP_EXCEEDED);
+        return false;
+    }
+
     if (G_vault_context.pegin_signed >= (uint16_t) G_vault_intent.vault_count) {
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, SW_CAP_EXCEEDED);

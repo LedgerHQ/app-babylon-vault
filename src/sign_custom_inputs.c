@@ -177,6 +177,7 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        G_vault_context.pegin_group_mask[gi / 8u] |= (1u << (gi % 8u));
         G_vault_context.pegin_signed++;
         return true;
     }

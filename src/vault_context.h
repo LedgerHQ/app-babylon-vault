@@ -98,6 +98,15 @@ typedef struct {
     uint8_t payout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + 2u) + 7u) / 8u];
 
     /**
+     * Per-group PegIn deduplication bitmask.
+     *
+     * Bit gi is set once the PegIn PSBT for vault group gi is signed, preventing
+     * a malicious host from replaying the same PegIn PSBT to exhaust the flat
+     * pegin_signed cap.  Cleared by vault_context_invalidate.
+     */
+    uint8_t pegin_group_mask[(VAULT_MAX_VAULTS + 7u) / 8u];
+
+    /**
      * Dual-use field:
      *   - During APPROVE_VAULT_INTENT P1=0x01: counts groups received (0..vault_count).
      *   - During Payout signing: group index currently being validated/signed (set by

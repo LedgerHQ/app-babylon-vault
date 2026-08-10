@@ -18,13 +18,14 @@
 //   payout_index           1 B
 //   sig cap counters       8 B  (pre_pegin/pegin/payout/nopayout _signed, 2 B each)
 //   payout_claimer_mask   43 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+2) bits, per-slot dedup)
+//   pegin_group_mask       2 B  (VAULT_MAX_VAULTS=10 bits, per-group dedup)
 //   vault_group_index      1 B  + padding
 //   is_payout_signing      1 B  + padding
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding
 //   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
 //   app_name_len           1 B  + padding
-//   total               ~548 B  (sizeof verified at compile time)
+//   total               ~552 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B

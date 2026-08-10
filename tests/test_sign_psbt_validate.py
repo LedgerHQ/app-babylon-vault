@@ -3325,6 +3325,59 @@ def test_sign_psbt_pegin_cap_nullifies_intent(
     assert exc.value.status == SW_BAD_STATE
 
 
+def test_sign_psbt_pegin_duplicate_group_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Replaying the same PegIn PSBT for the same group returns SW_CAP_EXCEEDED (per-group dedup).
+
+    vault_count=2 keeps the flat pegin_signed cap at 2, so only the per-group bitmask
+    prevents the replay — not the flat cap.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    hashlock = _setup_s2_state_2vault(client, navigator, device, coin_type)
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # first: OK
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)  # replay group 0: mask fires
+    assert exc.value.status == SW_CAP_EXCEEDED
+
+
+def test_sign_psbt_pegin_duplicate_group_nullifies_intent(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """After a duplicate PegIn group is rejected the intent is nullified; further signing returns SW_BAD_STATE."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    hashlock = _setup_s2_state_2vault(client, navigator, device, coin_type)
+    psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID)
+
+    client.sign_psbt(psbt, dummy_wallet, None)  # first: OK
+    with pytest.raises(ExceptionRAPDU):
+        client.sign_psbt(psbt, dummy_wallet, None)  # duplicate: intent nullified
+
+    # Intent nullified (state zeroed to IDLE) — PegIn is routed before the INTENT_LOADED
+    # gate and hits the SW_BAD_STATE guard inside _validate_pegin.
+    hashlock1 = vault_hashlock(_DERIVED_ROOT, 1)  # group 1 (htlc_vout=1)
+    pegin1_psbt = _build_pegin_psbt(dep_pk, hashlock1, _PREPEGIN_TXID, htlc_vout=1)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(pegin1_psbt, dummy_wallet, None)
+    assert exc.value.status == SW_BAD_STATE
+
+
 # ===========================================================================
 # Refund — additional error paths
 # ===========================================================================
