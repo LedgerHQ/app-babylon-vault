@@ -26,6 +26,19 @@ security hardening, protocol-correctness fixes, and documentation alignment.
 - **Payout fee-bound overflow guard** (`_validate_payout`): `vsize` is computed as an intermediate
   `uint64_t`; overflow (`base_fee_rate * vsize > UINT64_MAX`) and zero-fee (`fee == 0`) are now
   explicitly rejected.
+- **Payout per-slot deduplication** (`sign_psbt_validate.c`, `sign_custom_inputs.c`,
+  `vault_context.h`): Payout is a silent signing with no confirmation screen.  A malicious host
+  could replay the same `(group, claimer)` PSBT to exhaust the flat `payout_signed` cap and
+  prevent legitimate claimers from receiving signatures.  Added `payout_claimer_mask`
+  (43-byte bitmask) to `vault_context_t`; bit `gi*(keeper_count+2)+claimer_idx` is checked in
+  `_validate_payout` before accepting the signing and set in `sign_custom_inputs` after the
+  signature is produced.  A duplicate triggers `vault_context_invalidate` and `SW_CAP_EXCEEDED`.
+- **PegIn per-group deduplication** (`sign_psbt_validate.c`, `sign_custom_inputs.c`,
+  `vault_context.h`): the flat `pegin_signed` cap allowed a malicious host to replay the same
+  group's PegIn PSBT with `vault_count > 1`, exhausting the cap while wasting one slot.  Added
+  `pegin_group_mask` (2-byte bitmask) to `vault_context_t`; bit `gi` is checked in
+  `_validate_pegin` before accepting the signing and set in `sign_custom_inputs` after the
+  signature is produced.  A duplicate triggers `vault_context_invalidate` and `SW_CAP_EXCEEDED`.
 - **Refund SIGHASH_DEFAULT only** (`_validate_display_refund`): `SIGHASH_ALL` (`0x01`) is no longer
   accepted for Refund inputs; only `SIGHASH_DEFAULT` (`0x00`, absent or explicit) is valid.
 - **Refund nSequence exact match** (`_validate_display_refund`): Input 0 `nSequence` must equal the
