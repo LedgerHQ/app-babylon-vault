@@ -89,6 +89,15 @@ typedef struct {
     uint16_t nopayout_signed;
 
     /**
+     * Per-slot payout deduplication bitmask.
+     *
+     * Bit (gi*(keeper_count+2)+claimer_idx) is set once the corresponding Payout
+     * PSBT is signed, preventing a malicious host from exhausting the flat
+     * payout_signed cap by replaying the same PSBT.  Cleared by vault_context_invalidate.
+     */
+    uint8_t payout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + 2u) + 7u) / 8u];
+
+    /**
      * Dual-use field:
      *   - During APPROVE_VAULT_INTENT P1=0x01: counts groups received (0..vault_count).
      *   - During Payout signing: group index currently being validated/signed (set by

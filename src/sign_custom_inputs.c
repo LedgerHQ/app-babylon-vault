@@ -344,6 +344,10 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        uint16_t slot =
+            (uint16_t) G_vault_context.vault_group_index * ((uint16_t) intent->keeper_count + 2u) +
+            G_vault_context.payout_index;
+        G_vault_context.payout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
         G_vault_context.payout_signed++;
         return true;
     }

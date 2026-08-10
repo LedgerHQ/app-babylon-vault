@@ -3561,6 +3561,60 @@ def test_sign_psbt_payout_wrong_version(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_sign_psbt_payout_duplicate_claimer_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Replaying the same Payout PSBT for the same claimer returns SW_CAP_EXCEEDED.
+
+    The per-slot bitmask (payout_claimer_mask) must reject a second signing of the
+    same (group, claimer) pair even when the flat payout_signed counter is below cap.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)  # first sign: OK
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)  # same PSBT again: rejected
+    assert exc.value.status == SW_CAP_EXCEEDED
+
+
+def test_sign_psbt_payout_duplicate_claimer_nullifies_intent(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """After a duplicate Payout is rejected the intent is nullified; further signing returns SW_INCORRECT_DATA."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    client.sign_psbt(psbt, dummy_wallet, None)  # first sign: OK
+    with pytest.raises(ExceptionRAPDU):
+        client.sign_psbt(psbt, dummy_wallet, None)  # duplicate: intent nullified
+
+    # Intent nullified (state zeroed to IDLE) — payout routing is skipped entirely;
+    # the PSBT hits the standalone fallback and returns SW_INCORRECT_DATA.
+    vk_psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(vk_psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 # ===========================================================================
 # NoPayout — additional error paths
 # ===========================================================================

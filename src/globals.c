@@ -17,14 +17,18 @@
 //   state                  4 B  (enum = int)
 //   payout_index           1 B
 //   sig cap counters       8 B  (pre_pegin/pegin/payout/nopayout _signed, 2 B each)
-//   vault_group_index      1 B  + 3 B pad
+//   payout_claimer_mask   43 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+2) bits, per-slot dedup)
+//   vault_group_index      1 B  + padding
+//   is_payout_signing      1 B  + padding
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding
-//   total               ~440 B  (sizeof verified at compile time)
+//   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
+//   app_name_len           1 B  + padding
+//   total               ~548 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B
-//   vault_context_t             ≤  512 B
+//   vault_context_t             ≤  576 B
 //   G_scratch (union)             5120 B  (largest member: refund_leaf_check_t =
 //                                          2 × VAULT_SCRIPT_MAX_LEN; was 6224 B when
 //                                          display_vault_intent_scratch_t dominated)
@@ -38,7 +42,7 @@
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
-_Static_assert(sizeof(vault_context_t) <= 512, "vault_context_t exceeds expected size");
+_Static_assert(sizeof(vault_context_t) <= 576, "vault_context_t exceeds expected size");
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
                "vault_scratch_t size != refund_leaf_check_t; check union definition");

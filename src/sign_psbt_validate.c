@@ -1433,6 +1433,18 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     G_vault_context.vault_group_index = (uint8_t) gi;
     G_vault_context.payout_index = (uint8_t) claimer_idx;
 
+    /* Per-slot deduplication: reject if this (group, claimer) was already signed.
+     * Prevents a malicious host from exhausting the flat cap by replaying the same PSBT. */
+    {
+        uint16_t slot =
+            (uint16_t) gi * ((uint16_t) intent->keeper_count + 2u) + (uint16_t) claimer_idx;
+        if (G_vault_context.payout_claimer_mask[slot / 8u] & (1u << (slot % 8u))) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_CAP_EXCEEDED);
+            return false;
+        }
+    }
+
     /* n_outputs: 3 for VP, 2 for all other claimers */
     const unsigned int expected_n_outputs = (claimer_idx == 0) ? 3u : 2u;
     if (st->n_outputs != expected_n_outputs) {
@@ -1734,7 +1746,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         return false;
     }
 
-    /* Payout cap: vault_count × (keeper_count + 2) — VP + N VK claimers + Depositor */
+    /* Payout cap: vault_count × (keeper_count + 2) — VP + N VK claimers + Depositor.
+     * Belt-and-suspenders total bound; per-slot deduplication is enforced above. */
     {
         uint16_t payout_cap =
             (uint16_t) intent->vault_count * ((uint16_t) intent->keeper_count + 2u);
