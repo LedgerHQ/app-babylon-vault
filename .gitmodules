@@ -1,6 +1,6 @@
 [submodule "bitcoin_app_base"]
 	path = bitcoin_app_base
-	url = https://github.com/LedgerHQ/app-bitcoin-new
+	url = https://github.com/LedgerHQ/app-bitcoin
 	branch = baseapp
 [submodule "ledger-app-ai-instructions"]
 	path = ledger-app-ai-instructions

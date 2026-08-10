@@ -56,7 +56,7 @@ Handles the three Babylon-specific INS codes on `CLA 0xE1`:
 | `0x81` | `DERIVE_CONTEXT_HASH` |
 | `0x82` | `RELEASE_CONTEXT_SECRET` |
 
-## Build variants
+Please consult the code of the base app for exact documentation about those functions. Definitions are in the headers [sign_psbt.h](https://github.com/LedgerHQ/app-bitcoin/blob/baseapp/src/handler/sign_psbt.h) and [txhashes.h](https://github.com/LedgerHQ/app-bitcoin/blob/baseapp/src/handler/sign_psbt/txhashes.h).
 
 The app builds two variants, selected with `COIN=<variant>`:
 
