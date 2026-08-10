@@ -135,8 +135,12 @@ security hardening, protocol-correctness fixes, and documentation alignment.
 - **NoPayout is silent**: removed user-confirmation screen; NoPayout is approved implicitly
   at `APPROVE_VAULT_INTENT` time per HLD v22.
 - **PoP signature cap removed**: standalone flows carry no intent-bound cap per HLD v22.
-- **VK Payout Output 0 value-only**: device no longer reconstructs the VK's registered
-  address; any standard scriptPubKey is accepted (value enforced).
+- **VP/VK Payout non-depositor outputs accept any standard script** (`sign_psbt_validate.c`):
+  Out1 (VP commission / VK CPFP anchor) and VP Out2 (VP CPFP anchor) were read with
+  `_read_output`, which hard-fails on any non-P2TR scriptPubKey.  VP, VK, and Keeper registered
+  addresses may be any standard type (P2WPKH, P2SH-P2WPKH, etc.) per HLD v22.  Switched to
+  `_read_output_varlen` (value enforced, script accepted as any standard type); Depositor Out1
+  retains `_read_output` (BIP-86 P2TR script verified).
 - **PayoutFinalize**: nSequence must now match the CSV timelock exactly; display extended
   to show both output addresses so the user can verify all funds go to their BIP-86 address.
 - **`APPROVE_VAULT_INTENT` prerequisite**: P1=0x00 now rejects with `SW_BAD_STATE` if no
