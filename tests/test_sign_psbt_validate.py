@@ -2113,19 +2113,19 @@ def test_sign_psbt_payout_vp_reduced_commission(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VP Payout fails when Out1 is below commission_fee (firmware requires exact Fc match)."""
+    """VP Payout succeeds when Out1 is below Fc — VP may take less than the approved commission."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
     _setup_payout_state(client, navigator, device, coin_type)
 
     psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    # Reduce Out1 by 1 sat; the difference raises the effective fee (still within bound).
     psbt.tx.vout[1].nValue = _COMMISSION_FEE - 1
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
 
 
 def test_sign_psbt_payout_vp_commission_at_fc(
@@ -2134,7 +2134,7 @@ def test_sign_psbt_payout_vp_commission_at_fc(
     bitcoin_network: str,
     device,
 ) -> None:
-    """VP Payout succeeds when Out1 equals commission_fee exactly (exact Fc match required)."""
+    """VP Payout succeeds when Out1 equals commission_fee (Fc), the upper bound."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
 
