@@ -2762,8 +2762,9 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
 /* -------------------------------------------------------------------------
  * PayoutFinalize validation + display (Screen 8)
  *
- * Input 0: Assert:0 output — no signing request permitted.
- * Input 1: P2TR script-path spend; payout leaf
+ * Input 0: Vault UTXO — pre-signed during deposit ceremony; no new signing
+ *          request is permitted here. witness_utxo value bounds the outputs.
+ * Input 1: Assert:0 P2TR script-path spend; payout leaf
  *          <D> OP_CHECKSIGVERIFY [AppChallengers] [UnivChallengers] <t2> OP_CSV.
  * Output 0: P2TR(D) BIP-86 — depositor receives these funds.
  * Output 1: VAULT_DUST_LIMIT, P2TR(D) BIP-86 — CPFP anchor.
@@ -2948,8 +2949,34 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         }
     }
 
-    /* Outputs must not exceed Input 1 — guards against fabricated witness_utxo values. */
-    if (amount_received > input1_value || VAULT_DUST_LIMIT > input1_value - amount_received) {
+    /* Outputs must not exceed total inputs — guards against fabricated witness_utxo values.
+     * Input 0 (Vault UTXO) is host-provided; input1_value (Assert:0) == VAULT_DUST_LIMIT. */
+    uint64_t input0_value;
+    {
+        merkleized_map_commitment_t input0_map;
+        if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, 0, &input0_map) < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
+        int wu_len = call_get_merkleized_map_value(dc,
+                                                   &input0_map,
+                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
+                                                   1,
+                                                   witness_utxo,
+                                                   sizeof(witness_utxo));
+        if (wu_len < 9) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        input0_value = read_u64_le(witness_utxo, 0);
+    }
+    if (input0_value > UINT64_MAX - input1_value) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint64_t total_in = input0_value + input1_value;
+    if (amount_received > total_in || VAULT_DUST_LIMIT > total_in - amount_received) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }

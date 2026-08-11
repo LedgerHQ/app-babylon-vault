@@ -790,14 +790,16 @@ def _build_payout_finalize_psbt(
     t2: int = _PAYOUT_TIMELOCK,
     amount_received: int = 1_234_567,
     dust_value: int = _VAULT_DUST_LIMIT,
-    input1_value: int = 2_000_000,
+    vault_amount: int = 2_000_000,
     d_key_index: int = 0,
 ) -> PSBT:
     """Build a minimal PSBTv0 for a PayoutFinalize transaction (Screen 8).
 
-    Input 0: external (no TAP_LEAF_SCRIPT, no TAP_BIP32_DERIVATION) — the device
-             does not sign it.
-    Input 1: internal tapscript spend via payout leaf; the device signs this input.
+    Input 0: Vault UTXO — pre-signed during deposit ceremony; no TAP_LEAF_SCRIPT or
+             TAP_BIP32_DERIVATION. The device reads witness_utxo for the conservation
+             check but does not sign this input.
+    Input 1: Assert:0 P2TR script-path spend via payout leaf; the device signs this input.
+             witness_utxo value is VAULT_DUST_LIMIT (546 sat).
     Output 0: amount_received → P2TR(BIP-86(D)).
     Output 1: dust_value (546 sat) → P2TR(BIP-86(D)).
 
@@ -822,7 +824,7 @@ def _build_payout_finalize_psbt(
     tx.nLockTime = 0
     tx.vin = [CTxIn(), CTxIn()]
     tx.vin[0].prevout = COutPoint(int.from_bytes(b'\xAA' * 32, 'little'), 0)
-    tx.vin[0].nSequence = 0xFFFFFFFE   # Input 0: external, no CSV
+    tx.vin[0].nSequence = 0xFFFFFFFE   # Input 0: Vault UTXO (pre-signed, sequence not validated here)
     tx.vin[1].prevout = COutPoint(int.from_bytes(b'\xBB' * 32, 'little'), 0)
     tx.vin[1].nSequence = t2           # Input 1: CSV timelock satisfied
     tx.vout = [
@@ -837,11 +839,11 @@ def _build_payout_finalize_psbt(
     psbt.inputs = [PartiallySignedInput(0), PartiallySignedInput(0)]
     psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0)]
 
-    # Input 0: external — no leaf, no derivation (the bitvector bit stays 0)
-    psbt.inputs[0].witness_utxo = CTxOut(input1_value + 100_000, bytes([0x51, 0x20]) + bytes(32))
+    # Input 0: Vault UTXO — pre-signed, no leaf, no derivation (the bitvector bit stays 0)
+    psbt.inputs[0].witness_utxo = CTxOut(vault_amount, bytes([0x51, 0x20]) + bytes(32))
 
-    # Input 1: tapscript spend — leaf + BIP-86 derivation for D
-    psbt.inputs[1].witness_utxo = CTxOut(input1_value, input1_spk)
+    # Input 1: Assert:0 payout leaf — VAULT_DUST_LIMIT value, leaf + BIP-86 derivation for D
+    psbt.inputs[1].witness_utxo = CTxOut(_VAULT_DUST_LIMIT, input1_spk)
     psbt.inputs[1].tap_scripts[(leaf, 0xC0)] = {control_block}
     psbt.inputs[1].tap_bip32_paths[d_key] = (
         {leaf_hash},

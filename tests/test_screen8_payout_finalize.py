@@ -494,22 +494,22 @@ def test_payout_finalize_sequence_time_based(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_payout_finalize_input1_value_too_small(
+def test_payout_finalize_vault_amount_too_small(
     client: "RaggerClient", bitcoin_network: str,
 ) -> None:
-    """PayoutFinalize fails when Input 1 witness_utxo value < amount_received + VAULT_DUST_LIMIT.
+    """PayoutFinalize fails when Input 0 (Vault UTXO) value < amount_received.
 
-    The firmware verifies that amount_received + VAULT_DUST_LIMIT <= input1_value to
-    prevent a fabricated witness_utxo from hiding an over-spend.  Here input1_value ==
-    amount_received, leaving no room for the CPFP anchor, so the check must reject it.
+    The firmware verifies that amount_received <= vault_amount to prevent a fabricated
+    witness_utxo from hiding an over-spend.  Here vault_amount == amount_received - 1,
+    so there is no room for amount_received and the check must reject it.
     """
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     amount = 1_999_000
-    # input1_value == amount_received → amount_received + VAULT_DUST_LIMIT > input1_value
+    # vault_amount < amount_received → amount_received > total_in
     psbt = _build_payout_finalize_psbt(
         fingerprint, d_key, coin_type,
         amount_received=amount,
-        input1_value=amount,
+        vault_amount=amount - 1,
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
