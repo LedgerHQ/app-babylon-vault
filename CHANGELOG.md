@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **VP commission fee relaxed to `<= Fc`** (`sign_psbt_validate.c`): Output 1 (VP commission)
+  is now accepted when `out_value <= intent->groups[gi].commission_fee`; an exact match is no
+  longer required.  The Babylon protocol permits the VP to apply a commission lower than the
+  maximum approved by the user — the depositor cannot be charged more than `Fc`, so clear-signing
+  is preserved.  A value exceeding `Fc` is still rejected.
+
 ## [0.9.4] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 
 Aligns the device application with HLD v22 across twenty tracked discrepancies identified during
