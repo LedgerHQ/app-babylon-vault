@@ -1725,8 +1725,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     }
     {
         if (claimer_idx == 0) {
-            /* Spec: VP Out1 must be exactly commission_fee (Fc). */
-            if (out_value != intent->groups[gi].commission_fee) {
+            /* Spec: VP Out1 must not exceed commission_fee (Fc); VP may take less. */
+            if (out_value > intent->groups[gi].commission_fee) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
             }
