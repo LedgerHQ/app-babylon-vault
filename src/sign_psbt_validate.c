@@ -2763,7 +2763,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
  * PayoutFinalize validation + display (Screen 8)
  *
  * Input 0: Vault UTXO — pre-signed during deposit ceremony; no new signing
- *          request is permitted here. witness_utxo value bounds the outputs.
+ *          request is permitted here.
  * Input 1: Assert:0 P2TR script-path spend; payout leaf
  *          <D> OP_CHECKSIGVERIFY [AppChallengers] [UnivChallengers] <t2> OP_CSV.
  * Output 0: P2TR(D) BIP-86 — depositor receives these funds.
@@ -2814,9 +2814,8 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         }
     }
 
-    /* WITNESS_UTXO for Input 1: record the input value, verify P2TR size, then taproot commitment.
+    /* WITNESS_UTXO for Input 1: verify value == VAULT_DUST_LIMIT, P2TR size, taproot commitment.
      * _refund_verify_taproot_commitment reads G_scratch.tls, which is still intact here. */
-    uint64_t input1_value;
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -2829,7 +2828,10 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        input1_value = read_u64_le(witness_utxo, 0);
+        if (read_u64_le(witness_utxo, 0) != VAULT_DUST_LIMIT) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         uint8_t spk_len = witness_utxo[8];
         if (wu_len != 9 + spk_len || spk_len != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -2949,37 +2951,10 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         }
     }
 
-    /* Outputs must not exceed total inputs — guards against fabricated witness_utxo values.
-     * Input 0 (Vault UTXO) is host-provided; input1_value (Assert:0) == VAULT_DUST_LIMIT. */
-    uint64_t input0_value;
-    {
-        merkleized_map_commitment_t input0_map;
-        if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, 0, &input0_map) < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
-        int wu_len = call_get_merkleized_map_value(dc,
-                                                   &input0_map,
-                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                                   1,
-                                                   witness_utxo,
-                                                   sizeof(witness_utxo));
-        if (wu_len < 9) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        input0_value = read_u64_le(witness_utxo, 0);
-    }
-    if (input0_value > UINT64_MAX - input1_value) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
-    uint64_t total_in = input0_value + input1_value;
-    if (amount_received > total_in || VAULT_DUST_LIMIT > total_in - amount_received) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
+    /* No conservation check against Input 0 (Vault UTXO): its witness_utxo is
+     * host-provided and unattested.  SIGHASH_DEFAULT commits to all prevout values,
+     * so a fabricated witness_utxo produces an unusable signature — DoS only, no
+     * fund redirection.  The HLD explicitly notes this limitation (no fee display). */
     /* Both outputs pay the depositor's own BIP-86 address (addr_str, same key for both). */
     if (!display_payout_finalize(dc,
                                  amount_received,

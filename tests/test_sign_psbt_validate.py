@@ -796,8 +796,8 @@ def _build_payout_finalize_psbt(
     """Build a minimal PSBTv0 for a PayoutFinalize transaction (Screen 8).
 
     Input 0: Vault UTXO — pre-signed during deposit ceremony; no TAP_LEAF_SCRIPT or
-             TAP_BIP32_DERIVATION. The device reads witness_utxo for the conservation
-             check but does not sign this input.
+             TAP_BIP32_DERIVATION.  The device does not sign this input and does not
+             validate its witness_utxo value (SIGHASH_DEFAULT commits to all amounts).
     Input 1: Assert:0 P2TR script-path spend via payout leaf; the device signs this input.
              witness_utxo value is VAULT_DUST_LIMIT (546 sat).
     Output 0: amount_received → P2TR(BIP-86(D)).

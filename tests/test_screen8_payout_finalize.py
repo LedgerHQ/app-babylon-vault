@@ -345,7 +345,7 @@ def test_payout_finalize_wrong_leaf_shape(
     psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0)]
 
     psbt.inputs[0].witness_utxo = CTxOut(2_100_000, bytes([0x51, 0x20]) + bytes(32))
-    psbt.inputs[1].witness_utxo = CTxOut(2_000_000, input1_spk)
+    psbt.inputs[1].witness_utxo = CTxOut(_VAULT_DUST_LIMIT, input1_spk)
     psbt.inputs[1].tap_scripts[(short_leaf, 0xC0)] = {control_block}
     psbt.inputs[1].tap_bip32_paths[d_key] = (
         {leaf_hash},
@@ -495,23 +495,42 @@ def test_payout_finalize_sequence_time_based(
 
 
 def test_payout_finalize_vault_amount_too_small(
-    client: "RaggerClient", bitcoin_network: str,
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
 ) -> None:
-    """PayoutFinalize fails when Input 0 (Vault UTXO) value < amount_received.
+    """PayoutFinalize accepts a PSBT when Input 0 value is small (just enough to cover the fee).
 
-    The firmware verifies that amount_received <= vault_amount to prevent a fabricated
-    witness_utxo from hiding an over-spend.  Here vault_amount == amount_received - 1,
-    so there is no room for amount_received and the check must reject it.
+    The app does not enforce a conservation check against Input 0's (unattested)
+    witness_utxo value beyond what the base framework already enforces (non-negative fee).
+    SIGHASH_DEFAULT already commits to all prevout amounts, so a fabricated witness_utxo
+    produces only an unusable signature — DoS only, no fund redirection.
+
+    Note: vault_amount < amount_received would be a negative-fee PSBT, rejected by the base
+    framework before the app's validation code is reached.  This test uses vault_amount = amount + 1
+    (1 sat fee) to verify the app itself adds no extra conservation gate.
     """
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     amount = 1_999_000
-    # vault_amount < amount_received → amount_received > total_in
     psbt = _build_payout_finalize_psbt(
         fingerprint, d_key, coin_type,
         amount_received=amount,
-        vault_amount=amount - 1,
+        vault_amount=amount + 1,   # 1 sat fee — framework passes, app has no extra check
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+
+    if device.is_nano:
+        result = client.sign_psbt(
+            psbt, dummy_wallet, None, navigator,
+            instructions=sign_psbt_payout_finalize_approve_instructions(device),
+        )
+    else:
+        sign_psbt_with_nav_and_compare(
+            client, psbt, dummy_wallet, None, navigator,
+            testname="screen8_payout_finalize/vault_amount_too_small_" + bitcoin_network,
+            nav_instructions=sign_psbt_payout_finalize_approve_nav(device),
+        )
+        return
+
+    _assert_single_schnorr_sig(result, d_key, expected_input=1)
