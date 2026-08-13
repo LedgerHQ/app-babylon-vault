@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5]
+
 ### Changed
 
 - **VP commission fee relaxed to `<= Fc`** (`sign_psbt_validate.c`): Output 1 (VP commission)
@@ -14,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer required.  The Babylon protocol permits the VP to apply a commission lower than the
   maximum approved by the user — the depositor cannot be charged more than `Fc`, so clear-signing
   is preserved.  A value exceeding `Fc` is still rejected.
+- **PayoutFinalize conservation check removed** (`sign_psbt_validate.c`): the extra guard
+  requiring `vault_amount >= amount_received` on Input 0's `witness_utxo` is dropped.
+  `SIGHASH_DEFAULT` already commits to all prevout amounts, so a fabricated `witness_utxo`
+  produces only an unusable signature; no fund redirection is possible.
+
+### Fixed
+
+- **Nano snapshot path for `test_payout_finalize_vault_amount_too_small`** (`tests/`): missing
+  `testname` argument caused snapshots to land in the catch-all `_0_0` directory instead of
+  `screen8_payout_finalize/vault_amount_too_small_*`.
 
 ## [0.9.4] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 
