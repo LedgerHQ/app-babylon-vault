@@ -53,6 +53,9 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
 
+/* PayoutFinalize (Screen 8) fee bound: 2-in/2-out tapscript spend, no per-participant term. */
+#define MAX_PAYOUTFINALIZE_VSIZE 500u
+
 /* Bounds guard for functions that receive group_idx as a parameter and index
  * htlc_hashlock[] or intent->groups[].  vault_count ∈ [1, VAULT_MAX_VAULTS]
  * is enforced at parse time, so the upper check also implies gi < VAULT_MAX_VAULTS. */
@@ -1697,7 +1700,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     uint64_t total_out = out_value; /* out0: bounded by out_value; no overflow risk yet */
 
     /* Out1:
-     *   VP claimer: commission_fee to VP's registered address — value only (v22).
+     *   VP claimer: at most commission_fee to VP's registered address — value only (v22).
      *   Depositor claimer: CPFP anchor (DUST) to depositor — BIP-86 P2TR(depositor), verified.
      *   VK claimer: CPFP anchor (DUST) to VK's registered address — value only (v22).
      *
@@ -1727,6 +1730,13 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         if (claimer_idx == 0) {
             /* Spec: VP Out1 must not exceed commission_fee (Fc); VP may take less. */
             if (out_value > intent->groups[gi].commission_fee) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+            /* commission_fee >= VAULT_DUST_LIMIT is enforced at intent loading time (vault_tlv.c),
+             * so any non-zero sub-dust Out1 is non-standard; the only valid values are 0
+             * (explicit waiver) or >= VAULT_DUST_LIMIT. */
+            if (out_value > 0 && out_value < VAULT_DUST_LIMIT) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
             }
@@ -2935,6 +2945,31 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         }
     }
 
+    /* amount_received lower bound: a zero-value output is non-standard; any near-zero value
+     * routes vault funds to miner fees.  SIGHASH_DEFAULT guards against fabricated Input 0
+     * prevout values (signature invalid at broadcast) but not against a correctly-stated
+     * vault UTXO paired with a low Output 0 value — that transaction is valid on-chain.
+     * For single-vault intents the attested vault_amount provides a tighter fee cap. */
+    if (amount_received == 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED && G_vault_intent.vault_count == 1) {
+        uint64_t va = G_vault_intent.groups[0].vault_amount;
+        /* vault_amount > 2*VAULT_DUST_LIMIT is enforced at intent loading time, so
+         * va - VAULT_DUST_LIMIT cannot underflow. */
+        if (amount_received >= va - VAULT_DUST_LIMIT) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint64_t fee_pf = va - VAULT_DUST_LIMIT - amount_received;
+        if ((uint64_t) MAX_PAYOUTFINALIZE_VSIZE > UINT64_MAX / G_vault_intent.base_fee_rate ||
+            fee_pf > G_vault_intent.base_fee_rate * (uint64_t) MAX_PAYOUTFINALIZE_VSIZE) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
     /* Output 1: CPFP anchor — VAULT_DUST_LIMIT, P2TR(D) BIP-86 */
     {
         uint8_t out1_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
@@ -2951,10 +2986,10 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         }
     }
 
-    /* No conservation check against Input 0 (Vault UTXO): its witness_utxo is
-     * host-provided and unattested.  SIGHASH_DEFAULT commits to all prevout values,
-     * so a fabricated witness_utxo produces an unusable signature — DoS only, no
-     * fund redirection.  The HLD explicitly notes this limitation (no fee display). */
+    /* Input 0 (Vault UTXO) witness_utxo is host-provided and unattested; a fabricated
+     * value produces an unusable signature (SIGHASH_DEFAULT commits to all prevout values).
+     * For multi-vault finalize, vault-group identification is not implemented here, so
+     * only the zero-floor and single-vault fee cap above guard the depositor's payout. */
     /* Both outputs pay the depositor's own BIP-86 address (addr_str, same key for both). */
     if (!display_payout_finalize(dc,
                                  amount_received,

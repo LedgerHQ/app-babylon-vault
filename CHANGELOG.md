@@ -8,23 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.5]
 
+### Security
+
+- **PayoutFinalize `amount_received` floor**: reject zero Output 0 value — a valid on-chain path not covered by `SIGHASH_DEFAULT` (`sign_psbt_validate.c`)
+- **PayoutFinalize single-vault fee cap**: when `vault_count == 1`, bound the implied fee against `base_fee_rate × MAX_PAYOUTFINALIZE_VSIZE` using the attested `vault_amount` (`sign_psbt_validate.c`)
+- **VP commission sub-dust rejection**: reject Out1 in `(0, VAULT_DUST_LIMIT)` — produces a non-standard output; valid values are 0 or `[VAULT_DUST_LIMIT, Fc]` (`sign_psbt_validate.c`)
+
 ### Changed
 
-- **VP commission fee relaxed to `<= Fc`** (`sign_psbt_validate.c`): Output 1 (VP commission)
-  is now accepted when `out_value <= intent->groups[gi].commission_fee`; an exact match is no
-  longer required.  The Babylon protocol permits the VP to apply a commission lower than the
-  maximum approved by the user — the depositor cannot be charged more than `Fc`, so clear-signing
-  is preserved.  A value exceeding `Fc` is still rejected.
-- **PayoutFinalize conservation check removed** (`sign_psbt_validate.c`): the extra guard
-  requiring `vault_amount >= amount_received` on Input 0's `witness_utxo` is dropped.
-  `SIGHASH_DEFAULT` already commits to all prevout amounts, so a fabricated `witness_utxo`
-  produces only an unusable signature; no fund redirection is possible.
+- **VP commission relaxed to `<= Fc`**: accept Out1 ≤ `commission_fee`; exact match no longer required (`sign_psbt_validate.c`)
+- **PayoutFinalize conservation check removed**: check against Input 1 value was unconditionally true after Input 1 was fixed to `VAULT_DUST_LIMIT`; replaced by the floor and fee cap above (`sign_psbt_validate.c`)
 
 ### Fixed
 
-- **Nano snapshot path for `test_payout_finalize_vault_amount_too_small`** (`tests/`): missing
-  `testname` argument caused snapshots to land in the catch-all `_0_0` directory instead of
-  `screen8_payout_finalize/vault_amount_too_small_*`.
+- **Nano snapshot path** for `test_payout_finalize_vault_amount_too_small`: missing `testname` argument sent snapshots to `_0_0` instead of the correct directory
+- **Added** `test_payout_finalize_input1_wrong_value`: covers `SW_INCORRECT_DATA` when Input 1 `witness_utxo` ≠ `VAULT_DUST_LIMIT`
+- **Added** `test_sign_psbt_payout_vp_commission_sub_dust`: covers `SW_INCORRECT_DATA` for sub-dust VP Out1
 
 ## [0.9.4] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 

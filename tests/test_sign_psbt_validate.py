@@ -2109,6 +2109,31 @@ def test_sign_psbt_payout_vp_commission_over_fc(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_sign_psbt_payout_vp_commission_sub_dust(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """VP Payout fails when Out1 is sub-dust (0 < out_value < VAULT_DUST_LIMIT).
+
+    commission_fee >= VAULT_DUST_LIMIT is enforced at intent-loading time, so any
+    non-zero VP commission below the dust limit would create a non-standard output.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+    psbt.tx.vout[1].nValue = _VAULT_DUST_LIMIT - 1
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_sign_psbt_payout_vp_reduced_commission(
     client: "RaggerClient",
     navigator: Navigator,

@@ -494,29 +494,40 @@ def test_payout_finalize_sequence_time_based(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_payout_finalize_input1_wrong_value(
+    client: "RaggerClient", bitcoin_network: str,
+) -> None:
+    """PayoutFinalize fails when Input 1 witness_utxo value != VAULT_DUST_LIMIT."""
+    from ledger_bitcoin.tx import CTxOut
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
+    psbt.inputs[1].witness_utxo = CTxOut(
+        _VAULT_DUST_LIMIT + 1,
+        psbt.inputs[1].witness_utxo.scriptPubKey,
+    )
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_payout_finalize_vault_amount_too_small(
     client: "RaggerClient",
     navigator: Navigator,
     device: Device,
     bitcoin_network: str,
 ) -> None:
-    """PayoutFinalize accepts a PSBT when Input 0 value is small (just enough to cover the fee).
+    """PayoutFinalize accepts a PSBT with Input 0 value = amount_received + 1 sat (minimal fee).
 
-    The app does not enforce a conservation check against Input 0's (unattested)
-    witness_utxo value beyond what the base framework already enforces (non-negative fee).
-    SIGHASH_DEFAULT already commits to all prevout amounts, so a fabricated witness_utxo
-    produces only an unusable signature — DoS only, no fund redirection.
-
-    Note: vault_amount < amount_received would be a negative-fee PSBT, rejected by the base
-    framework before the app's validation code is reached.  This test uses vault_amount = amount + 1
-    (1 sat fee) to verify the app itself adds no extra conservation gate.
+    No intent is loaded, so only the amount_received > 0 floor applies.  Input 0's
+    witness_utxo is unattested and the device does not validate it.
     """
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     amount = 1_999_000
     psbt = _build_payout_finalize_psbt(
         fingerprint, d_key, coin_type,
         amount_received=amount,
-        vault_amount=amount + 1,   # 1 sat fee — framework passes, app has no extra check
+        vault_amount=amount + 1,   # 1 sat fee; no intent loaded, so single-vault cap skipped
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
