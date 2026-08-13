@@ -520,15 +520,17 @@ def test_payout_finalize_vault_amount_too_small(
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
+    tname = "screen8_payout_finalize/vault_amount_too_small_" + bitcoin_network
     if device.is_nano:
         result = client.sign_psbt(
             psbt, dummy_wallet, None, navigator,
+            testname=tname,
             instructions=sign_psbt_payout_finalize_approve_instructions(device),
         )
     else:
         sign_psbt_with_nav_and_compare(
             client, psbt, dummy_wallet, None, navigator,
-            testname="screen8_payout_finalize/vault_amount_too_small_" + bitcoin_network,
+            testname=tname,
             nav_instructions=sign_psbt_payout_finalize_approve_nav(device),
         )
         return
