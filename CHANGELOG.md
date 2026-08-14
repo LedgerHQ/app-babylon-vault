@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PayoutFinalize `amount_received` floor**: reject zero Output 0 value — a valid on-chain path not covered by `SIGHASH_DEFAULT` (`sign_psbt_validate.c`)
 - **PayoutFinalize single-vault fee cap**: when `vault_count == 1`, bound the implied fee against `base_fee_rate × MAX_PAYOUTFINALIZE_VSIZE` using the attested `vault_amount` (`sign_psbt_validate.c`)
 - **VP commission sub-dust rejection**: reject Out1 in `(0, VAULT_DUST_LIMIT)` — produces a non-standard output; valid values are 0 or `[VAULT_DUST_LIMIT, Fc]` (`sign_psbt_validate.c`)
+- **Payout Assert:0 taproot commitment**: switched to `vault_read_payout_leaf_script` + `_refund_verify_taproot_commitment` to handle multi-leaf Huffman control blocks (`sign_psbt_validate.c`)
 
 ### Changed
 
@@ -24,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Nano snapshot path** for `test_payout_finalize_vault_amount_too_small`: missing `testname` argument sent snapshots to `_0_0` instead of the correct directory
 - **Added** `test_payout_finalize_input1_wrong_value`: covers `SW_INCORRECT_DATA` when Input 1 `witness_utxo` ≠ `VAULT_DUST_LIMIT`
 - **Added** `test_sign_psbt_payout_vp_commission_sub_dust`: covers `SW_INCORRECT_DATA` for sub-dust VP Out1
+- **Added** `test_sign_psbt_payout_multileaf_assert0`: covers the multi-leaf Assert:0 control block path
 
 ## [0.9.4] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 

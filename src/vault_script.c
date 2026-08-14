@@ -463,7 +463,8 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
 
     /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.
      * Cannot use G_scratch here — buf already points into it (callers pass
-     * G_scratch.leaf_check.expected_script or G_scratch.script_scratch).
+     * G_scratch.leaf_check.expected_script, G_scratch.leaf_check.actual_buf,
+     * or G_scratch.script_scratch).
      * This is called from the PSBT signing path after io_ui_process() returns,
      * so NBGL's call stack is fully unwound and peak stack headroom is available. */
     _Static_assert(VAULT_MAX_KEEPERS * VAULT_XONLY_PUBKEY_LEN <= 1024u,

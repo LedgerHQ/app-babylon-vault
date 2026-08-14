@@ -1905,6 +1905,56 @@ def test_sign_psbt_payout_vp(
     _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
 
 
+def test_sign_psbt_payout_multileaf_assert0(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """Assert:0 with a 2-leaf Huffman taptree (payout + nopayout sibling) passes.
+
+    The 65-byte control block contains one sibling hash. Exercises the
+    _refund_verify_taproot_commitment path for payout, which must iterate sibling
+    hashes to reconstruct the merkle root and verify the WITNESS_UTXO SPK — the
+    single-leaf assumption that triggered this bug would reject an honest payout here.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=0)
+
+    # Extract the payout leaf from the single-leaf PSBT built above.
+    (assert0_leaf, _leaf_ver), _cbs = next(iter(psbt.inputs[1].tap_scripts.items()))
+
+    # NoPayout sibling: <VP> OP_CHECKSIGVERIFY <keeper_0> OP_CHECKSIG
+    # (mirrors btc-vault Assert:0 NoPayout leaf; exact content only affects the sibling
+    # hash, not the payout-leaf commitment the firmware verifies).
+    nopayout_leaf = (
+        bytes([0x20]) + TEST_VP_KEY
+        + bytes([0xAD])               # OP_CHECKSIGVERIFY
+        + bytes([0x20]) + _TEST_KEEPER_PKS[0]
+        + bytes([0xAC])               # OP_CHECKSIG
+    )
+
+    # 2-leaf merkle root (sorted TapBranch, as in BIP-341 and btc-vault Huffman tree).
+    merkle_root = _taptree2_root(assert0_leaf, nopayout_leaf)
+    assert0_parity, assert0_tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, merkle_root)
+
+    # 65-byte control block: (0xC0 | parity) || internal_key || nopayout_leaf_hash
+    nopayout_lh = _tapleaf_hash(nopayout_leaf)
+    assert0_cb = bytes([0xC0 | assert0_parity]) + VAULT_NUMS_XONLY + nopayout_lh
+
+    # Replace Input 1 with the multi-leaf Assert:0 UTXO.
+    psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, bytes([0x51, 0x20]) + assert0_tweaked)
+    psbt.inputs[1].tap_scripts = {(assert0_leaf, 0xC0): {assert0_cb}}
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
+
+
 def test_sign_psbt_payout_vk(
     client: "RaggerClient",
     navigator: Navigator,
