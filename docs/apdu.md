@@ -57,10 +57,13 @@ Duplicate tags, unknown tags, and wrong-length fields are rejected.
 
 ### P1=0x01 — Per-vault group TLV payload
 
-One APDU per vault group; must be sent exactly `vault_count` times in order (group 0, 1, …).
-Each group payload uses the same TLV encoding as P1=0x00 (2-byte tag + 1-byte length + value)
-but in an **independent tag namespace** (`TAG_GRP_*`). All 6 group tags are mandatory per group.
-Tags must arrive in strictly ascending tag-index order (htlc_vout first).
+Must be sent until exactly `vault_count` groups have been received, in order (group 0, 1, …).
+Multiple complete group records may be batched into a single APDU: the device loops through the
+payload consuming one group at a time until all `vault_count` groups are received.
+Each group uses the same TLV encoding as P1=0x00 (2-byte tag + 1-byte length + value) but in an
+**independent tag namespace** (`TAG_GRP_*`). All 6 group tags are mandatory per group; the device
+stops parsing each record as soon as all 6 fields are present, leaving the remainder of the
+payload for the next group. Tags must arrive in strictly ascending tag-index order (htlc_vout first).
 
 | Tag      | Field                    | Length | Type     | Validation rule |
 |----------|--------------------------|--------|----------|-----------------|
@@ -136,7 +139,7 @@ transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
 | SW       | Condition |
 |----------|-----------|
 | `0x6A80` | Duplicate tag, unknown tag, field validation failure, wrong field length, malformed TLV entry, key ordering/uniqueness violation, tag phase mismatch (keeper tag where challenger expected or vice versa), extra keys beyond declared count, extra vault groups beyond `vault_count`, `htlc_vout` not strictly ascending across groups, depositor path in intent does not match path used in `DERIVE_CONTEXT_HASH` |
-| `0x6A86` | P1 is not `0x00`, `0x01`, or `0x02` |
+| `0x6A86` | P2 is not `0x00` (checked before P1); or P1 is not `0x00`, `0x01`, or `0x02` |
 | `0x6985` | User rejected the approval screen |
 | `0xB007` | P1=0x01 (groups) received before P1=0x00 scalars, or P1=0x02 (key batch) received before all P1=0x01 groups are delivered, or P1=0x02 received before `DERIVE_CONTEXT_HASH` completes |
 | `0x6F00` | BIP-32 derivation of depositor key failed |

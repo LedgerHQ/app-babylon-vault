@@ -99,6 +99,14 @@ bool sign_custom_inputs(
     const vault_intent_t *const intent = &G_vault_intent;
 
     /* -----------------------------------------------------------------------
+     * PoP BIP-322: tx_version == 0 is the unique sentinel for Proof-of-Possession
+     * flows.  PoP produces no vault-protocol signature and must not increment any
+     * signing counter.  validate_and_display_transaction already dispatched PoP to
+     * its own handler; here we simply skip counter accounting.
+     * ----------------------------------------------------------------------- */
+    if (st->tx_version == 0) return true;
+
+    /* -----------------------------------------------------------------------
      * PegIn (INTENT_LOADED, no wallet policy, n_inputs==1, n_outputs==3)
      *
      * Sign HTLC Leaf 0 (input 0) with the depositor key.
@@ -268,6 +276,11 @@ bool sign_custom_inputs(
             }
 
             G_vault_context.nopayout_signed++;
+            /* N-02: mark this challenger slot as signed to prevent replay. */
+            {
+                uint8_t slot = G_vault_context.nopayout_challenger_index;
+                G_vault_context.nopayout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
+            }
             return true;
         }
 

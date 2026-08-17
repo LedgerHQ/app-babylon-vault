@@ -152,7 +152,8 @@ bool display_claim_transaction(dispatcher_context_t *dc,
                                uint64_t amount_spent,
                                uint64_t connector_amount,
                                uint64_t fee,
-                               const uint8_t *pegin_txid) {
+                               const uint8_t *pegin_txid,
+                               const char *out0_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
@@ -160,7 +161,8 @@ bool display_claim_transaction(dispatcher_context_t *dc,
     format_sats_amount(COIN_COINID_SHORT, amount_spent, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, connector_amount, G_scratch.display_tx.extra_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
-    format_hex(pegin_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
+    /* txid_str (65 B): 32-byte txid as 64 hex chars + NUL; addr_str is free for out0_address. */
+    format_hex(pegin_txid, 32, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
 
     int n = 0;
     tx_pairs[n++] =
@@ -170,7 +172,8 @@ bool display_claim_transaction(dispatcher_context_t *dc,
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.addr_str};
+        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Output 0 address", .value = out0_address};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -298,7 +301,8 @@ bool display_wc_transaction(dispatcher_context_t *dc,
 bool display_pop_transaction(dispatcher_context_t *dc,
                              const char *eth_addr,
                              const char *chain_id,
-                             const char *registry) {
+                             const char *registry,
+                             const char *btc_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
@@ -309,6 +313,10 @@ bool display_pop_transaction(dispatcher_context_t *dc,
     strlcpy(G_scratch.display_tx.extra_str, chain_id, TX_DISPLAY_AMOUNT_STR_SIZE);
     // txid_str (65 B): registry address (42 chars + NUL fits within 65 B)
     strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
+    /* btc_addr_buf lives on this function's stack frame, which remains active while
+     * io_ui_process blocks below — NBGL pointer stays valid throughout rendering. */
+    char btc_addr_buf[TX_DISPLAY_ADDR_STR_SIZE];
+    strlcpy(btc_addr_buf, btc_address, sizeof(btc_addr_buf));
 
     int n = 0;
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Ethereum address",
@@ -317,6 +325,8 @@ bool display_pop_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Chain id", .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry address",
                                              .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Bitcoin address", .value = btc_addr_buf};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -347,18 +357,25 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 bool display_payout_finalize(dispatcher_context_t *dc,
                              uint64_t amount_received,
                              const char *address,
-                             const char *cpfp_address) {
+                             const char *cpfp_address,
+                             uint64_t fee,
+                             const char *vault_prevout_txid) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Vault UTXO txid",
+                                             .value = vault_prevout_txid};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount received",
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -535,7 +552,7 @@ static void vault_stream_group(void) {
         (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = g_grp_vp_str};
     g_vault_grp_pairs[2] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = g_grp_amt_str};
     g_vault_grp_pairs[3] =
-        (nbgl_layoutTagValue_t) {.item = "Commission fee", .value = g_grp_comm_str};
+        (nbgl_layoutTagValue_t) {.item = "Max commission fee", .value = g_grp_comm_str};
     g_vault_grp_pairs[4] =
         (nbgl_layoutTagValue_t) {.item = "Depositor claim", .value = g_grp_claim_str};
     g_vault_grp_pairs[5] =
@@ -547,7 +564,7 @@ static void vault_stream_group(void) {
 
     nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list,
                                            vault_after_group,
-                                           VAULT_SKIP_CB(vault_stream_keys));
+                                           VAULT_SKIP_CB(vault_stream_group));
 }
 
 static void vault_after_params(bool confirm) {
@@ -559,16 +576,19 @@ static void vault_after_params(bool confirm) {
     vault_stream_group();
 }
 
-// After the intro page: start the params segment. vault_stream_keys is the params
-// segment's skip callback (Skip on params → keys, never straight to approval).
+// After the intro page: start the params segment. vault_stream_group is the params
+// segment's skip callback (Skip on params → first vault group, never straight to keys).
+// g_stream_vault_idx is reset here so both the confirm path (vault_after_params) and
+// the skip path (vault_stream_group called directly) start at vault group 0.
 static void vault_stream_intro_choice(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
         return;
     }
+    g_stream_vault_idx = 0;
     nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list,
                                            vault_after_params,
-                                           VAULT_SKIP_CB(vault_stream_keys));
+                                           VAULT_SKIP_CB(vault_stream_group));
 }
 
 // Called by NBGL lazily for each key pair it needs to render.
@@ -621,6 +641,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_refund_tl_str[VAULT_TIMELOCK_STR_SIZE];
+    char vault_prepegin_fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
 
     int n = 0;
 
@@ -660,6 +681,12 @@ bool display_vault_intent(dispatcher_context_t *dc) {
                            sizeof(vault_refund_tl_str));
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Refund timelock", .value = vault_refund_tl_str};
+
+    format_sats_amount(COIN_COINID_SHORT,
+                       G_vault_intent.prepegin_max_fee,
+                       vault_prepegin_fee_str);
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Max Pre-PegIn fee", .value = vault_prepegin_fee_str};
 
     LEDGER_ASSERT(n <= VAULT_INTENT_MAX_PAIRS, "Too many pairs");
 

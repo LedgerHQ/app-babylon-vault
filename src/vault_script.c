@@ -192,12 +192,10 @@ static bool vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[VAULT_HAS
  * Emits a tapscript N-of-N multisig fragment for the given key array.
  *
  *   is_final == 0 (intermediate): result is consumed by the next opcode.
- *     N=1 → <key> OP_CHECKSIGVERIFY
- *     N>1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUALVERIFY
+ *     N≥1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUALVERIFY
  *
  *   is_final != 0 (final): the boolean result stays on the stack.
- *     N=1 → <key> OP_CHECKSIG
- *     N>1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUAL
+ *     N≥1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUAL
  *
  * Each x-only key is pushed as 0x20 <32-byte key> (OP_PUSHBYTES_32).
  * Returns bytes written, or -1 if buf_max is too small.
@@ -213,28 +211,21 @@ static int encode_multisig_group(const uint8_t keys[][VAULT_XONLY_PUBKEY_LEN],
 
     int off = 0;
 
-    if (key_count == 1) {
-        buf[off++] = OP_PUSHBYTES_32;
-        memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
-        off += 32;
-        buf[off++] = is_final ? OP_CHECKSIG : OP_CHECKSIGVERIFY;
-    } else {
-        buf[off++] = OP_PUSHBYTES_32;
-        memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
-        off += 32;
-        buf[off++] = OP_CHECKSIG;
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
+    off += 32;
+    buf[off++] = OP_CHECKSIG;
 
-        for (int i = 1; i < key_count; i++) {
-            buf[off++] = OP_PUSHBYTES_32;
-            memcpy(buf + off, keys[i], VAULT_XONLY_PUBKEY_LEN);
-            off += 32;
-            buf[off++] = OP_CHECKSIGADD;
-        }
-
-        int n_len = _push_number((uint32_t) key_count, buf + off);
-        off += n_len;
-        buf[off++] = is_final ? OP_NUMEQUAL : OP_NUMEQUALVERIFY;
+    for (int i = 1; i < key_count; i++) {
+        buf[off++] = OP_PUSHBYTES_32;
+        memcpy(buf + off, keys[i], VAULT_XONLY_PUBKEY_LEN);
+        off += 32;
+        buf[off++] = OP_CHECKSIGADD;
     }
+
+    int n_len = _push_number((uint32_t) key_count, buf + off);
+    off += n_len;
+    buf[off++] = is_final ? OP_NUMEQUAL : OP_NUMEQUALVERIFY;
 
     return off;
 }
@@ -650,8 +641,12 @@ bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
 /* --------------------------------------------------------------------------
  * vault_build_assert0_payout_scriptpubkey
  *
- * P2TR scriptPubKey (34 bytes) for the Assert:0 Payout output
- * (single-leaf taptree; one variant per claimer_idx).
+ * P2TR scriptPubKey (34 bytes) for an Assert:0 Payout leaf treated as a
+ * single-leaf taptree.  This does NOT match the Huffman-encoded multi-leaf
+ * taptree that btc-vault produces on-chain; it is retained only for the
+ * unit-test suite (test_all_scriptpubkeys_are_p2tr).  Do not use this
+ * function for PSBT validation — the callback-based vault_read_payout_leaf_script
+ * handles the actual multi-leaf control block correctly.
  * ----------------------------------------------------------------------- */
 
 bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,

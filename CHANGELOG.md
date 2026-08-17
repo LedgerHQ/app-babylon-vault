@@ -14,11 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PayoutFinalize single-vault fee cap**: when `vault_count == 1`, bound the implied fee against `base_fee_rate × MAX_PAYOUTFINALIZE_VSIZE` using the attested `vault_amount` (`sign_psbt_validate.c`)
 - **VP commission sub-dust rejection**: reject Out1 in `(0, VAULT_DUST_LIMIT)` — produces a non-standard output; valid values are 0 or `[VAULT_DUST_LIMIT, Fc]` (`sign_psbt_validate.c`)
 - **Payout Assert:0 taproot commitment**: switched to `vault_read_payout_leaf_script` + `_refund_verify_taproot_commitment` to handle multi-leaf Huffman control blocks (`sign_psbt_validate.c`)
+- **Pre-PegIn CPFP anchor validation**: accept an optional P2TR(depositor_pk) BIP-86 key-path output at exactly `VAULT_DUST_LIMIT` (546 sat); enforce at-most-one; reject any unrecognised non-HTLC, non-change, non-anchor output (`sign_psbt_validate.c`)
+- **NoPayout WITNESS_UTXO value range**: Input 0 (Assert:0) and Input 1 (Assert:0 for Payout/PayoutFinalize) now enforce a lower-bound floor of `VAULT_DUST_LIMIT` with a fee-scaled ceiling of `VAULT_DUST_LIMIT + base_fee_rate × MAX_COUNCIL_NOPAYOUT_VSIZE`; the previous exact `== VAULT_DUST_LIMIT` / `> VAULT_DUST_LIMIT` checks are removed (`sign_psbt_validate.c`)
+- **NoPayout per-challenger dedup bitmask**: added `nopayout_claimer_mask` (80-byte bitmask) to `vault_context_t`; a challenger's slot is set after signing and checked before validation, blocking a malicious host from replaying the same NoPayout PSBT to exhaust the flat cap (`vault_context.h`, `sign_psbt_validate.c`, `sign_custom_inputs.c`)
+- **PoP intent key check**: when `VAULT_STATE_INTENT_LOADED`, the PSBT's BIP-86 internal key must equal `depositor_pk` from the approved intent; mismatches are rejected with `SW_INCORRECT_DATA` (`sign_psbt_validate.c`)
+- **`base_fee_rate` max tightened to 10,000 sat/vB**: previous upper bound was `UINT32_MAX`; capped at 10,000 to match the btc-vault daemon's accepted range, blocking implausibly high fee rates at intent-load time (`vault_tlv.c`)
 
 ### Changed
 
 - **VP commission relaxed to `<= Fc`**: accept Out1 ≤ `commission_fee`; exact match no longer required (`sign_psbt_validate.c`)
-- **PayoutFinalize conservation check removed**: check against Input 1 value was unconditionally true after Input 1 was fixed to `VAULT_DUST_LIMIT`; replaced by the floor and fee cap above (`sign_psbt_validate.c`)
+- **PayoutFinalize conservation check removed**: check against Input 1 value was unconditionally violated after Input 1 was fixed to `VAULT_DUST_LIMIT`; replaced by the floor and fee cap above (`sign_psbt_validate.c`)
+- **PayoutFinalize fee formula participant-linear**: fee cap changed from flat `base_fee_rate × 500` to `base_fee_rate × (500 + 55 × (keeper_count + challenger_count))`, matching the Payout fee model and scaling correctly with council size (`sign_psbt_validate.c`)
+- **`encode_multisig_group` N=1 encoding**: removed the N=1 shortcut that emitted `<key> OP_CHECKSIG[VERIFY]`; always emits `<key> OP_CHECKSIG [OP_CHECKSIGADD…] N OP_NUMEQUAL[VERIFY]`, matching the on-chain encoding from btc-vault for single-key groups (`vault_script.c`)
+- **Screen 2 (intent) skip target**: the "Skip" button on the params and intro segments now advances to the first vault group, not directly to the keys segment; `g_stream_vault_idx` is reset on entry so both confirm and skip paths start from vault group 0 (`display.c`)
+
+### Added
+
+- **`prepegin_max_fee` on Screen 2**: "Max Pre-PegIn fee" is now shown on the vault intent approval screen, giving the user a visible bound on the Pre-PegIn transaction fee (`display.c`)
+- **Screen 4 (Claim) Output 0 address**: bech32m address of the ClaimAssertConnector output (Output 0) is decoded from its scriptPubKey and shown as an "Output 0 address" field (`display.c`, `sign_psbt_validate.c`)
+- **Screen 7 (PoP) depositor Bitcoin address**: the depositor's BIP-86 tweaked bech32m address is derived and displayed as a "Bitcoin address" field on the PoP review screen (`display.c`, `sign_psbt_validate.c`)
+- **Screen 8 (PayoutFinalize) fee and vault txid**: `display_payout_finalize` now shows "Vault UTXO txid" (Input 1 prevout) and "Transaction fee"; fee is attested from `vault_amount` for single-vault intent-loaded flows (`display.c`, `sign_psbt_validate.c`)
 
 ### Fixed
 
@@ -26,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Added** `test_payout_finalize_input1_wrong_value`: covers `SW_INCORRECT_DATA` when Input 1 `witness_utxo` ≠ `VAULT_DUST_LIMIT`
 - **Added** `test_sign_psbt_payout_vp_commission_sub_dust`: covers `SW_INCORRECT_DATA` for sub-dust VP Out1
 - **Added** `test_sign_psbt_payout_multileaf_assert0`: covers the multi-leaf Assert:0 control block path
+- **Navigation step counts updated** for Screen 2 intent skip (one extra skip/confirm pair), Screen 4 Claim (one extra tap for Output 0 address), and Screen 7 PoP (two extra clicks on Nano, one extra tap on Stax/Flex/Apex) (`tests/instructions.py`)
+- **`bip322.h` to_spend txid comment**: corrected "reversed to Bitcoin wire format" → "in PSBT/wire byte order (not byte-reversed)" (`bip322.h`)
+- **`vault_script.h` NUMS key comment**: replaced incorrect SHA256("nothing_up_my_sleeve") description with the accurate BIP-341 `lift_x(…)` construction (`vault_script.h`)
 
 ## [0.9.4] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 

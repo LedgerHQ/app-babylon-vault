@@ -70,7 +70,9 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 field_idx = 3;
                 if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 uint64_t rate = U8BE(v, 0);
-                if (rate == 0 || rate > UINT32_MAX) return VAULT_TLV_ERR_VALIDATION;
+                /* btc-vault daemon caps ingest at 10,000 sat/vB; Babylon contract caps at 1,000.
+                 * Reject values outside the daemon's accepted range at intent-load time. */
+                if (rate == 0 || rate > 10000) return VAULT_TLV_ERR_VALIDATION;
                 out->base_fee_rate = rate;
                 break;
             }
@@ -132,6 +134,11 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 /* change and index must not be hardened */
                 if (out->depositor_path[3] & HARDENED) return VAULT_TLV_ERR_VALIDATION;
                 if (out->depositor_path[4] & HARDENED) return VAULT_TLV_ERR_VALIDATION;
+                /* Enforce the same bounds that check_bip86_path applies at signing time,
+                 * so a vault cannot be created at a path the device could never refund/claim. */
+                if ((out->depositor_path[2] & ~HARDENED) > 100u) return VAULT_TLV_ERR_VALIDATION;
+                if (out->depositor_path[3] > 1u) return VAULT_TLV_ERR_VALIDATION;
+                if (out->depositor_path[4] > 10000u) return VAULT_TLV_ERR_VALIDATION;
                 break;
             }
 

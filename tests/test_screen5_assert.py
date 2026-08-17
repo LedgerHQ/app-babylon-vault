@@ -52,7 +52,7 @@ ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
 # Arbitrary 32-byte claim txid used as the prevout of the ClaimAssertConnector input.
 _FAKE_CLAIM_TXID = bytes(range(32))
 
-# A fixed 32-byte xonly key for the second slot of the assert leaf (<key> OP_CSV).
+# A fixed 32-byte xonly key used as the first challenger slot in the synthetic test leaf.
 _ASSERT_INNER_KEY = bytes([0x02] * 32)
 
 
@@ -66,18 +66,22 @@ def _build_assert_psbt(
 ) -> PSBT:
     """Build an Assert PSBTv0 for Screen 5.
 
-    The assert leaf shape is:
-        <D>(33B) OP_CHECKSIGVERIFY <key>(33B) OP_CSV  — 68 bytes total.
+    Uses a synthetic 68-byte leaf that matches the Assert routing prefix:
+        OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY OP_PUSHBYTES_32 <key[32]> OP_CSV
 
-    The device dispatches to Screen 5 when leaf[34] == OP_PUSHBYTES_32 and
-    leaf[-1] == OP_CSV.  D is verified via TAP_BIP32_DERIVATION.
+    The device dispatches to Screen 5 when leaf[34] == OP_PUSHBYTES_32 (first byte
+    of the challenger multisig) and leaf[33] == OP_CHECKSIGVERIFY.  D is verified
+    via TAP_BIP32_DERIVATION (BIP-86 path).
 
-    WITNESS_UTXO is NOT taproot-verified for Assert (only its value is read).
+    The real Assert leaf is ~11.6 KB (btc-vault claim_assert.rs).  This synthetic
+    leaf fits in the read buffer so the taproot commitment IS verified.  Real-leaf
+    vectors will be provided by S-08.
     The claim txid comes from tx.vin[0].prevout.hash (PSBTv0).
     """
     assert len(claim_txid) == 32
 
-    # Assert leaf: 0x20 D(32B) 0xAD 0x20 key(32B) 0xB2  — 68 bytes
+    # Synthetic Assert leaf: OP_PUSHBYTES_32 D(32B) OP_CHECKSIGVERIFY OP_PUSHBYTES_32 key(32B) OP_CSV
+    # Byte 34 == OP_PUSHBYTES_32 (0x20) satisfies the Assert routing check.
     assert_leaf = (
         bytes([0x20]) + leaf_key
         + bytes([0xAD, 0x20]) + _ASSERT_INNER_KEY
@@ -108,7 +112,7 @@ def _build_assert_psbt(
     psbt.inputs = [PartiallySignedInput(0)]
     psbt.outputs = [PartiallySignedOutput(0)]
 
-    # WITNESS_UTXO SPK is taproot-verified via _refund_verify_taproot_commitment; value is read as amount_carried.
+    # Leaf fits in the read buffer → WITNESS_UTXO SPK is taproot-verified; value is read as amount_carried.
     psbt.inputs[0].witness_utxo = CTxOut(amount_carried, assert_spk)
     psbt.inputs[0].tap_scripts[(assert_leaf, 0xC0)] = {control_block}
     psbt.inputs[0].tap_bip32_paths[leaf_key] = (
@@ -307,18 +311,19 @@ def test_sign_psbt_assert_tampered_control_block(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_sign_psbt_assert_wrong_leaf_opcode(
+def test_sign_psbt_assert_unrecognized_leaf_shape(
     client: "RaggerClient",
     bitcoin_network: str,
 ) -> None:
-    """Assert fails when the leaf trailing opcode is not OP_CSV (0xB2)."""
+    """Leaf with unrecognized byte-34 opcode (not OP_SIZE, not OP_PUSHBYTES_32) and no
+    trailing OP_CSV is rejected: it matches none of WC, Assert, or Refund."""
     fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
     psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
-    # Replace the last byte (0xB2 OP_CSV) with 0xAC (OP_CHECKSIG) — wrong shape
+    # Byte 34 = OP_PUSHBYTES_3 (0x03): not OP_SIZE → not WC; not OP_PUSHBYTES_32 → not Assert.
+    # Last byte = OP_CHECKSIG (0xAC): not OP_CSV → not Refund.  → SW_INCORRECT_DATA.
     bad_leaf = (
         bytes([0x20]) + leaf_key
-        + bytes([0xAD, 0x20]) + _ASSERT_INNER_KEY
-        + bytes([0xAC])  # wrong trailing opcode
+        + bytes([0xAD, 0x03, 0x01, 0x02, 0x03, 0xAC])  # unrecognized shape
     )
     bad_leaf_hash = _tapleaf_hash(bad_leaf)
     parity, tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, bad_leaf_hash)

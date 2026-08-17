@@ -59,6 +59,8 @@ bool display_refund_transaction(dispatcher_context_t *dc,
  * @param connector_amount   Output 0 value locked into the ClaimAssertConnector, satoshis.
  * @param fee                Transaction fee in satoshis.
  * @param pegin_txid         32-byte PegIn txid (vault reference, shown as hex); caller keeps valid.
+ * @param out0_address       NUL-terminated bech32m address for Output 0 (ClaimAssertConnector);
+ *                           caller must keep valid across the blocking io_ui_process call.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
@@ -66,7 +68,8 @@ bool display_claim_transaction(dispatcher_context_t *dc,
                                uint64_t amount_spent,
                                uint64_t connector_amount,
                                uint64_t fee,
-                               const uint8_t *pegin_txid);
+                               const uint8_t *pegin_txid,
+                               const char *out0_address);
 
 /**
  * @brief Screen 5 — Assert transaction review.
@@ -101,37 +104,43 @@ bool display_wc_transaction(dispatcher_context_t *dc,
 /**
  * @brief Screen 7 — PoP (BIP-322 proof-of-possession) review.
  *
- * Shows the three human-readable fields from the PoP message and asks the user
- * to confirm "Register ETH address" before the device signs the to_sign PSBT.
+ * Shows the three human-readable fields from the PoP message and the depositor's
+ * Bitcoin address, then asks the user to confirm before the device signs the to_sign PSBT.
  *
- * @param eth_addr   NUL-terminated Ethereum address ("0x" + 40 lowercase hex).
- * @param chain_id   NUL-terminated decimal chain ID string.
- * @param registry   NUL-terminated registry contract address ("0x" + 40 lowercase hex).
+ * @param eth_addr       NUL-terminated Ethereum address ("0x" + 40 lowercase hex).
+ * @param chain_id       NUL-terminated decimal chain ID string.
+ * @param registry       NUL-terminated registry contract address ("0x" + 40 lowercase hex).
+ * @param btc_address    NUL-terminated bech32m P2TR address of the depositor key being bound.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
 bool display_pop_transaction(dispatcher_context_t *dc,
                              const char *eth_addr,
                              const char *chain_id,
-                             const char *registry);
+                             const char *registry,
+                             const char *btc_address);
 
 /**
  * @brief Screen 8 — Payout finalize review.
  *
  * Shown when the depositor self-claims after a successful Claim + Assert chain.
- * Displays the amount received (Output 0 value) and both output addresses so the
- * user can verify both outputs pay their own BIP-86 address.  Fee is not shown
- * because the device signs Input 1 only and has no attested value for Input 0's
- * prevout.
+ * Displays the vault UTXO txid (Input 0), the amount received, transaction fee,
+ * and both output addresses so the user can verify both outputs pay their own
+ * BIP-86 address.
  *
- * @param amount_received  Output 0 value in satoshis (funds going to depositor).
- * @param address          NUL-terminated bech32m address for Output 0; caller keeps valid.
- * @param cpfp_address     NUL-terminated bech32m address for Output 1 (CPFP anchor);
- *                         caller keeps valid.
+ * @param amount_received     Output 0 value in satoshis (funds going to depositor).
+ * @param address             NUL-terminated bech32m address for Output 0; caller keeps valid.
+ * @param cpfp_address        NUL-terminated bech32m address for Output 1 (CPFP anchor);
+ *                            caller keeps valid.
+ * @param fee                 Transaction fee in satoshis (total inputs − outputs).
+ * @param vault_prevout_txid  NUL-terminated 64-char hex string of the Vault UTXO prevout txid;
+ *                            caller must keep valid across the blocking io_ui_process call.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */
 bool display_payout_finalize(dispatcher_context_t *dc,
                              uint64_t amount_received,
                              const char *address,
-                             const char *cpfp_address);
+                             const char *cpfp_address,
+                             uint64_t fee,
+                             const char *vault_prevout_txid);

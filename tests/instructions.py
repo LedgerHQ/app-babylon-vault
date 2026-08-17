@@ -20,9 +20,9 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
     """
     extra = vault_count - 1
     if device.is_nano:
-        return 1 + 5 + 7 * extra + 4 * challenger_count + 7
+        return 1 + 6 + 7 * extra + 4 * challenger_count + 7
     if device.name == "stax":
-        return 1 + 1 + 2 * extra + challenger_count + 2
+        return 1 + 2 + 2 * extra + challenger_count + 2
     return 1 + 2 + 2 * extra + 2 * challenger_count + 2
 
 
@@ -79,6 +79,8 @@ def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
     assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
     return [
         NavInsID.USE_CASE_REVIEW_TAP,         # intro → first params page
+        NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on params
+        NavInsID.USE_CASE_CHOICE_CONFIRM,     # "Yes, skip" → keys segment
         NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on params
         NavInsID.USE_CASE_CHOICE_CONFIRM,     # "Yes, skip" → keys segment
         NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on keys
@@ -229,6 +231,8 @@ def sign_psbt_claim_approve_nav(device: Device) -> List[NavInsID]:
         return [
             NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
             NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+
             NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
             NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
         ]
@@ -347,13 +351,23 @@ def sign_psbt_wc_reject_nav(device: Device) -> List[NavInsID]:
 def sign_psbt_pop_approve_nav(device: Device) -> List[NavInsID]:
     """Flat approve-path navigation for Screen 7 (PoP) — all devices."""
     if device.is_nano:
-        return [NavInsID.RIGHT_CLICK] * 4 + [NavInsID.BOTH_CLICK]
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
-        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
-        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
-    ]
+        return [NavInsID.RIGHT_CLICK] * 6 + [NavInsID.BOTH_CLICK]
+    elif  device.name == "stax":
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
+    else:
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
 
 
 def sign_psbt_pop_reject_instructions(device: Device) -> Instructions:

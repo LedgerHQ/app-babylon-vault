@@ -107,6 +107,24 @@ typedef struct {
     uint8_t pegin_group_mask[(VAULT_MAX_VAULTS + 7u) / 8u];
 
     /**
+     * Per-challenger NoPayout deduplication bitmask.
+     *
+     * Bit challenger_idx is set once the NoPayout PSBT for that challenger is signed,
+     * preventing a malicious host from replaying the same NoPayout PSBT to exhaust the
+     * flat nopayout_signed cap.  The NoPayout leaf does not encode the vault group, so
+     * the slot is challenger_idx only (gi is implicitly bound by the taproot commitment).
+     * Cleared by vault_context_invalidate.
+     */
+    uint8_t nopayout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) + 7u) / 8u];
+
+    /**
+     * Challenger index for the NoPayout currently being validated/signed.
+     * Ranges 0..keeper_count+challenger_count-1.
+     * Set by _validate_nopayout; read by sign_custom_inputs to set the dedup bit.
+     */
+    uint8_t nopayout_challenger_index;
+
+    /**
      * Dual-use field:
      *   - During APPROVE_VAULT_INTENT P1=0x01: counts groups received (0..vault_count).
      *   - During Payout signing: group index currently being validated/signed (set by
@@ -154,7 +172,9 @@ typedef struct {
 /**
  * @brief Zero-initialise the context and set state to VAULT_STATE_IDLE.
  *
- * Must be called once at application start-up.
+ * In production the global G_vault_context is BSS-zero-initialized at device
+ * boot (VAULT_STATE_IDLE == 0), so this function has no production caller.
+ * Call it from unit tests to reset context to a known state between cases.
  */
 void vault_context_init(vault_context_t *ctx);
 

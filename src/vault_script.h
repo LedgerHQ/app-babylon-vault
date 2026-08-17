@@ -52,7 +52,8 @@ int crypto_tr_tweak_pubkey(const uint8_t pubkey[VAULT_XONLY_PUBKEY_LEN],
 
 /**
  * NUMS x-only public key used as the internal key for all vault P2TR outputs,
- * disabling key-path spending.  Value: SHA256("nothing_up_my_sleeve").
+ * disabling key-path spending.  Value: BIP-341 lift_x(0x50929b74c1a04954
+ * b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0).
  */
 extern const uint8_t VAULT_NUMS_XONLY[VAULT_XONLY_PUBKEY_LEN];
 

@@ -1057,3 +1057,83 @@ def test_vault_amount_below_min_rejected(client: RaggerClient, navigator: Naviga
         _raw_exchange(client, P1_GROUP,
                       _make_group(vault_amount=below_min, commission_fee=commission_fee))
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# N-09: Group TLV parser coverage — unknown tag rejection, claim-value dust floor,
+#        multi-record cursor walk
+# ---------------------------------------------------------------------------
+
+def test_group_unknown_tag_is_rejected(client: RaggerClient, navigator: Navigator,
+                                       device: Device, bitcoin_network: str):
+    """Unknown 2-byte tag in a group TLV is rejected with SW_INCORRECT_DATA.
+
+    The spec requires canonical TLV encoding: no unknown tags are permitted in
+    either the scalar (P1=0x00) or group (P1=0x01) payload.  Appending an unknown
+    tag (0xFFFF) to an otherwise valid group record must cause the APDU to be rejected.
+    """
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Valid group TLV followed by a one-byte unknown tag (0xFFFF, length 1, value 0x00).
+    unknown_tag_tlv = bytes([0xFF, 0xFF, 0x01, 0x00])
+    group_with_unknown = _make_group() + unknown_tag_tlv
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, group_with_unknown)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_group_depositor_claim_value_below_dust_rejected(
+    client: RaggerClient, navigator: Navigator, device: Device, bitcoin_network: str,
+):
+    """depositor_claim_value strictly below VAULT_DUST_LIMIT (546 sat) must be rejected.
+
+    A sub-dust depositor claim UTXO would be non-standard and unspendable under
+    relay policy.  The firmware must reject it at intent-loading time so the device
+    never commits to a dust-valued claim output.
+    """
+    DUST = 546
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, _make_group(depositor_claim_value=DUST - 1))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_group_multi_record_cursor_walk(client: RaggerClient, navigator: Navigator,
+                                         device: Device, bitcoin_network: str):
+    """Multiple group records sent across separate P1=0x01 APDUs are all parsed correctly.
+
+    Exercises the group TLV cursor walking with vault_count=3: one group per APDU,
+    each carrying a distinct htlc_vout.  All three must be accepted and the intent
+    must load successfully (SW_OK after the final key batch).
+    """
+    from .instructions import vault_intent_approve_nav
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=3, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Send three group TLVs each in a separate P1=0x01 APDU.
+    for htlc_vout in range(3):
+        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=htlc_vout,
+                                                     vault_amount=100_000 + htlc_vout * 10_000))
+
+    payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
+    nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=payload,
+    ):
+        navigator.navigate_until_text(
+            navigate_instruction=nav_instr,
+            validation_instructions=confirm_instrs,
+            text=search_text,
+            screen_change_before_first_instruction=False,
+        )
+    _sw, _ = client.last_async_response()
+    assert _sw == SW_OK

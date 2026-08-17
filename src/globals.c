@@ -1,4 +1,5 @@
 #include "globals.h"
+#include <stddef.h>
 
 // ---------------------------------------------------------------------------
 // Compile-time RAM budget assertions (Nano S+ target)
@@ -19,17 +20,19 @@
 //   sig cap counters       8 B  (pre_pegin/pegin/payout/nopayout _signed, 2 B each)
 //   payout_claimer_mask   43 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+2) bits, per-slot dedup)
 //   pegin_group_mask       2 B  (VAULT_MAX_VAULTS=10 bits, per-group dedup)
+//   nopayout_claimer_mask 80 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+VAULT_MAX_CHALLENGERS) bits)
+//   nopayout_challenger_index 1 B
 //   vault_group_index      1 B  + padding
 //   is_payout_signing      1 B  + padding
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding
 //   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
 //   app_name_len           1 B  + padding
-//   total               ~552 B  (sizeof verified at compile time)
+//   total               ~632 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B
-//   vault_context_t             ≤  576 B
+//   vault_context_t             ≤  632 B
 //   G_scratch (union)             5120 B  (largest member: refund_leaf_check_t =
 //                                          2 × VAULT_SCRIPT_MAX_LEN; was 6224 B when
 //                                          display_vault_intent_scratch_t dominated)
@@ -43,7 +46,7 @@
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
-_Static_assert(sizeof(vault_context_t) <= 576, "vault_context_t exceeds expected size");
+_Static_assert(sizeof(vault_context_t) <= 632, "vault_context_t exceeds expected size");
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
                "vault_scratch_t size != refund_leaf_check_t; check union definition");
@@ -55,6 +58,14 @@ _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
     (107 + (VAULT_MAX_KEEPERS * 34 + 6) + (VAULT_MAX_CHALLENGERS * 34 + 6) + 1)
 _Static_assert(sizeof(refund_leaf_check_t) - VAULT_SCRIPT_MAX_LEN >= _VAULT_MAX_LEAF0_WITH_VERSION,
                "refund_leaf_check.actual_buf too small for max leaf0 script + version byte");
+
+/* tls.leaf_script and leaf_check.actual_buf alias inside vault_scratch_t.
+ * The overlap threshold used in _tap_leaf_script_callback (2298 bytes) is derived from
+ * these two offsets; a layout change would silently break the memmove guard. */
+_Static_assert(offsetof(vault_scratch_t, leaf_check.actual_buf) -
+                       offsetof(vault_scratch_t, tls.leaf_script) ==
+                   2298,
+               "G_scratch union overlap threshold changed; update comment in _tap_leaf_script_callback");
 
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
