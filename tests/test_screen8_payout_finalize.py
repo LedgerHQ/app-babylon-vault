@@ -497,12 +497,12 @@ def test_payout_finalize_sequence_time_based(
 def test_payout_finalize_input1_wrong_value(
     client: "RaggerClient", bitcoin_network: str,
 ) -> None:
-    """PayoutFinalize fails when Input 1 witness_utxo value != VAULT_DUST_LIMIT."""
+    """PayoutFinalize fails when Input 1 witness_utxo value < VAULT_DUST_LIMIT."""
     from ledger_bitcoin.tx import CTxOut
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
     psbt.inputs[1].witness_utxo = CTxOut(
-        _VAULT_DUST_LIMIT + 1,
+        _VAULT_DUST_LIMIT - 1,
         psbt.inputs[1].witness_utxo.scriptPubKey,
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])

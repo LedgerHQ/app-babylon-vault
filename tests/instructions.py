@@ -408,6 +408,7 @@ def sign_psbt_payout_finalize_approve_nav(device: Device) -> List[NavInsID]:
         taps = [
             NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
             NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
         ]
 
     else:
@@ -415,6 +416,7 @@ def sign_psbt_payout_finalize_approve_nav(device: Device) -> List[NavInsID]:
             NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
             NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
             NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
         ]
     return taps + [
         NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
