@@ -62,10 +62,10 @@ _Static_assert(sizeof(refund_leaf_check_t) - VAULT_SCRIPT_MAX_LEN >= _VAULT_MAX_
 /* tls.leaf_script and leaf_check.actual_buf alias inside vault_scratch_t.
  * The overlap threshold used in _tap_leaf_script_callback (2298 bytes) is derived from
  * these two offsets; a layout change would silently break the memmove guard. */
-_Static_assert(offsetof(vault_scratch_t, leaf_check.actual_buf) -
-                       offsetof(vault_scratch_t, tls.leaf_script) ==
-                   2298,
-               "G_scratch union overlap threshold changed; update comment in _tap_leaf_script_callback");
+_Static_assert(
+    offsetof(vault_scratch_t, leaf_check.actual_buf) - offsetof(vault_scratch_t, tls.leaf_script) ==
+        2298,
+    "G_scratch union overlap threshold changed; update comment in _tap_leaf_script_callback");
 
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;

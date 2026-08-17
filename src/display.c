@@ -325,8 +325,7 @@ bool display_pop_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Chain id", .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry address",
                                              .value = G_scratch.display_tx.txid_str};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Bitcoin address", .value = btc_addr_buf};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Bitcoin address", .value = btc_addr_buf};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -368,8 +367,8 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
-    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Vault UTXO txid",
-                                             .value = vault_prevout_txid};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Vault UTXO txid", .value = vault_prevout_txid};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount received",
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
@@ -682,9 +681,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Refund timelock", .value = vault_refund_tl_str};
 
-    format_sats_amount(COIN_COINID_SHORT,
-                       G_vault_intent.prepegin_max_fee,
-                       vault_prepegin_fee_str);
+    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.prepegin_max_fee, vault_prepegin_fee_str);
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Max Pre-PegIn fee", .value = vault_prepegin_fee_str};
 

@@ -115,7 +115,9 @@ typedef struct {
      * the slot is challenger_idx only (gi is implicitly bound by the taproot commitment).
      * Cleared by vault_context_invalidate.
      */
-    uint8_t nopayout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) + 7u) / 8u];
+    uint8_t nopayout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) +
+                                   7u) /
+                                  8u];
 
     /**
      * Challenger index for the NoPayout currently being validated/signed.

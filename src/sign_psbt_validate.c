@@ -489,8 +489,7 @@ static bool _validate_prepegin(
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out_value == 0 &&
-            memcmp(out_spk, expected_anchor_spk, AUTH_ANCHOR_SPK_LEN) == 0) {
+        if (out_value == 0 && memcmp(out_spk, expected_anchor_spk, AUTH_ANCHOR_SPK_LEN) == 0) {
             /* OP_RETURN auth-anchor: provably unspendable, at most one permitted. */
             if (anchor_found) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1532,8 +1531,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
             return false;
         }
         if ((uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE <= UINT64_MAX / intent->base_fee_rate) {
-            uint64_t max_assert0 = VAULT_DUST_LIMIT +
-                                   intent->base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE;
+            uint64_t max_assert0 =
+                VAULT_DUST_LIMIT + intent->base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE;
             if (assert0_value > max_assert0) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
@@ -1972,8 +1971,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             return false;
         }
         if ((uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE <= UINT64_MAX / intent->base_fee_rate) {
-            uint64_t max_nopayout = VAULT_DUST_LIMIT +
-                                    intent->base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE;
+            uint64_t max_nopayout =
+                VAULT_DUST_LIMIT + intent->base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE;
             if (nopayout_value > max_nopayout) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
@@ -2944,8 +2943,8 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         if (G_vault_context.state == VAULT_STATE_INTENT_LOADED) {
             uint64_t base_fee_rate = G_vault_intent.base_fee_rate;
             if ((uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE <= UINT64_MAX / base_fee_rate) {
-                uint64_t max_val = VAULT_DUST_LIMIT +
-                                   base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE;
+                uint64_t max_val =
+                    VAULT_DUST_LIMIT + base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE;
                 if (pf_assert0_value > max_val) {
                     SEND_SW(dc, SW_INCORRECT_DATA);
                     return false;
@@ -3116,14 +3115,15 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        format_hex(vault_txid, VAULT_HASH256_LEN, G_scratch.display_tx.txid_str,
+        format_hex(vault_txid,
+                   VAULT_HASH256_LEN,
+                   G_scratch.display_tx.txid_str,
                    TX_DISPLAY_TXID_STR_SIZE);
     }
 
     /* Fee: attested from vault_amount when intent loaded (single vault); 0 otherwise. */
     uint64_t display_fee = 0;
-    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED &&
-        G_vault_intent.vault_count == 1) {
+    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED && G_vault_intent.vault_count == 1) {
         uint64_t va = G_vault_intent.groups[0].vault_amount;
         if (va > VAULT_DUST_LIMIT + amount_received)
             display_fee = va - VAULT_DUST_LIMIT - amount_received;
@@ -3310,8 +3310,7 @@ bool validate_and_display_transaction(
         /* Assert: variable-length leaf; byte 34 is OP_PUSHBYTES_32 (first challenger key
          * prefix), distinguishing it from Refund (<T> push: 0x01/0x02) and WC (OP_SIZE).
          * Real leaf is ~11.6 KB (btc-vault claim_assert.rs) and terminates with OP_TRUE. */
-        if (leaf[34] == OP_PUSHBYTES_32)
-            return _validate_display_assert(dc, st);
+        if (leaf[34] == OP_PUSHBYTES_32) return _validate_display_assert(dc, st);
         /* Refund: <D> OP_CHECKSIGVERIFY <T(1-2 bytes)> OP_CSV */
         if ((uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_CSV)
             return _validate_display_refund(dc, st);
