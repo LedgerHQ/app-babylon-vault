@@ -144,7 +144,7 @@ _PREPEGIN_TXID = bytes(range(32))
 def _multisig_group(keys: List[bytes], is_final: bool) -> bytes:
     """N-of-N multisig fragment.  is_final=True uses OP_NUMEQUAL; False uses OP_NUMEQUALVERIFY."""
     if len(keys) == 1:
-        return bytes([0x20]) + keys[0] + bytes([0xac if is_final else 0xad])
+        return bytes([0x20]) + keys[0] + bytes([0xac, 0x51, 0x9c if is_final else 0x9d])
     out = bytes([0x20]) + keys[0] + bytes([0xac])   # first key: OP_CHECKSIG
     for k in keys[1:]:
         out += bytes([0x20]) + k + bytes([0xba])     # remaining keys: OP_CHECKSIGADD
@@ -783,12 +783,12 @@ def _payout_leaf(d_pk: bytes, app_chal_key: bytes, univ_chal_key: bytes, t2: int
     """Payout leaf: <D> OP_CHECKSIGVERIFY <AppChal 1-of-1> <UnivChal 1-of-1> <t2> OP_CSV.
 
     Uses minimal single-key multisig groups for test purposes.  The leaf is always
-    > 68 bytes (106 with these parameters), which distinguishes it from the 68-byte
+    > 68 bytes (110 with these parameters), which distinguishes it from the 68-byte
     Assert leaf that the firmware's payout-leaf shape check requires.
     """
-    s  = bytes([0x20]) + d_pk + bytes([0xAD])            # <D> OP_CHECKSIGVERIFY
-    s += bytes([0x20]) + app_chal_key + bytes([0xAD])    # AppChallengers 1-of-1 (CHECKSIGVERIFY)
-    s += bytes([0x20]) + univ_chal_key + bytes([0xAD])   # UnivChallengers 1-of-1 (CHECKSIGVERIFY)
+    s  = bytes([0x20]) + d_pk + bytes([0xAD])                      # <D> OP_CHECKSIGVERIFY
+    s += bytes([0x20]) + app_chal_key + bytes([0xAC, 0x51, 0x9D])  # AppChal 1-of-1: OP_CHECKSIG OP_1 OP_NUMEQUALVERIFY
+    s += bytes([0x20]) + univ_chal_key + bytes([0xAC, 0x51, 0x9D]) # UnivChal 1-of-1: OP_CHECKSIG OP_1 OP_NUMEQUALVERIFY
     s += _encode_script_num(t2) + bytes([0xB2])          # <t2> OP_CSV
     return s
 
