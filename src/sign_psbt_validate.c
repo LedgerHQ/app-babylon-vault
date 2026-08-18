@@ -1912,6 +1912,19 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         return false;
     }
 
+    /* Cap check before dedup: SW_CAP_EXCEEDED must be returned even if the challenger
+     * has already signed — the dedup check would otherwise fire first and mask the cap. */
+    {
+        uint16_t cap =
+            (uint16_t) ((uint16_t) intent->vault_count *
+                        ((uint16_t) intent->keeper_count + (uint16_t) intent->challenger_count));
+        if (G_vault_context.nopayout_signed >= cap) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_CAP_EXCEEDED);
+            return false;
+        }
+    }
+
     /* N-02: per-challenger dedup — reject if this challenger has already signed a NoPayout. */
     {
         unsigned int slot = (unsigned int) challenger_idx;
@@ -2025,16 +2038,6 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-    }
-
-    /* Cap: vault_count × (keeper_count + challenger_count) */
-    uint16_t cap =
-        (uint16_t) ((uint16_t) intent->vault_count *
-                    ((uint16_t) intent->keeper_count + (uint16_t) intent->challenger_count));
-    if (G_vault_context.nopayout_signed >= cap) {
-        vault_context_invalidate(&G_vault_context);
-        SEND_SW(dc, SW_CAP_EXCEEDED);
-        return false;
     }
 
     /* Stash challenger index for sign_custom_inputs to set the dedup bit after signing. */
