@@ -114,8 +114,8 @@ static void test_htlc_leaf1_bytes(void **state) {
 /* ---------------------------------------------------------------------------
  * vault_build_vault_utxo_leaf  (N=1, M=1)
  *
- * Expected: D(34) + VP(34) + VK1-of-1-interm(34) + UC1-of-1-interm(34)
- *           + push(144)(3) + OP_CSV(1) = 140 bytes
+ * Expected: D(34) + VP(34) + VK1-of-1-interm(36) + UC1-of-1-interm(36)
+ *           + push(144)(3) + OP_CSV(1) = 144 bytes
  * ------------------------------------------------------------------------- */
 
 static void test_vault_utxo_leaf_n1m1_length(void **state) {
@@ -123,7 +123,7 @@ static void test_vault_utxo_leaf_n1m1_length(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     int len = vault_build_vault_utxo_leaf(&intent, 0, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(len, 140);
+    assert_int_equal(len, 144);
 }
 
 static void test_vault_utxo_leaf_n1m1_opcodes(void **state) {
@@ -136,10 +136,12 @@ static void test_vault_utxo_leaf_n1m1_opcodes(void **state) {
     assert_int_equal(buf[34],  OP_PUSHBYTES_32);   /* VP push */
     assert_int_equal(buf[67],  OP_CHECKSIGVERIFY);
     assert_int_equal(buf[68],  OP_PUSHBYTES_32);   /* VK push */
-    assert_int_equal(buf[101], OP_CHECKSIGVERIFY); /* N=1 intermediate */
-    assert_int_equal(buf[102], OP_PUSHBYTES_32);   /* UC push */
-    assert_int_equal(buf[135], OP_CHECKSIGVERIFY); /* M=1 intermediate */
-    assert_int_equal(buf[139], OP_CSV);
+    assert_int_equal(buf[101], OP_CHECKSIG);        /* N=1: OP_CHECKSIG */
+    assert_int_equal(buf[103], OP_NUMEQUALVERIFY);  /* N=1 intermediate */
+    assert_int_equal(buf[104], OP_PUSHBYTES_32);   /* UC push */
+    assert_int_equal(buf[137], OP_CHECKSIG);        /* M=1: OP_CHECKSIG */
+    assert_int_equal(buf[139], OP_NUMEQUALVERIFY);  /* M=1 intermediate */
+    assert_int_equal(buf[143], OP_CSV);
 }
 
 /* ---------------------------------------------------------------------------
@@ -150,7 +152,7 @@ static void test_vault_utxo_leaf_n1m1_opcodes(void **state) {
  *   | OP_2 | OP_NUMEQUALVERIFY = 34 + 34 + 1 + 1 = 70 bytes
  * UC group (1-of-1 intermediate): 34 bytes
  *
- * Total: D(34) + VP(34) + VK2-of-2(70) + UC1-of-1(34) + push+CSV(4) = 176
+ * Total: D(34) + VP(34) + VK2-of-2(70) + UC1-of-1(36) + push+CSV(4) = 178
  * ------------------------------------------------------------------------- */
 
 static void test_vault_utxo_leaf_n2_checksigadd(void **state) {
@@ -158,7 +160,7 @@ static void test_vault_utxo_leaf_n2_checksigadd(void **state) {
     vault_intent_t intent = make_n2m1();
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     int len = vault_build_vault_utxo_leaf(&intent, 0, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(len, 176);
+    assert_int_equal(len, 178);
     /* VK group starts at offset 68 */
     assert_int_equal(buf[68],  OP_PUSHBYTES_32);    /* VK0 push */
     assert_int_equal(buf[101], OP_CHECKSIG);        /* first of group */
@@ -176,9 +178,9 @@ static void test_vault_utxo_leaf_n2_checksigadd(void **state) {
  *   OP_SHA256(1) + OP_PUSHBYTES_32(1) + h(32) + OP_EQUALVERIFY(1) = 35 bytes @ off 4
  *   <D>(34)                             @ off 39
  *   <VP>(34)                            @ off 73
- *   VK 1-of-1 intermediate(34)          @ off 107
- *   UC 1-of-1 final(34)                 @ off 141
- *   Total = 175 bytes
+ *   VK 1-of-1 intermediate(36)          @ off 107
+ *   UC 1-of-1 final(36)                 @ off 143
+ *   Total = 179 bytes
  * ------------------------------------------------------------------------- */
 
 static void test_htlc_leaf0_length(void **state) {
@@ -188,7 +190,7 @@ static void test_htlc_leaf0_length(void **state) {
     memset(h, 0xAA, 32);
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     int len = vault_build_htlc_leaf0(&intent, 0, h, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(len, 175);
+    assert_int_equal(len, 179);
 }
 
 static void test_htlc_leaf0_hashlock_bytes(void **state) {
@@ -222,12 +224,14 @@ static void test_htlc_leaf0_party_opcodes(void **state) {
     /* VP at 73..106 */
     assert_int_equal(buf[73],  OP_PUSHBYTES_32);
     assert_int_equal(buf[106], OP_CHECKSIGVERIFY);
-    /* VK 1-of-1 intermediate at 107..140 */
+    /* VK 1-of-1 intermediate at 107..142 (36 bytes) */
     assert_int_equal(buf[107], OP_PUSHBYTES_32);
-    assert_int_equal(buf[140], OP_CHECKSIGVERIFY);
-    /* UC 1-of-1 final at 141..174 */
-    assert_int_equal(buf[141], OP_PUSHBYTES_32);
-    assert_int_equal(buf[174], OP_CHECKSIG);  /* final */
+    assert_int_equal(buf[140], OP_CHECKSIG);        /* N=1: OP_CHECKSIG */
+    assert_int_equal(buf[142], OP_NUMEQUALVERIFY);  /* N=1 intermediate */
+    /* UC 1-of-1 final at 143..178 (36 bytes) */
+    assert_int_equal(buf[143], OP_PUSHBYTES_32);
+    assert_int_equal(buf[176], OP_CHECKSIG);        /* M=1: OP_CHECKSIG */
+    assert_int_equal(buf[178], OP_NUMEQUAL);        /* M=1 final */
 }
 
 /* ---------------------------------------------------------------------------
@@ -235,13 +239,13 @@ static void test_htlc_leaf0_party_opcodes(void **state) {
  *
  * N=1 VP claimer (claimer_idx=0):
  *   AppChallengers = [VK0=0x03]
- *   <VP(34)> + <VK0 1-of-1 interm(34)> + <UC 1-of-1 interm(34)> + push(3)+CSV(1)
- *   = 106 bytes
+ *   <VP(34)> + <VK0 1-of-1 interm(36)> + <UC 1-of-1 interm(36)> + push(3)+CSV(1)
+ *   = 110 bytes
  *
  * N=1 VK claimer (claimer_idx=1):
  *   AppChallengers = [VP=0x02]
- *   <VK0(34)> + <VP 1-of-1 interm(34)> + <UC 1-of-1 interm(34)> + push(3)+CSV(1)
- *   = 106 bytes
+ *   <VK0(34)> + <VP 1-of-1 interm(36)> + <UC 1-of-1 interm(36)> + push(3)+CSV(1)
+ *   = 110 bytes
  * ------------------------------------------------------------------------- */
 
 static void test_assert0_vp_claimer_bytes(void **state) {
@@ -249,14 +253,15 @@ static void test_assert0_vp_claimer_bytes(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     int len = vault_build_assert0_payout_leaf(&intent, 0, 0, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(len, 106);
+    assert_int_equal(len, 110);
     assert_int_equal(buf[0],  OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[1 + i], 0x02); /* VP as claimer */
     assert_int_equal(buf[33], OP_CHECKSIGVERIFY);
     /* AppChallengers[0] = VK0 = 0x03 */
     assert_int_equal(buf[34], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[35 + i], 0x03);
-    assert_int_equal(buf[67], OP_CHECKSIGVERIFY);
+    assert_int_equal(buf[67], OP_CHECKSIG);        /* N=1: OP_CHECKSIG */
+    assert_int_equal(buf[69], OP_NUMEQUALVERIFY);  /* N=1 intermediate */
 }
 
 static void test_assert0_vk_claimer_vp_inserted(void **state) {
@@ -264,7 +269,7 @@ static void test_assert0_vk_claimer_vp_inserted(void **state) {
     vault_intent_t intent = make_n1m1();
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     int len = vault_build_assert0_payout_leaf(&intent, 0, 1, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(len, 106);
+    assert_int_equal(len, 110);
     /* Claimer is VK0 = 0x03 */
     assert_int_equal(buf[0], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[1 + i], 0x03);
@@ -272,7 +277,8 @@ static void test_assert0_vk_claimer_vp_inserted(void **state) {
     /* AppChallengers[0] = VP = 0x02 (only challenger with keeper_count=1) */
     assert_int_equal(buf[34], OP_PUSHBYTES_32);
     for (int i = 0; i < 32; i++) assert_int_equal(buf[35 + i], 0x02);
-    assert_int_equal(buf[67], OP_CHECKSIGVERIFY);
+    assert_int_equal(buf[67], OP_CHECKSIG);        /* N=1: OP_CHECKSIG */
+    assert_int_equal(buf[69], OP_NUMEQUALVERIFY);  /* N=1 intermediate */
 }
 
 /**
@@ -472,8 +478,8 @@ static void test_assert0_payout_leaf_claimer_out_of_range(void **state) {
  *   VP push+CSGV:      34 bytes   (off  73)
  *   VK 2-of-2 interm:  70 bytes   (off 107)
  *     VK0 push+CHECKSIG(34) + VK1 push+CHECKSIGADD(34) + OP_2(1) + OP_NUMEQUALVERIFY(1)
- *   UC 1-of-1 final:   34 bytes   (off 177)
- *   Total: 211 bytes
+ *   UC 1-of-1 final:   36 bytes   (off 177)
+ *   Total: 213 bytes
  * ------------------------------------------------------------------------- */
 
 static void test_htlc_leaf0_n2_length(void **state) {
@@ -483,7 +489,7 @@ static void test_htlc_leaf0_n2_length(void **state) {
     memset(h, 0xAA, 32);
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     int len = vault_build_htlc_leaf0(&intent, 0, h, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(len, 211);
+    assert_int_equal(len, 213);
 }
 
 static void test_htlc_leaf0_n2_vk_group_opcodes(void **state) {
@@ -520,9 +526,9 @@ static void test_htlc_leaf0_n2_vk_group_opcodes(void **state) {
  * Script:
  *   Claimer(VK1=0x05) push+CSGV:          34 bytes
  *   AppChallengers 2-of-2 interm (sorted): 70 bytes
- *   UC 1-of-1 interm:                      34 bytes
+ *   UC 1-of-1 interm:                      36 bytes
  *   push(200)+CSV:                          4 bytes
- *   Total: 142 bytes
+ *   Total: 144 bytes
  * ------------------------------------------------------------------------- */
 
 static void test_assert0_last_vk_claimer(void **state) {
@@ -531,7 +537,7 @@ static void test_assert0_last_vk_claimer(void **state) {
     uint8_t buf[VAULT_SCRIPT_MAX_LEN];
     /* claimer_idx = keeper_count = 2 → VK1 (0x05) is the claimer */
     int len = vault_build_assert0_payout_leaf(&intent, 0, 2, buf, VAULT_SCRIPT_MAX_LEN);
-    assert_int_equal(len, 142);
+    assert_int_equal(len, 144);
 
     /* Claimer = VK1 = 0x05 */
     assert_int_equal(buf[0],  OP_PUSHBYTES_32);

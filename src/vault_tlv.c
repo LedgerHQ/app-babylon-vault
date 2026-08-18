@@ -263,7 +263,9 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data,
                 break;
 
             default:
-                return VAULT_TLV_ERR_UNKNOWN_TAG;
+                /* Unknown tags are tolerated for forward compatibility; skip and continue. */
+                pos += field_len;
+                continue;
         }
 
         /* Enforce strictly ascending order (htlc_vout first); this also catches duplicates. */
