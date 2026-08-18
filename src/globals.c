@@ -28,7 +28,8 @@
 //   derivation_path_len    1 B  + padding
 //   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
 //   app_name_len           1 B  + padding
-//   total               ~636 B  (sizeof verified at compile time; 4 B alignment padding before derivation_path)
+//   total               ~636 B  (sizeof verified at compile time; 4 B alignment padding before
+//   derivation_path)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B
