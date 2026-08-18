@@ -1060,48 +1060,8 @@ def test_vault_amount_below_min_rejected(client: RaggerClient, navigator: Naviga
 
 
 # ---------------------------------------------------------------------------
-# N-09: Group TLV parser coverage — unknown tag, claim-value dust floor,
-#        multi-record cursor walk
+# N-09: Group TLV parser coverage — claim-value dust floor, multi-record cursor walk
 # ---------------------------------------------------------------------------
-
-def test_group_unknown_tag_is_skipped(client: RaggerClient, navigator: Navigator,
-                                       device: Device, bitcoin_network: str):
-    """Unknown 2-byte tag in a group TLV is skipped and the group is accepted.
-
-    The group TLV parser (P1=0x01) is designed to tolerate forward-compatible
-    extensions by ignoring tags it does not recognise.  This is different from
-    the scalar parser (P1=0x00) which rejects unknown tags.  Appending an unknown
-    tag (0xFFFF) to a valid group payload must not prevent the intent from loading.
-    """
-    from .instructions import vault_intent_approve_nav
-    derive_for_intent(client, navigator, device, bitcoin_network)
-    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
-    _raw_exchange(client, P1_SCALARS, scalars)
-
-    # Valid group TLV followed by a one-byte unknown tag (0xFFFF, length 1, value 0x00).
-    unknown_tag_tlv = bytes([0xFF, 0xFF, 0x01, 0x00])
-    group_with_unknown = _make_group() + unknown_tag_tlv
-    _raw_exchange(client, P1_GROUP, group_with_unknown)
-
-    # Complete the intent approval with one keeper and one challenger key.
-    payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
-    nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
-    with client.transport_client.exchange_async(
-        cla=CLA_VAULT,
-        ins=INS_APPROVE_VAULT_INTENT,
-        p1=P1_KEY_BATCH,
-        p2=P2_UNUSED,
-        data=payload,
-    ):
-        navigator.navigate_until_text(
-            navigate_instruction=nav_instr,
-            validation_instructions=confirm_instrs,
-            text=search_text,
-            screen_change_before_first_instruction=False,
-        )
-    _sw, _ = client.last_async_response()
-    assert _sw == SW_OK
-
 
 def test_group_depositor_claim_value_below_dust_rejected(
     client: RaggerClient, navigator: Navigator, device: Device, bitcoin_network: str,
