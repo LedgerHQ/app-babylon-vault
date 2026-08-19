@@ -280,14 +280,19 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
         tmp[0] = 0x00;
         if (cx_hash_no_throw(&sha.header, 0, tmp, 1, NULL, 0) != CX_OK) return false;
 
-        /* nSequence (4 bytes LE); absent PSBT_IN_SEQUENCE defaults to SEQUENCE_FINAL */
-        uint32_t seq = SEQUENCE_FINAL;
+        /* nSequence (4 bytes LE): MUST be present in every Pre-PegIn input.
+         * Defaulting to SEQUENCE_FINAL when absent would silently hash an
+         * unverified value into the txid; reject to enforce fail-closed
+         * behaviour.  Pre-PegIn has locktime=0 and must use SEQUENCE_FINAL
+         * (no RBF, no CSV) — any other sequence is rejected. */
+        uint32_t seq;
         int seq_rc = call_get_merkleized_map_value_u32_le(dc,
                                                           &in_map,
                                                           (uint8_t[]) {PSBT_IN_SEQUENCE},
                                                           1,
                                                           &seq);
-        if (seq_rc >= 0 && seq_rc != 4) return false;
+        if (seq_rc != 4) return false;
+        if (seq != SEQUENCE_FINAL) return false;
         write_u32_le(tmp, 0, seq);
         if (cx_hash_no_throw(&sha.header, 0, tmp, 4, NULL, 0) != CX_OK) return false;
     }
@@ -541,6 +546,10 @@ static bool _validate_prepegin(
         SEND_SW(dc, SW_CAP_EXCEEDED);
         return false;
     }
+    /* Reserve the slot before control passes to the base-app signer so that an
+     * abort between signing and acknowledgement cannot allow a second Pre-PegIn
+     * signature within one intent. Fail-closed: a failed attempt counts as used. */
+    G_vault_context.pre_pegin_signed++;
     return true;
 }
 
@@ -1666,6 +1675,64 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
     }
 
+    /* Assert:0 always occupies output index 0 in the Assert transaction.
+     * Enforcing vout==0 partially binds the Input 1 prevout and prevents a
+     * pre-funded clone that replaces the Assert:0 UTXO with one at a different
+     * output index.  The full Assert txid cannot be reconstructed by the device
+     * (known limitation: the Assert txid is not committed in the intent; see
+     * HLD §6 residual risk), so a colluder who pre-funds with a different
+     * Assert:0 UTXO at vout=0 with the correct scripts cannot be detected. */
+    {
+        uint32_t assert_vout;
+        if (call_get_merkleized_map_value_u32_le(dc,
+                                                 &input1_map,
+                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
+                                                 1,
+                                                 &assert_vout) != 4 ||
+            assert_vout != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* Build Assert:0 Payout leaf for claimer_idx and verify WITNESS_UTXO.
+     * TAP_LEAF_SCRIPT was already read and verified byte-for-byte in
+     * _detect_payout_claimer; only the value check remains here.
+     * Overwrites G_scratch.leaf_check.expected_script (safe: Input 0 done). */
+    {
+        int leaf_len = vault_build_assert0_payout_leaf(intent,
+                                                       gi,
+                                                       claimer_idx,
+                                                       G_scratch.leaf_check.expected_script,
+                                                       VAULT_SCRIPT_MAX_LEN);
+        if (leaf_len < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint8_t leaf_hash[VAULT_HASH256_LEN];
+        vault_taproot_leaf_hash(G_scratch.leaf_check.expected_script, leaf_len, leaf_hash);
+
+        uint8_t parity;
+        uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
+        if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY,
+                                   leaf_hash,
+                                   VAULT_HASH256_LEN,
+                                   &parity,
+                                   tweaked) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        expected_spk[0] = OP_1;
+        expected_spk[1] = OP_PUSHBYTES_32;
+        memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
+
+        if (!_payout_check_witness_utxo(dc, &input1_map, expected_spk, VAULT_DUST_LIMIT))
+            return false;
+    }
+
     /* --- Outputs --- */
     uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t out_value;
@@ -2560,7 +2627,10 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
         }
     }
 
-    if (st->inputs_total_amount < out0_value) {
+    /* Strict-less-than: inputs must exceed Out0 so that the miner fee is positive.
+     * A zero fee (inputs == out0) would make the transaction unlikely to be mined
+     * and indicates a malformed PSBT. */
+    if (st->inputs_total_amount <= out0_value) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -2886,6 +2956,33 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         return false;
     }
 
+    /* When intent is loaded, identify which vault group this PayoutFinalize belongs to
+     * by matching Input 0 PREVIOUS_TXID against each group's computed PegIn txid.
+     * vault_compute_pegin_txid uses G_scratch.script_scratch (union offset 0); must be
+     * called before any G_scratch write (tls, display_tx, etc.) so the result is stored
+     * in a local before the union is claimed by subsequent operations. */
+    int pf_group_idx = -1;
+    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED) {
+        merkleized_map_commitment_t in0_map;
+        uint8_t in0_txid[VAULT_HASH256_LEN];
+        if (call_get_merkleized_map(dc, st->inputs_root, 2, 0, &in0_map) >= 0 &&
+            VAULT_HASH256_LEN == call_get_merkleized_map_value(dc,
+                                                               &in0_map,
+                                                               (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                               1,
+                                                               in0_txid,
+                                                               VAULT_HASH256_LEN)) {
+            uint8_t computed[VAULT_HASH256_LEN];
+            for (uint8_t g = 0; g < G_vault_intent.vault_count; g++) {
+                if (vault_compute_pegin_txid(&G_vault_intent, (int) g, computed) &&
+                    memcmp(in0_txid, computed, VAULT_HASH256_LEN) == 0) {
+                    pf_group_idx = (int) g;
+                    break;
+                }
+            }
+        }
+    }
+
     /* Read Input 1 TAP_LEAF_SCRIPT into G_scratch.tls */
     merkleized_map_commitment_t input1_map;
     if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
@@ -3061,28 +3158,11 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
      * routes vault funds to miner fees.  SIGHASH_DEFAULT guards against fabricated Input 0
      * prevout values (signature invalid at broadcast) but not against a correctly-stated
      * vault UTXO paired with a low Output 0 value — that transaction is valid on-chain.
-     * For single-vault intents the attested vault_amount provides a tighter fee cap. */
+     * When intent is loaded and Input 0 matches a vault group, a tighter fee cap is applied
+     * below using the attested vault_amount. */
     if (amount_received == 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
-    }
-    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED && G_vault_intent.vault_count == 1) {
-        uint64_t va = G_vault_intent.groups[0].vault_amount;
-        /* vault_amount > 2*VAULT_DUST_LIMIT is enforced at intent loading time, so
-         * va - VAULT_DUST_LIMIT cannot underflow. */
-        if (amount_received >= va - VAULT_DUST_LIMIT) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint64_t fee_pf = va - VAULT_DUST_LIMIT - amount_received;
-        uint64_t pf_participants =
-            (uint64_t) G_vault_intent.keeper_count + G_vault_intent.challenger_count;
-        uint64_t pf_vsize = 500u + MAX_PAYOUT_VSIZE_PER_PARTICIPANT * pf_participants;
-        if (pf_vsize > UINT64_MAX / G_vault_intent.base_fee_rate ||
-            fee_pf > G_vault_intent.base_fee_rate * pf_vsize) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
     }
 
     /* Output 1: CPFP anchor — VAULT_DUST_LIMIT, P2TR(D) BIP-86 */
@@ -3103,8 +3183,8 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
 
     /* Input 0 (Vault UTXO) witness_utxo is host-provided and unattested; a fabricated
      * value produces an unusable signature (SIGHASH_DEFAULT commits to all prevout values).
-     * For multi-vault finalize, vault-group identification is not implemented here, so
-     * only the zero-floor and single-vault fee cap above guard the depositor's payout. */
+     * The zero-floor above and the intent-bound fee cap below (when Input 0 txid matches a
+     * vault group) guard the depositor's payout. */
 
     /* Read Input 1 prevout txid (Assert:0 UTXO) for display on Screen 8. */
     {
@@ -3124,12 +3204,29 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
                    TX_DISPLAY_TXID_STR_SIZE);
     }
 
-    /* Fee: attested from vault_amount when intent loaded (single vault); 0 otherwise. */
+    /* Fee bound and display: attested from the matched group's vault_amount when intent
+     * is loaded and Input 0 txid matched a computed PegIn txid; 0 otherwise.
+     * Formula: fee = vault_amount - VAULT_DUST_LIMIT - amount_received.
+     * vault_amount > 2*VAULT_DUST_LIMIT is enforced at intent loading time, so
+     * the subtraction of VAULT_DUST_LIMIT cannot underflow. */
     uint64_t display_fee = 0;
-    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED && G_vault_intent.vault_count == 1) {
-        uint64_t va = G_vault_intent.groups[0].vault_amount;
-        if (va > VAULT_DUST_LIMIT + amount_received)
-            display_fee = va - VAULT_DUST_LIMIT - amount_received;
+    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED && pf_group_idx >= 0) {
+        uint64_t va = G_vault_intent.groups[pf_group_idx].vault_amount;
+        if (amount_received >= va - VAULT_DUST_LIMIT) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint64_t fee_pf = va - VAULT_DUST_LIMIT - amount_received;
+        uint64_t pf_participants =
+            (uint64_t) G_vault_intent.keeper_count + G_vault_intent.challenger_count;
+        uint64_t pf_vsize = MAX_PAYOUT_VSIZE_BASE +
+                            MAX_PAYOUT_VSIZE_PER_PARTICIPANT * pf_participants;
+        if (pf_vsize > UINT64_MAX / G_vault_intent.base_fee_rate ||
+            fee_pf > G_vault_intent.base_fee_rate * pf_vsize) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        display_fee = fee_pf;
     }
 
     /* Both outputs pay the depositor's own BIP-86 address (addr_str, same key for both). */
@@ -3244,29 +3341,36 @@ bool validate_and_display_transaction(
             if (st->n_outputs != 2) {
                 return _validate_payout(dc, st);
             }
-            /* n_outputs==2: peek at Input 0 PREVIOUS_TXID to distinguish Payout from
+            /* n_outputs==2: read Input 0 PREVIOUS_TXID to distinguish Payout from
              * PayoutFinalize.  vault_compute_pegin_txid uses G_scratch.script_scratch
-             * transiently; _validate_payout repeats the computation internally. */
+             * transiently; _validate_payout repeats the computation internally.
+             * Fail-closed: a missing or unreadable PREVIOUS_TXID is a malformed PSBT
+             * and is rejected rather than falling through to PayoutFinalize. */
             {
                 merkleized_map_commitment_t peek_map;
+                if (call_get_merkleized_map(dc, st->inputs_root, 2, 0, &peek_map) < 0) {
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
                 uint8_t psbt_txid[VAULT_HASH256_LEN];
-                if (call_get_merkleized_map(dc, st->inputs_root, 2, 0, &peek_map) >= 0 &&
-                    VAULT_HASH256_LEN ==
-                        call_get_merkleized_map_value(dc,
-                                                      &peek_map,
-                                                      (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
-                                                      1,
-                                                      psbt_txid,
-                                                      VAULT_HASH256_LEN)) {
-                    uint8_t computed[VAULT_HASH256_LEN];
-                    for (uint8_t g = 0; g < G_vault_intent.vault_count; g++) {
-                        if (vault_compute_pegin_txid(&G_vault_intent, g, computed) &&
-                            memcmp(psbt_txid, computed, VAULT_HASH256_LEN) == 0)
-                            return _validate_payout(dc, st);
-                    }
+                if (VAULT_HASH256_LEN !=
+                    call_get_merkleized_map_value(dc,
+                                                  &peek_map,
+                                                  (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                  1,
+                                                  psbt_txid,
+                                                  VAULT_HASH256_LEN)) {
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
+                uint8_t computed[VAULT_HASH256_LEN];
+                for (uint8_t g = 0; g < G_vault_intent.vault_count; g++) {
+                    if (vault_compute_pegin_txid(&G_vault_intent, g, computed) &&
+                        memcmp(psbt_txid, computed, VAULT_HASH256_LEN) == 0)
+                        return _validate_payout(dc, st);
                 }
             }
-            /* TXID mismatch: Input 0 is not a Vault UTXO → PayoutFinalize, fall through */
+            /* TXID does not match any vault UTXO: Input 0 is external → PayoutFinalize. */
         }
         /* Fall through to standalone leaf dispatch */
     }
@@ -3279,16 +3383,13 @@ bool validate_and_display_transaction(
         return _validate_display_wc(dc, st);
     }
 
-    /* PayoutFinalize: 2 inputs, 2 outputs, Input 0 external (device signs Input 1).
-     * VK/Depositor Payout (also 2+2) was already routed above via the internal_inputs[0]
-     * check; only PayoutFinalize reaches here, so Input 0 being internal is a host error. */
-    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2) {
-        if (bitvector_get(internal_inputs, 0)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
+    /* PayoutFinalize: 2 inputs, 2 outputs, no wallet policy (device signs Input 1 only).
+     * VK/Depositor Payout (also 2+2) was already routed above by matching Input 0's txid
+     * against computed PegIn txids.  A guard on bitvector_get(internal_inputs, 0) would
+     * be dead: preprocess_inputs only sets bits for wallet-policy inputs, so that bit is
+     * structurally always 0 in any no-wallet-policy flow. */
+    if (st->has_no_wallet_policy && st->n_inputs == 2 && st->n_outputs == 2)
         return _validate_display_payout_finalize(dc, st);
-    }
 
     /* No wallet policy: read Input 0 leaf and dispatch by shape */
     merkleized_map_commitment_t dispatch_map;

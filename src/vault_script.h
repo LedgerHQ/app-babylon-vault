@@ -9,8 +9,12 @@
 /**
  * Maximum byte length of any single vault leaf script.
  *
- * Worst case: HTLC Leaf 0 with VAULT_MAX_KEEPERS=32 keepers and
- * VAULT_MAX_CHALLENGERS=32 challengers (~2289 bytes).  2560 provides headroom.
+ * Dominant leaves (K = VAULT_MAX_KEEPERS = 32, M = VAULT_MAX_CHALLENGERS = 32):
+ *   HTLC Leaf 0:           ~2289 bytes  (<D> OP_CSV || <VP> || VK K-of-K || UC M-of-M)
+ *   Assert:0 Payout leaf:  ~2228 bytes  (<Claimer> OP_CSV || AppChall K-of-K || UC M-of-M)
+ *   Vault UTXO leaf:       ~2228 bytes  (<D> || <VP> || VK K-of-K || UC M-of-M || <t1> OP_CSV)
+ *
+ * All are below 2560.  The HTLC Leaf 0 is the actual worst case.
  *
  * Callers that pass a local stack buffer must be aware of device RAM limits;
  * prefer a static or global buffer for the largest leaves.

@@ -172,6 +172,9 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        G_vault_context.pegin_group_mask[gi / 8u] |= (1u << (gi % 8u));
+        G_vault_context.pegin_signed++;
+
         if (!sign_sighash_schnorr_and_yield(dc,
                                             st,
                                             0,
@@ -185,8 +188,6 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
-        G_vault_context.pegin_group_mask[gi / 8u] |= (1u << (gi % 8u));
-        G_vault_context.pegin_signed++;
         return true;
     }
 
@@ -209,7 +210,7 @@ bool sign_custom_inputs(
          * Re-read Input 0's TAP_LEAF_SCRIPT (G_scratch.tls clobbered by display).
          * Sign with the depositor path using the reconstructed Assert:0 leaf hash.
          * ------- */
-        if (st->has_no_wallet_policy && st->n_inputs == 3 && st->n_outputs == 1) {
+        if (st->n_inputs == 3 && st->n_outputs == 1) {
             merkleized_map_commitment_t input_map;
             if (!vault_read_refund_leaf_script(dc, st, &input_map)) {
                 vault_context_invalidate(&G_vault_context);
@@ -223,9 +224,9 @@ bool sign_custom_inputs(
              * depositor.  The validator already checked this on the same PSBT, but
              * the signing path must not silently rely on that to remain safe if
              * validation and signing are ever decoupled. */
-            if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 ||
+            if (leaf_len != (int) VAULT_NOPAYOUT_LEAF_LEN || leaf[0] != OP_PUSHBYTES_32 ||
                 leaf[33] != (uint8_t) OP_CHECKSIGVERIFY || leaf[34] != OP_PUSHBYTES_32 ||
-                leaf[67] != (uint8_t) OP_CHECKSIG ||
+                leaf[VAULT_NOPAYOUT_LEAF_LEN - 1] != (uint8_t) OP_CHECKSIG ||
                 memcmp(leaf + 1, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN) != 0) {
                 vault_context_invalidate(&G_vault_context);
                 SEND_SW(dc, SW_INCORRECT_DATA);
@@ -373,7 +374,6 @@ bool sign_custom_inputs(
      * through to the standalone signing section.
      * ----------------------------------------------------------------------- */
     if (!st->has_no_wallet_policy && bitvector_get(internal_inputs, 0)) {
-        G_vault_context.pre_pegin_signed++;
         return true;
     }
 

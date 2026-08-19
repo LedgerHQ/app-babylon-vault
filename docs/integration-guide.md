@@ -59,14 +59,14 @@ The device tracks a single global session through three states (from `vault_cont
 ```
 IDLE
  └─ 0x81 DERIVE_CONTEXT_HASH ──────────────► HASH_DERIVED   (P2=0x00: Screen 1, returns root;
-                                                              P2=0x01: silent, SW_OK only)
+                                                             P2=0x01: silent, SW_OK only)
         └─ 0x80 APPROVE_VAULT_INTENT ──────► INTENT_LOADED  (root preserved; commitments
-                                                              recomputed from it)
+                                                             recomputed from it)
 
 INTENT_LOADED
   ├─ 0x04 SIGN_PSBT (Pre-PegIn) ──────────────────────────► INTENT_LOADED  (silent, cap 1)
   ├─ 0x04 SIGN_PSBT (PegIn ×vault_count) ─────────────────► INTENT_LOADED  (silent)
-  ├─ 0x04 SIGN_PSBT (Payout ×vault_count×(N+2)) ──────────► INTENT_LOADED  (silent)
+  ├─ 0x04 SIGN_PSBT (Payout ×vault_count×(N+2)) ──────────► INTENT_LOADED  (Screen 8)
   └─ 0x04 SIGN_PSBT (NoPayout ×vault_count×(N+M)) ────────► INTENT_LOADED  (silent)
 
 IDLE / HASH_DERIVED / INTENT_LOADED
@@ -158,6 +158,8 @@ recomputes and stores the per-vault on-chain commitments:
 htlc_hashlock[i] = SHA256(Expand(root, "hashlock" || I2OSP(htlc_vout_i, 4)))
 auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))
 ```
+
+The root is then zeroed immediately — commitments are held for subsequent signing validation.
 
 `prepegin_txid` (tag `0x0027`) is always set in the intent (the host computes the Pre-PegIn
 txid before calling `APPROVE_VAULT_INTENT`). All intent-bound signing flows are available from
@@ -299,9 +301,10 @@ script read from the PSBT, not from output scripts.
 
 **Fee bound:** `fee ≤ intent.base_fee_rate × (500 + 55 × (keeper_count + challenger_count))` vbytes.
 
-Payout validation is **silent** — no display. The device signs Input 0 (Vault UTXO) with the
-depositor key. Per-type cap: at most `vault_count × (keeper_count + 2)` Payout signatures per
-approved intent.
+The device displays the Payout Finalize screen (Screen 8) showing: Vault UTXO txid, amount
+received, destination address, CPFP anchor address, and transaction fee. User must approve.
+The device signs Input 0 (Vault UTXO) with the depositor key. Per-type cap: at most
+`vault_count × (keeper_count + 2)` Payout signatures per approved intent.
 
 **State after:** `INTENT_LOADED` (unchanged)
 
@@ -346,7 +349,7 @@ Standalone BIP-322 `bip322-simple` signing of the PoP message
 
 The device validates the message grammar, reconstructs the `to_spend` virtual transaction,
 and signs the `to_sign` PSBT bound to it. Screen 7 displays the parsed message fields
-(Ethereum address, chain ID, registry address) for user approval.
+(Ethereum address, chain ID, registry address, Bitcoin address) for user approval.
 
 | Field | Requirement |
 |-------|-------------|
@@ -433,44 +436,6 @@ within each group, packed as raw 32-byte x-only keys with no gaps between groups
 This order must be **consistent throughout the protocol** — Payout transactions reference
 `keeper_pks[claimer_idx - 1]` in the same order, and Assert:0 Payout leaf scripts embed
 keeper keys by index.
-
----
-
-## N=1 compact multisig encoding in tapscript leaves
-
-**Important:** the device uses a compact encoding for tapscript multisig leaves when the
-number of signers (N) is 1. Any host building HTLC or vault scripts with a single keeper or
-challenger MUST match this encoding exactly, or the device will reject the PSBT with a script
-mismatch error.
-
-### General form (N > 1)
-
-Non-final position (followed by more signers in the same leaf):
-```
-<key_1> OP_CHECKSIG <key_2> OP_CHECKSIGADD … <key_N> OP_CHECKSIGADD <N> OP_NUMEQUALVERIFY
-```
-
-Final signer of a leaf:
-```
-<key_1> OP_CHECKSIG <key_2> OP_CHECKSIGADD … <key_N> OP_CHECKSIGADD <N> OP_NUMEQUAL
-```
-
-### Compact form (N = 1)
-
-When there is exactly one signer, the device emits:
-
-| Position | Compact encoding | Naive (non-compact) equivalent |
-|----------|-----------------|-------------------------------|
-| Non-final (e.g. intermediate keeper before another signer) | `<key> OP_CHECKSIGVERIFY` | `<key> OP_CHECKSIG <1> OP_NUMEQUALVERIFY` |
-| Final signer of the leaf | `<key> OP_CHECKSIG` | `<key> OP_CHECKSIG <1> OP_NUMEQUAL` |
-
-The compact and naive forms produce **different TapLeaf hashes** because the script bytes
-differ. A host building an HTLC leaf or vault leaf with a single keeper or challenger that
-uses the naive form will get a different Merkle root, and the device will reject the PSBT
-because the reconstructed script does not match.
-
-This applies to both the HTLC taproot tree and the vault UTXO taproot tree. Whenever
-`keeper_count == 1` or `challenger_count == 1`, use the compact encoding shown above.
 
 ---
 

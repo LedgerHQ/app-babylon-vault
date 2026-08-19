@@ -91,6 +91,12 @@
 /** Maximum number of vault groups per Pre-PegIn batch (spec §3). */
 #define VAULT_MAX_VAULTS 10u
 
+/**
+ * Absolute upper bound on the Pre-PegIn maximum fee in satoshis.
+ * No legitimate Pre-PegIn should consume more than 1 BTC in network fees.
+ */
+#define PREPEGIN_MAX_FEE_LIMIT ((uint64_t) 100000000u)
+
 /* Timelock range bounds (block counts). */
 
 /** Minimum inclusive bound for pegin_csv_timelock and htlc_refund_timelock. */

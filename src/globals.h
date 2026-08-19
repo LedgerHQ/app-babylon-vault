@@ -131,36 +131,53 @@ typedef struct {
 } tap_leaf_script_state_t;
 
 /**
- * Scratch for handler_derive_context_hash.
+ * Streaming-session accumulators for handler_derive_context_hash.
+ *
+ * Kept OUTSIDE the G_scratch union so that a rejected TAP_LEAF_SCRIPT APDU
+ * (or any other handler that writes into the union) cannot leave attacker-
+ * controlled bytes where the continuation handler reads them.  Moving these
+ * small scalars out eliminates the aliasing OOB-write vector (N-05 / G#1).
+ *
+ *   streaming_in_progress — gate: true between the P1=0x00 and the final chunk.
+ *   p2_mode               — 0x00 = show screen + return root; 0x01 = silent.
+ *   app_name_len          — byte length of the app-name received on P1=0x00.
+ *   path_len              — number of BIP-32 path components.
+ *   context_total_len     — declared context length from the P1=0x00 header.
+ *   context_received_len  — bytes accumulated so far; used as memcpy offset.
+ *
+ * Zeroed by handle_initial_chunk at every P1=0x00 call.
+ */
+typedef struct {
+    bool streaming_in_progress;
+    uint8_t p2_mode;
+    uint8_t app_name_len;
+    uint8_t path_len;
+    uint16_t context_total_len;
+    uint16_t context_received_len;
+} derive_streaming_state_t;
+
+/**
+ * Scratch for handler_derive_context_hash (large buffers only).
  *
  * display_tx must be first: display_derive_context_hash writes to display_tx.addr_str
  * for the app-name string while the blocking display call is in progress.
  * All other fields sit above the display_tx footprint and are never clobbered
  * during the call.  After display returns, hkdf_derive_root reads context_buf.
  *
- * Multi-chunk streaming state (NAPPS-1441):
- *   streaming_in_progress — set on P1=0x00 when context spans multiple APDUs.
- *   context_total_len     — declared length from the P1=0x00 header (2-byte BE).
- *   context_received_len  — bytes accumulated so far.
- *   p2_mode               — 0x00 = show screen + return root; 0x01 = silent.
+ * Small scalar state (streaming_in_progress, p2_mode, app_name_len, path_len,
+ * context_total_len, context_received_len) lives in G_derive_streaming, not here,
+ * to prevent union aliasing from other handlers corrupting the streaming session.
  *
- * Max context size is VAULT_CONTEXT_MAX_LEN (1024 bytes), delivered across one or
- * more APDUs.  context_buf is placed last so the struct layout keeps the
- * smaller scalar fields at low offsets.
+ * path[] and connected_pubkey live here (not on the handler stack) so that the
+ * combined stack depth during the blocking display call stays within budget.
+ *
+ * Max context size is VAULT_CONTEXT_MAX_LEN (1024 bytes).
  */
 typedef struct {
     display_tx_scratch_t display_tx;
     uint8_t app_name_buf[VAULT_APP_NAME_MAX_LEN];
-    uint8_t app_name_len;
-    uint8_t p2_mode;
-    bool streaming_in_progress;
-    uint8_t path_len;
-    // path[] and connected_pubkey live here (not on the handler stack) so that the
-    // combined stack depth during the blocking display call stays within budget.
     uint32_t path[VAULT_MAX_PATH_DEPTH];
     uint8_t connected_pubkey[VAULT_COMPRESSED_PUBKEY_LEN];
-    uint16_t context_total_len;
-    uint16_t context_received_len;
     uint8_t context_buf[VAULT_CONTEXT_MAX_LEN];
 } derive_context_hash_scratch_t;
 
@@ -209,7 +226,8 @@ typedef struct {
  *   - script_scratch    vault_build_* signing hooks
  *   - display           display_vault_intent only (blocks on io_ui_process)
  *   - display_tx        Screen 2–8 transaction display functions
- *   - derive_ctx        handler_derive_context_hash
+ *   - derive_ctx        handler_derive_context_hash (large buffers only; streaming
+ *                       accumulators live in G_derive_streaming outside this union)
  *   - leaf_check        _validate_display_refund leaf-script comparison
  *   - tls               _tap_leaf_script_callback state during refund validation
  *   - sign_standalone   standalone signing branch of sign_custom_inputs()
@@ -229,11 +247,12 @@ typedef struct {
  * generated on demand by _vault_key_pair_callback() into VAULT_KEY_PAIR_SLOTS
  * ring-buffer slots rather than pre-formatted for all keys.
  *
- * approve_intent_state_t is intentionally NOT in this union.  Its boolean guard
- * at the first byte (scalars_loaded) would, if it were a union member, be aliased
- * by stale non-zero bytes left by script_scratch or display (e.g. an opcode or
- * ASCII hex char at offset 0) and cause handle_key_batch() to treat spurious data
- * as an in-progress exchange.
+ * approve_intent_state_t and derive_streaming_state_t are intentionally NOT in
+ * this union.  approve_intent_state_t's boolean guard at byte 0 would be aliased
+ * by stale non-zero bytes from other handlers.  derive_streaming_state_t's scalar
+ * accumulators (streaming_in_progress, context_received_len, …) are security gates
+ * for the multi-chunk streaming path — stale TAP_LEAF_SCRIPT union data must not
+ * be able to spoof them or corrupt the write-offset (N-05 / G#1).
  */
 typedef union {
     uint8_t script_scratch[VAULT_SCRIPT_MAX_LEN];
@@ -246,6 +265,15 @@ typedef union {
 } vault_scratch_t;
 
 extern vault_scratch_t G_scratch;
+
+/**
+ * Streaming accumulators for DERIVE_CONTEXT_HASH (INS 0x81).
+ *
+ * Lives outside G_scratch so union aliasing by other handlers (e.g. the
+ * TAP_LEAF_SCRIPT path that writes G_scratch.tls) cannot corrupt the
+ * session guards or the context_received_len write offset.
+ */
+extern derive_streaming_state_t G_derive_streaming;
 
 /** In-flight state for APPROVE_VAULT_INTENT multi-step exchange. */
 extern approve_intent_state_t G_approve_intent_state;

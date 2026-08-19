@@ -167,7 +167,9 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
                 field_idx = 12;
                 if (field_len != sizeof(uint64_t)) return VAULT_TLV_ERR_WRONG_LENGTH;
                 out->prepegin_max_fee = U8BE(v, 0);
-                if (out->prepegin_max_fee == 0) return VAULT_TLV_ERR_VALIDATION;
+                if (out->prepegin_max_fee == 0 ||
+                    out->prepegin_max_fee > PREPEGIN_MAX_FEE_LIMIT)
+                    return VAULT_TLV_ERR_VALIDATION;
                 break;
 
             default:

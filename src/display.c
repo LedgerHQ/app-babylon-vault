@@ -364,7 +364,6 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
-    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
     tx_pairs[n++] =
@@ -373,8 +372,11 @@ bool display_payout_finalize(dispatcher_context_t *dc,
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
-    tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    if (fee > 0) {
+        format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+        tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee",
+                                                 .value = G_scratch.display_tx.fee_str};
+    }
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -621,6 +623,7 @@ static nbgl_contentTagValue_t *_vault_key_pair_callback(uint8_t pairIndex) {
                G_scratch.display.key_str[slot],
                sizeof(G_scratch.display.key_str[slot]));
     nbgl_contentTagValue_t *pair = (nbgl_contentTagValue_t *) G_scratch.display.key_pair_raw[slot];
+    memset(pair, 0, sizeof(*pair));
     pair->item = G_scratch.display.key_label[slot];
     pair->value = G_scratch.display.key_str[slot];
     return pair;

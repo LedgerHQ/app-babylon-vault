@@ -41,7 +41,8 @@
 //                                         with VAULT_MAX_TAPTREE_DEPTH display: ~524 B — keys via
 //                                         4-slot callback ring buffer
 //   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
-//                                       ≤ 9128 B  (well within remaining SRAM after min stack)
+//   G_derive_streaming          ≤    8 B  (N-05 / G#1: outside union to prevent aliasing)
+//                                       ≤ 9136 B  (well within remaining SRAM after min stack)
 // display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
 // ---------------------------------------------------------------------------
 
@@ -51,6 +52,10 @@ _Static_assert(sizeof(vault_context_t) <= 640, "vault_context_t exceeds expected
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
                "vault_scratch_t size != refund_leaf_check_t; check union definition");
+/* N-05 / G#1: union must be large enough for the derive-context scratch buffers even after
+ * the small scalar fields were moved to G_derive_streaming. */
+_Static_assert(sizeof(vault_scratch_t) >= sizeof(derive_context_hash_scratch_t),
+               "vault_scratch_t too small for derive_context_hash_scratch_t");
 
 /* refund_leaf_check.actual_buf must hold the largest possible leaf0 script + 1 version byte.
  * encode_multisig_group upper bound: key_count * 34 + 6 bytes per group.
@@ -71,4 +76,5 @@ _Static_assert(
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
 vault_scratch_t G_scratch;
+derive_streaming_state_t G_derive_streaming;
 approve_intent_state_t G_approve_intent_state;

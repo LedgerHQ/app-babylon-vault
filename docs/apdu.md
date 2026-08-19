@@ -15,8 +15,9 @@
 
 ## INS 0x80 — APPROVE_VAULT_INTENT — Wire Format
 
-Three-phase command (v21). **P1=0x00** must be sent exactly once (13 scalar fields);
-**P1=0x01** must be sent `vault_count` times (one per-vault group each); **P1=0x02** is
+Three-phase command (v22). **P1=0x00** must be sent exactly once (13 scalar fields);
+**P1=0x01** is sent in one or more APDUs, each carrying one or more complete group records
+(in ascending `htlc_vout` order), until all `vault_count` groups have been received; **P1=0x02** is
 sent one or more times until all `keeper_count + challenger_count` public keys are delivered.
 Any error from any phase resets the in-flight state; a fresh P1=0x00 is required to retry.
 
@@ -89,10 +90,10 @@ This command is accepted from any session state. The meaningful distinction is:
   and all keys (P1=0x02) are delivered, the device recomputes the on-chain commitments from
   the root — `htlc_hashlock[i] = SHA256(Expand(root, "hashlock" ‖ I2OSP(htlc_vout_i,4)))`
   and `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` — and binds them during
-  Pre-PegIn / PegIn validation. The root stays held through `INTENT_LOADED` →
-  `SESSION2_PEGIN_EXPECTED` → `SESSION2_PAYOUT_EXPECTED` → `SESSION2_COMPLETE`, which is
-  terminal. The host already holds the root (returned by `DERIVE_CONTEXT_HASH`) and expands
-  the per-vault secrets itself, so there is **no on-device secret-release step**.
+  Pre-PegIn / PegIn validation. The root is zeroed immediately after the on-chain commitments
+  are derived (at the end of P1=0x02); it is not retained in `INTENT_LOADED`. The host already
+  holds the root (returned by `DERIVE_CONTEXT_HASH`) and expands the per-vault secrets itself,
+  so there is **no on-device secret-release step**.
 - **Called from any other state** — intent replacement / no-derive path.
   The session is reset normally; no root is preserved, so `htlc_hashlock`/`auth_anchor_hash`
   stay zero and Pre-PegIn/PegIn signing is rejected until a `DERIVE_CONTEXT_HASH` runs first.
