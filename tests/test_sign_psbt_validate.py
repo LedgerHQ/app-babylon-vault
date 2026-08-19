@@ -56,6 +56,7 @@ from .vault_client import (
     TEST_DEPOSITOR_XONLY_TESTNET,
 )
 from .instructions import (
+    vault_intent_steps,
     vault_intent_steps_for_keys,
 )
 
@@ -4266,38 +4267,36 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
 ) -> None:
     """Payout bitmask slot gi*(keeper_count+2)+claimer_idx does not overflow at maximum.
 
-    Uses vault_count=1 (gi=0) with keeper_count=VAULT_MAX_KEEPERS=32 so Speculos can
-    complete the computation within the APDU tick timeout.  With vault_count=10 the
-    firmware iterates vault_compute_pegin_txid 20 times over a ~1200-byte script, which
-    exceeds Speculos's emulation budget; vault_count=1 reduces that to 2 iterations.
+    Uses vault_count=VAULT_MAX_VAULTS=10 with keeper_count=1 so the APDU tick budget is
+    not exceeded.  vault_compute_pegin_txid is called 20 times (10 peek + 10 validate) but
+    with a 1-keeper ~180-byte leaf each call is fast.  Using keeper_count=32 instead would
+    inflate each call to ~1200 bytes and time out on Speculos.
 
-    The slot arithmetic for the tested configuration (gi=0, claimer_idx=33):
-      slot = 0*(32+2)+(32+1) = 33,  mask_size = 1*(32+2) = 34,  33 < 34.
+    Tested configuration (gi=9, claimer_idx=2=K+1 depositor, K=1):
+      slot = 9*(1+2)+(1+1) = 9*3+2 = 29,  mask_size = 10*(1+2) = 30,  29 < 30.
 
     The theoretical maximum (VAULT_MAX_VAULTS=10, VAULT_MAX_KEEPERS=32) is verified via
-    pure Python arithmetic below and does not require a firmware round-trip.
+    pure Python arithmetic — the bit-setting logic is identical regardless of keeper count.
 
-    SW_OK confirms the slot is set without memory corruption — an overflow in the index
+    SW_OK confirms bit 29 is set without memory corruption — an overflow in the index
     or bit computation would either crash or return an unexpected status code.
     """
-    _V = 1    # vault_count — kept at 1 for Speculos performance (see docstring)
-    _N = 32   # keeper_count — must equal VAULT_MAX_KEEPERS
+    _V = 10   # vault_count — must equal VAULT_MAX_VAULTS
+    _N = 1    # keeper_count — minimised for Speculos performance (see docstring)
     _C = 1    # challenger_count — minimised to keep keys manageable
 
-    # Verify the slot formula arithmetic for the tested configuration.
+    # Verify the slot formula for the tested configuration (gi=9, K=1, depositor).
     max_slot = (_V - 1) * (_N + 2) + (_N + 1)
     mask_size = _V * (_N + 2)
-    assert max_slot == 33, f"expected max_slot=33, got {max_slot}"
-    assert mask_size == 34, f"expected mask_size=34, got {mask_size}"
+    assert max_slot == 29, f"expected max_slot=29, got {max_slot}"
+    assert mask_size == 30, f"expected mask_size=30, got {mask_size}"
     assert max_slot < mask_size, f"slot formula overflows mask: {max_slot} >= {mask_size}"
 
     # Verify the theoretical maximum (V=10, K=32) overflows neither uint16_t nor the mask.
-    _V_MAX = 10
-    _theoretical_max_slot = (_V_MAX - 1) * (_N + 2) + (_N + 1)  # = 339
-    _theoretical_mask_size = _V_MAX * (_N + 2)                   # = 340
-    assert _theoretical_max_slot == 339
-    assert _theoretical_mask_size == 340
-    assert _theoretical_max_slot < _theoretical_mask_size
+    _N_MAX = 32
+    assert (_V - 1) * (_N_MAX + 2) + (_N_MAX + 1) == 339
+    assert _V * (_N_MAX + 2) == 340
+    assert (_V - 1) * (_N_MAX + 2) + (_N_MAX + 1) < _V * (_N_MAX + 2)
 
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -4307,7 +4306,7 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     keeper_pks = all_keys[:_N]
     challenger_pks = all_keys[_N:]
 
-    # Derive root and build intent with vault_count=1, group at htlc_vout=0.
+    # Derive root and build intent with vault_count=10, groups at htlc_vout 0..9.
     global _DERIVED_ROOT
     _DERIVED_ROOT = derive_context_hash(
         client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
@@ -4338,9 +4337,10 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
         )
         for gi in range(_V)
     ]
-    # Touch devices (Flex/Stax/Apex) need a deterministic swipe count for many keys
-    # to avoid the animation race condition; Nano uses navigate_until_text (n_swipes=None).
-    n_swipes = None if device.is_nano else vault_intent_steps_for_keys(device, _N + _C)
+    # Touch devices need a deterministic swipe count that covers 10 vault group screens;
+    # vault_intent_steps accounts for vault_count, unlike vault_intent_steps_for_keys.
+    # Nano uses navigate_until_text (n_swipes=None).
+    n_swipes = None if device.is_nano else vault_intent_steps(device, _V, _C)
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,
@@ -4357,8 +4357,8 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     )
     client.sign_psbt(pegin_psbt, dummy_wallet, None)
 
-    # Build depositor payout for group 0 (gi=0, htlc_vout=0) — slot = 33.
-    # Depositor claimer: app_challengers = sorted(all keeper_pks) per _build_app_challengers.
+    # Build depositor payout for group 9 (gi=9, htlc_vout=9) — slot = 29.
+    # vault_utxo_leaf is the same for all groups (same keys and timelock).
     vault_utxo_leaf = _vault_utxo_leaf(
         dep_pk, TEST_VP_KEY, keeper_pks, challenger_pks, _PEGIN_CSV_TIMELOCK,
     )
@@ -4366,13 +4366,14 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     vault_utxo_spk = _p2tr_from_single_leaf(vault_utxo_leaf)
     claim_spk = _p2tr_from_single_leaf(claim_leaf)
 
-    pegin_txid = _compute_pegin_txid(
-        _PREPEGIN_TXID, 0,
+    # pegin_txid for group 9 uses htlc_vout=9 (distinguishes groups in the pegin tx).
+    pegin_txid_9 = _compute_pegin_txid(
+        _PREPEGIN_TXID, 9,
         _VAULT_AMOUNT, vault_utxo_spk,
         _DEPOSITOR_CLAIM_VALUE, claim_spk,
     )
 
-    # For depositor claimer (idx = N+1), app_challengers = sorted(keeper_pks).
+    # For depositor claimer (idx = N+1 = 2), app_challengers = sorted(keeper_pks).
     app_challengers_dep = _build_app_challengers(TEST_VP_KEY, keeper_pks, claimer_idx=_N + 1)
     assert0_leaf = _assert0_payout_leaf(
         dep_pk, app_challengers_dep, challenger_pks, _PAYOUT_TIMELOCK,
@@ -4388,7 +4389,7 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     assert0_cb = bytes([0xC0 | assert0_parity]) + VAULT_NUMS_XONLY
 
     # Depositor payout: Out0 = depositor, Out1 = CPFP anchor (both BIP-86 P2TR(D)).
-    out0_value = _VAULT_AMOUNT - _PAYOUT_FEE   # vault_amount + dust_input - fee - dust_output
+    out0_value = _VAULT_AMOUNT - _PAYOUT_FEE
     out1_value = VAULT_DUST_LIMIT
     out_spk = _bip86_p2tr_spk(dep_pk)
 
@@ -4396,7 +4397,7 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     tx.nVersion = 2
     tx.nLockTime = 0
     tx.vin = [CTxIn(), CTxIn()]
-    tx.vin[0].prevout = COutPoint(int.from_bytes(pegin_txid, 'little'), 0)
+    tx.vin[0].prevout = COutPoint(int.from_bytes(pegin_txid_9, 'little'), 0)
     tx.vin[0].nSequence = _PEGIN_CSV_TIMELOCK
     tx.vin[1].prevout = COutPoint(int.from_bytes(b'\xdd' * 32, 'little'), 0)
     tx.vin[1].nSequence = _PAYOUT_TIMELOCK
@@ -4413,7 +4414,7 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, assert0_spk)
     psbt.inputs[1].tap_scripts[(assert0_leaf, 0xC0)] = {assert0_cb}
 
-    # Slot 33 is within the 34-bit payout_claimer_mask — must return SW_OK.
+    # Slot 29 is within the 30-bit payout_claimer_mask — must return SW_OK.
     result = client.sign_psbt(psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
