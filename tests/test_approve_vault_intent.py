@@ -80,6 +80,12 @@ KEY_A = TEST_VALID_KEYS[0]
 KEY_B = TEST_VALID_KEYS[1]
 KEY_C = TEST_VALID_KEYS[2]
 
+# Distinct vault_provider_pk values for multi-group tests.
+# Each group must have a unique vault_provider_pk (D2 check).
+# These are distinct from KEY_A and KEY_B (used as keeper/challenger) and
+# from the depositor x-only key, and absent from _MAX_KEEPERS/_MAX_CHALLENGERS.
+VP_KEYS = [VP_KEY] + [k for k in TEST_VALID_KEYS if k not in (KEY_A, KEY_B)]
+
 
 def _coin_type(network: str) -> int:
     return 0 if network == "main" else 1
@@ -690,7 +696,8 @@ def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
     animation fires between wait_for_screen_change() and compare_screen_with_text().
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
-    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
+    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1),
+                          vault_provider_pk=VP_KEYS[i]) for i in range(10)]
     scalars = _make_scalars(bitcoin_network, vault_count=10, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
@@ -708,7 +715,8 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
     key set (64 keys in 10 P1=0x02 batches).
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
-    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
+    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1),
+                          vault_provider_pk=VP_KEYS[i]) for i in range(10)]
     scalars = _make_scalars(bitcoin_network, vault_count=10,
                             keeper_count=32, challenger_count=32)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
@@ -1011,7 +1019,7 @@ def test_multi_group_per_p1_01_apdu_accepted(client: RaggerClient, navigator: Na
     scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     grp0 = _make_group(htlc_vout=0)
-    grp1 = _make_group(htlc_vout=1, vault_amount=200_000)
+    grp1 = _make_group(htlc_vout=1, vault_amount=200_000, vault_provider_pk=KEY_C)
     _raw_exchange(client, P1_GROUP, grp0 + grp1)   # both groups in one APDU
     payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
     nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
@@ -1097,7 +1105,8 @@ def test_group_multi_record_cursor_walk(client: RaggerClient, navigator: Navigat
     # Send three group TLVs each in a separate P1=0x01 APDU.
     for htlc_vout in range(3):
         _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=htlc_vout,
-                                                     vault_amount=100_000 + htlc_vout * 10_000))
+                                                     vault_amount=100_000 + htlc_vout * 10_000,
+                                                     vault_provider_pk=VP_KEYS[htlc_vout]))
 
     payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
     nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)

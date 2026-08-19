@@ -1695,44 +1695,6 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
     }
 
-    /* Build Assert:0 Payout leaf for claimer_idx and verify WITNESS_UTXO.
-     * TAP_LEAF_SCRIPT was already read and verified byte-for-byte in
-     * _detect_payout_claimer; only the value check remains here.
-     * Overwrites G_scratch.leaf_check.expected_script (safe: Input 0 done). */
-    {
-        int leaf_len = vault_build_assert0_payout_leaf(intent,
-                                                       gi,
-                                                       claimer_idx,
-                                                       G_scratch.leaf_check.expected_script,
-                                                       VAULT_SCRIPT_MAX_LEN);
-        if (leaf_len < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint8_t leaf_hash[VAULT_HASH256_LEN];
-        vault_taproot_leaf_hash(G_scratch.leaf_check.expected_script, leaf_len, leaf_hash);
-
-        uint8_t parity;
-        uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
-        if (crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY,
-                                   leaf_hash,
-                                   VAULT_HASH256_LEN,
-                                   &parity,
-                                   tweaked) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        expected_spk[0] = OP_1;
-        expected_spk[1] = OP_PUSHBYTES_32;
-        memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
-
-        if (!_payout_check_witness_utxo(dc, &input1_map, expected_spk, VAULT_DUST_LIMIT))
-            return false;
-    }
-
     /* --- Outputs --- */
     uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t out_value;

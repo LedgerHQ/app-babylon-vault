@@ -125,6 +125,8 @@ _HTLC_VALUE           = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_ANCHOR_V
 # Single keeper and challenger for all tests (sorted ascending — key[0] < key[1])
 _TEST_KEEPER_PKS     = [TEST_VALID_KEYS[0]]
 _TEST_CHALLENGER_PKS = [TEST_VALID_KEYS[1]]
+# Distinct vault_provider_pk per group for multi-vault tests; excludes keeper/challenger keys.
+_VP_KEYS = [TEST_VP_KEY] + TEST_VALID_KEYS[2:]
 
 # Firmware participant caps and script buffer ceiling — must match src/vault_intent.h
 # (VAULT_MAX_KEEPERS / VAULT_MAX_CHALLENGERS) and src/vault_script.h
@@ -484,11 +486,11 @@ _3V_PEGIN_MAX_FEES        = [567_891, 456_780, 345_679]
 
 
 def _build_groups_tlv_3vault() -> List[bytes]:
-    """Three vault group TLVs at htlc_vouts [0, 1, 2]."""
+    """Three vault group TLVs at htlc_vouts [0, 1, 2], each with a distinct vault_provider_pk."""
     return [
         build_group_tlv(
             htlc_vout=_3V_HTLC_VOUTS[i],
-            vault_provider_pk=TEST_VP_KEY,
+            vault_provider_pk=_VP_KEYS[i],
             vault_amount=_3V_VAULT_AMOUNTS[i],
             commission_fee=_COMMISSION_FEE,
             depositor_claim_value=_3V_DEPOSITOR_CLAIM_VALUES[i],
@@ -499,11 +501,11 @@ def _build_groups_tlv_3vault() -> List[bytes]:
 
 
 def _build_groups_tlv_2vault() -> List[bytes]:
-    """Two vault group TLVs at htlc_vouts [0, 1]."""
+    """Two vault group TLVs at htlc_vouts [0, 1], each with a distinct vault_provider_pk."""
     return [
         build_group_tlv(
             htlc_vout=i,
-            vault_provider_pk=TEST_VP_KEY,
+            vault_provider_pk=_VP_KEYS[i],
             vault_amount=_VAULT_AMOUNT,
             commission_fee=_COMMISSION_FEE,
             depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
@@ -947,7 +949,7 @@ def test_sign_psbt_prepegin_3vaults(
     group_htlc_outputs = []
     for i, h in enumerate(hashlocks):
         _, _, _, _, htlc_spk = _htlc_output(
-            dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, h,
+            dep_pk, _VP_KEYS[i], _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, h,
         )
         htlc_value = (_3V_VAULT_AMOUNTS[i] + _3V_DEPOSITOR_CLAIM_VALUES[i]
                       + _PEGIN_ANCHOR_VALUE + 10_000)
@@ -1010,7 +1012,7 @@ def test_sign_psbt_prepegin_wrong_htlc_spk_vault1(
     for i, h in enumerate(hashlocks):
         wrong_h = bytes([0xde] * 32) if i == 1 else h
         _, _, _, _, htlc_spk = _htlc_output(
-            dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+            dep_pk, _VP_KEYS[i], _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
             _HTLC_REFUND_TIMELOCK, wrong_h,
         )
         htlc_value = (_3V_VAULT_AMOUNTS[i] + _3V_DEPOSITOR_CLAIM_VALUES[i]
@@ -1068,11 +1070,11 @@ def test_sign_psbt_prepegin_op_return_before_htlcs(
         vault_count=2,
     )
     groups_tlv = [
-        build_group_tlv(htlc_vout=0, vault_provider_pk=TEST_VP_KEY,
+        build_group_tlv(htlc_vout=0, vault_provider_pk=_VP_KEYS[0],
                         vault_amount=_VAULT_AMOUNT, commission_fee=_COMMISSION_FEE,
                         depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
                         pegin_max_fee=_PEGIN_MAX_FEE),
-        build_group_tlv(htlc_vout=2, vault_provider_pk=TEST_VP_KEY,
+        build_group_tlv(htlc_vout=2, vault_provider_pk=_VP_KEYS[1],
                         vault_amount=_VAULT_AMOUNT, commission_fee=_COMMISSION_FEE,
                         depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
                         pegin_max_fee=_PEGIN_MAX_FEE),
@@ -1083,10 +1085,10 @@ def test_sign_psbt_prepegin_op_return_before_htlcs(
     )
 
     _, _, _, _, htlc_spk0 = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hl0,
+        dep_pk, _VP_KEYS[0], _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hl0,
     )
     _, _, _, _, htlc_spk2 = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hl2,
+        dep_pk, _VP_KEYS[1], _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hl2,
     )
     htlc_value = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_ANCHOR_VALUE + 10_000
     anchor_spk = bytes([0x6A, 0x20]) + vault_auth_anchor(_DERIVED_ROOT)
@@ -1898,6 +1900,7 @@ def _build_payout_psbt(
     payout_timelock: int = _PAYOUT_TIMELOCK,
     fee: int = _PAYOUT_FEE,
     htlc_vout: int = _HTLC_VOUT,
+    vp_key: Optional[bytes] = None,
 ) -> PSBT:
     """Build a valid Payout PSBTv0 for the given claimer_idx.
 
@@ -1907,9 +1910,11 @@ def _build_payout_psbt(
     VK (idx==1..N):         Out0=VaultKeeper_i (V-fee), Out1=VaultKeeper_i CPFP anchor (DUST).
     Depositor (idx==N+1):   Out0=depositor (V-fee), Out1=depositor CPFP anchor (DUST) — script-verified.
     """
+    if vp_key is None:
+        vp_key = TEST_VP_KEY
     # Reconstruct leaves to compute scriptPubKeys and txid
     vault_utxo_leaf = _vault_utxo_leaf(
-        depositor_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, pegin_csv_timelock,
+        depositor_pk, vp_key, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, pegin_csv_timelock,
     )
     claim_leaf = _depositor_claim_leaf(depositor_pk)
     vault_utxo_spk = _p2tr_from_single_leaf(vault_utxo_leaf)
@@ -1924,12 +1929,12 @@ def _build_payout_psbt(
     # Claimer key and Assert:0 Payout leaf
     keeper_count = len(_TEST_KEEPER_PKS)
     if claimer_idx == 0:
-        claimer_key = TEST_VP_KEY
+        claimer_key = vp_key
     elif claimer_idx == keeper_count + 1:
         claimer_key = depositor_pk          # Depositor is the claimer
     else:
         claimer_key = _TEST_KEEPER_PKS[claimer_idx - 1]
-    app_challengers = _build_app_challengers(TEST_VP_KEY, _TEST_KEEPER_PKS, claimer_idx)
+    app_challengers = _build_app_challengers(vp_key, _TEST_KEEPER_PKS, claimer_idx)
     assert0_leaf = _assert0_payout_leaf(
         claimer_key, app_challengers, _TEST_CHALLENGER_PKS, payout_timelock,
     )
@@ -1940,8 +1945,8 @@ def _build_payout_psbt(
         out1_value = commission_fee
         out2_value = VAULT_DUST_LIMIT
         out0_spk = _bip86_p2tr_spk(depositor_pk)
-        out1_spk = _bip86_p2tr_spk(TEST_VP_KEY)
-        out2_spk = _bip86_p2tr_spk(TEST_VP_KEY)
+        out1_spk = _bip86_p2tr_spk(vp_key)
+        out2_spk = _bip86_p2tr_spk(vp_key)
     elif claimer_idx == keeper_count + 1:  # Depositor claimer — Out0 and Out1 both script-verified
         out0_value = vault_amount + VAULT_DUST_LIMIT - fee - VAULT_DUST_LIMIT
         out1_value = VAULT_DUST_LIMIT
@@ -2837,7 +2842,7 @@ def test_sign_psbt_payout_3vault_batch(
     uniform_groups = [
         build_group_tlv(
             htlc_vout=i,
-            vault_provider_pk=TEST_VP_KEY,
+            vault_provider_pk=_VP_KEYS[i],
             vault_amount=_VAULT_AMOUNT,
             commission_fee=_COMMISSION_FEE,
             depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
@@ -2859,7 +2864,8 @@ def test_sign_psbt_payout_3vault_batch(
     # claimer_idx: 0=VP, 1..keeper_count=VK_i, keeper_count+1=Depositor.
     for gi in range(3):
         for ci in range(len(_TEST_KEEPER_PKS) + 2):  # 0=VP, 1=VK_1, 2=Depositor
-            psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci, htlc_vout=gi)
+            psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=ci, htlc_vout=gi,
+                                      vp_key=_VP_KEYS[gi])
             result = client.sign_psbt(psbt, dummy_wallet, None)
             _assert_single_schnorr_sig(result, dep_pk)
 
@@ -4313,6 +4319,11 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     )
     hashlock_0 = vault_hashlock(_DERIVED_ROOT, 0)
 
+    # Each group needs a distinct vault_provider_pk; exclude role keys to avoid ROLE_COLLISION.
+    slot_vp_keys = [TEST_VP_KEY] + _distinct_sorted_keys(
+        _V - 1, exclude=[TEST_VP_KEY, dep_pk] + keeper_pks + challenger_pks,
+    )
+
     scalars_tlv = build_intent_tlv(
         coin_type=coin_type,
         base_fee_rate=_BASE_FEE_RATE,
@@ -4329,7 +4340,7 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     groups_tlv = [
         build_group_tlv(
             htlc_vout=gi,
-            vault_provider_pk=TEST_VP_KEY,
+            vault_provider_pk=slot_vp_keys[gi],
             vault_amount=_VAULT_AMOUNT,
             commission_fee=_COMMISSION_FEE,
             depositor_claim_value=_DEPOSITOR_CLAIM_VALUE,
@@ -4358,9 +4369,8 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     client.sign_psbt(pegin_psbt, dummy_wallet, None)
 
     # Build depositor payout for group 9 (gi=9, htlc_vout=9) — slot = 29.
-    # vault_utxo_leaf is the same for all groups (same keys and timelock).
     vault_utxo_leaf = _vault_utxo_leaf(
-        dep_pk, TEST_VP_KEY, keeper_pks, challenger_pks, _PEGIN_CSV_TIMELOCK,
+        dep_pk, slot_vp_keys[9], keeper_pks, challenger_pks, _PEGIN_CSV_TIMELOCK,
     )
     claim_leaf = _depositor_claim_leaf(dep_pk)
     vault_utxo_spk = _p2tr_from_single_leaf(vault_utxo_leaf)
@@ -4374,7 +4384,7 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
     )
 
     # For depositor claimer (idx = N+1 = 2), app_challengers = sorted(keeper_pks).
-    app_challengers_dep = _build_app_challengers(TEST_VP_KEY, keeper_pks, claimer_idx=_N + 1)
+    app_challengers_dep = _build_app_challengers(slot_vp_keys[9], keeper_pks, claimer_idx=_N + 1)
     assert0_leaf = _assert0_payout_leaf(
         dep_pk, app_challengers_dep, challenger_pks, _PAYOUT_TIMELOCK,
     )
