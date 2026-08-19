@@ -3181,8 +3181,8 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
         uint64_t fee_pf = va - VAULT_DUST_LIMIT - amount_received;
         uint64_t pf_participants =
             (uint64_t) G_vault_intent.keeper_count + G_vault_intent.challenger_count;
-        uint64_t pf_vsize = MAX_PAYOUT_VSIZE_BASE +
-                            MAX_PAYOUT_VSIZE_PER_PARTICIPANT * pf_participants;
+        uint64_t pf_vsize =
+            MAX_PAYOUT_VSIZE_BASE + MAX_PAYOUT_VSIZE_PER_PARTICIPANT * pf_participants;
         if (pf_vsize > UINT64_MAX / G_vault_intent.base_fee_rate ||
             fee_pf > G_vault_intent.base_fee_rate * pf_vsize) {
             SEND_SW(dc, SW_INCORRECT_DATA);
