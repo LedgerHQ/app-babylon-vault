@@ -1986,7 +1986,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     /* Input 0 WITNESS_UTXO: value in [VAULT_DUST_LIMIT,
      * VAULT_DUST_LIMIT + base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE]; verify taproot
      * commitment via G_scratch.tls.control_block (with siblings). */
-    uint8_t assert0_spk_fp[4];  /* first 4 bytes of tweaked output key; used for group dedup */
+    uint8_t assert0_spk_fp[4]; /* first 4 bytes of tweaked output key; used for group dedup */
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -2018,7 +2018,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             return false;
         }
         if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
-        /* SPK layout: OP_1 OP_PUSHBYTES_32 <tweaked_key[32]>; bytes [2..5] are vault-group-specific. */
+        /* SPK layout: OP_1 OP_PUSHBYTES_32 <tweaked_key[32]>; bytes [2..5] are
+         * vault-group-specific. */
         memcpy(assert0_spk_fp, witness_utxo + 9 + 2, 4);
     }
 
@@ -2248,7 +2249,7 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     {
         uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         uint64_t out1_value;
-        if (!_read_output(dc, st->outputs_root, 2, 1, out_spk, &out1_value)) {
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, 1, out_spk, &out1_value)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2281,7 +2282,7 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     {
         uint8_t out0_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         uint64_t out0_value;
-        if (!_read_output(dc, st->outputs_root, 2, 0, out0_spk, &out0_value)) {
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out0_spk, &out0_value)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2970,6 +2971,11 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
                 }
             }
         }
+    }
+
+    if (G_vault_context.state == VAULT_STATE_INTENT_LOADED && pf_group_idx < 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
     }
 
     /* Read Input 1 TAP_LEAF_SCRIPT into G_scratch.tls */

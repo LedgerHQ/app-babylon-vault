@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Navigation step counts updated** for Screen 2 intent skip (one extra skip/confirm pair), Screen 4 Claim (one extra tap for Output 0 address), and Screen 7 PoP (two extra clicks on Nano, one extra tap on Stax/Flex/Apex) (`tests/instructions.py`)
 - **`bip322.h` to_spend txid comment**: corrected "reversed to Bitcoin wire format" → "in PSBT/wire byte order (not byte-reversed)" (`bip322.h`)
 - **`vault_script.h` NUMS key comment**: replaced incorrect SHA256("nothing_up_my_sleeve") description with the accurate BIP-341 `lift_x(…)` construction (`vault_script.h`)
+- **Integration guide Payout annotation**: state diagram entry corrected from `(Screen 8)` to `(silent)`; Step 5 body now states Payout signing is silent per APP_SPECIFICATION.md §3 (`docs/integration-guide.md`)
+- **PayoutFinalize unmatched group fall-through**: when `VAULT_STATE_INTENT_LOADED`, `_validate_display_payout_finalize` now rejects immediately with `SW_INCORRECT_DATA` if Input 0 PREVIOUS_TXID matches no vault group's computed PegIn TXID (`sign_psbt_validate.c`)
+- **`_validate_display_claim` magic output count**: replaced hardcoded `2` with `st->n_outputs` in both `_read_output` calls; `st->n_outputs == 2` is already enforced above (`sign_psbt_validate.c`)
 
 ## [0.9.4] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 

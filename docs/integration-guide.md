@@ -66,7 +66,7 @@ IDLE
 INTENT_LOADED
   ├─ 0x04 SIGN_PSBT (Pre-PegIn) ──────────────────────────► INTENT_LOADED  (silent, cap 1)
   ├─ 0x04 SIGN_PSBT (PegIn ×vault_count) ─────────────────► INTENT_LOADED  (silent)
-  ├─ 0x04 SIGN_PSBT (Payout ×vault_count×(N+2)) ──────────► INTENT_LOADED  (Screen 8)
+  ├─ 0x04 SIGN_PSBT (Payout ×vault_count×(N+2)) ──────────► INTENT_LOADED  (silent)
   └─ 0x04 SIGN_PSBT (NoPayout ×vault_count×(N+M)) ────────► INTENT_LOADED  (silent)
 
 IDLE / HASH_DERIVED / INTENT_LOADED
@@ -300,6 +300,8 @@ Claimer identity (VP, VK_i, or Depositor) is established from the Input 1 Assert
 script read from the PSBT, not from output scripts.
 
 **Fee bound:** `fee ≤ intent.base_fee_rate × (500 + 55 × (keeper_count + challenger_count))` vbytes.
+
+Payout signing is **silent** — no per-signing screen is shown. The payout parameters were already approved during intent review. See APP_SPECIFICATION.md §3.
 
 The device displays the Payout Finalize screen (Screen 8) showing: Vault UTXO txid, amount
 received, destination address, CPFP anchor address, and transaction fee. User must approve.

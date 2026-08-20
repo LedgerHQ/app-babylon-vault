@@ -279,8 +279,8 @@ bool sign_custom_inputs(
             G_vault_context.nopayout_signed++;
             /* N-02: mark this (vault_group, challenger) slot as signed to prevent replay. */
             {
-                unsigned int c = (unsigned int) intent->keeper_count +
-                                 (unsigned int) intent->challenger_count;
+                unsigned int c =
+                    (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
                 unsigned int slot = (unsigned int) G_vault_context.nopayout_group_index * c +
                                     (unsigned int) G_vault_context.nopayout_challenger_index;
                 G_vault_context.nopayout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
