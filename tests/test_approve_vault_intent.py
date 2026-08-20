@@ -80,10 +80,11 @@ KEY_A = TEST_VALID_KEYS[0]
 KEY_B = TEST_VALID_KEYS[1]
 KEY_C = TEST_VALID_KEYS[2]
 
-# Distinct vault_provider_pk values for multi-group tests.
-# Each group must have a unique vault_provider_pk (D2 check).
-# These are distinct from KEY_A and KEY_B (used as keeper/challenger) and
-# from the depositor x-only key, and absent from _MAX_KEEPERS/_MAX_CHALLENGERS.
+# VP_KEYS: a pool of distinct vault_provider_pk values for multi-group tests that
+# want each group to have a different provider. All are distinct from KEY_A/KEY_B
+# and from the depositor x-only key, and absent from _MAX_KEEPERS/_MAX_CHALLENGERS.
+# Note: groups are not required to have unique vault_provider_pk — see
+# test_same_vault_provider_pk_across_groups_accepted.
 VP_KEYS = [VP_KEY] + [k for k in TEST_VALID_KEYS if k not in (KEY_A, KEY_B)]
 
 
@@ -1108,6 +1109,42 @@ def test_group_multi_record_cursor_walk(client: RaggerClient, navigator: Navigat
                                                      vault_amount=100_000 + htlc_vout * 10_000,
                                                      vault_provider_pk=VP_KEYS[htlc_vout]))
 
+    payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
+    nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=payload,
+    ):
+        navigator.navigate_until_text(
+            navigate_instruction=nav_instr,
+            validation_instructions=confirm_instrs,
+            text=search_text,
+            screen_change_before_first_instruction=False,
+        )
+    _sw, _ = client.last_async_response()
+    assert _sw == SW_OK
+
+
+def test_same_vault_provider_pk_across_groups_accepted(
+    client: RaggerClient, navigator: Navigator, device: Device, bitcoin_network: str,
+):
+    """Two groups sharing the same vault_provider_pk but different htlc_vout must be accepted.
+
+    A batched Pre-PegIn deposit can place multiple vault UTXOs (distinguished by htlc_vout)
+    under a single provider key in one intent.  The firmware must not reject that as a
+    duplicate — htlc_vout is the group discriminator, not vault_provider_pk.
+    """
+    from .instructions import vault_intent_approve_nav
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    # Both groups use the same VP_KEY; they are distinguished solely by htlc_vout.
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=0, vault_provider_pk=VP_KEY))
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=1, vault_provider_pk=VP_KEY,
+                                                vault_amount=200_000))
     payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
     nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
     with client.transport_client.exchange_async(

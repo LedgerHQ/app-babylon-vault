@@ -147,18 +147,6 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
             return;
         }
 
-        /* Reject duplicate vault_provider_pk across groups: each vault group must
-         * have an independent provider role. */
-        for (uint8_t gi = 0; gi < idx; gi++) {
-            if (memcmp(G_vault_intent.groups[idx].vault_provider_pk,
-                       G_vault_intent.groups[gi].vault_provider_pk,
-                       VAULT_XONLY_PUBKEY_LEN) == 0) {
-                vault_context_invalidate(&G_vault_context);
-                SEND_SW(dc, SW_INCORRECT_DATA);
-                return;
-            }
-        }
-
         G_vault_context.vault_group_index++;
         pos += consumed;
     }

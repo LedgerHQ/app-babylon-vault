@@ -3055,10 +3055,10 @@ def test_sign_psbt_nopayout_32_challengers(
 
     # Deterministic step count avoids the Flex/Apex swipe-animation race that can occur
     # with navigate_until_text when there are many keys (33 here: 1 keeper + 32 challengers).
-    # Nano uses button clicks rather than swipe gestures, so it is not affected; leave it
-    # with text-based navigation (n_swipes=None) to avoid guessing the Nano click count.
+    # Nano and Stax are not affected by this race; leave them with text-based navigation.
     total_keys = len(keeper_pks) + len(challenger_pks)
-    n_swipes = None if device.is_nano else vault_intent_steps_for_keys(device, total_keys)
+    n_swipes = (None if (device.is_nano or device.name == "stax")
+                else vault_intent_steps_for_keys(device, total_keys))
 
     hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID,
                                keeper_pks=keeper_pks, challenger_pks=challenger_pks,
