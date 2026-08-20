@@ -3023,11 +3023,12 @@ def test_sign_psbt_nopayout_cap_exhausted(
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
         client.sign_psbt(psbt, dummy_wallet, None)
 
-    # One more exceeds the cap → SW_CAP_EXCEEDED before display, no navigation needed.
+    # Replay of an already-signed slot → dedup bit set → SW_INCORRECT_DATA.
+    # The dedup check fires in _validate_nopayout before the flat cap counter is checked.
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_CAP_EXCEEDED
+    assert exc.value.status == SW_INCORRECT_DATA
 
 
 def test_sign_psbt_nopayout_32_challengers(
@@ -4160,14 +4161,14 @@ def test_sign_psbt_cap_recovery_via_new_intent(
     bitcoin_network: str,
     device,
 ) -> None:
-    """Exhausting the NoPayout cap nullifies the intent; re-approving resets all counters.
+    """NoPayout dedup and context recovery: re-approving a fresh intent resets all counters.
 
     Steps:
     1. Load intent and advance to payout state (pegin_signed=1).
-    2. Exhaust NoPayout cap (vault_count × (K+C) = 1 × 2 = 2 signings).
-    3. One more NoPayout → SW_CAP_EXCEEDED (intent nullified).
-    4. Re-derive and re-approve a fresh intent.
-    5. Sign one NoPayout → SW_OK (cap counters reset).
+    2. Sign all NoPayout slots (vault_count × (K+C) = 1 × 2 = 2 signings).
+    3. Replay an already-signed slot → SW_INCORRECT_DATA (dedup bit set; context not nullified).
+    4. Re-derive and re-approve a fresh intent (DERIVE_CONTEXT_HASH invalidates the old context).
+    5. Sign one NoPayout → SW_OK (dedup mask and cap counters reset).
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -4180,11 +4181,13 @@ def test_sign_psbt_cap_recovery_via_new_intent(
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
         client.sign_psbt(psbt, dummy_wallet, None)
 
-    # Step 3: exceed cap → intent nullified (no screen shown before SW_CAP_EXCEEDED).
+    # Step 3: replay of an already-signed slot → dedup bit set → SW_INCORRECT_DATA.
+    # Context is not nullified here; the subsequent DERIVE_CONTEXT_HASH in step 4
+    # invalidates it before the fresh intent is loaded.
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_CAP_EXCEEDED
+    assert exc.value.status == SW_INCORRECT_DATA
 
     # Step 4: re-approve a fresh intent (also advances through PegIn to reach payout state).
     _setup_payout_state(client, navigator, device, coin_type)
