@@ -107,12 +107,12 @@ typedef struct {
     uint8_t pegin_group_mask[(VAULT_MAX_VAULTS + 7u) / 8u];
 
     /**
-     * Per-challenger NoPayout deduplication bitmask.
+     * Per-(vault_group, challenger) NoPayout deduplication bitmask.
      *
-     * Bit challenger_idx is set once the NoPayout PSBT for that challenger is signed,
-     * preventing a malicious host from replaying the same NoPayout PSBT to exhaust the
-     * flat nopayout_signed cap.  The NoPayout leaf does not encode the vault group, so
-     * the slot is challenger_idx only (gi is implicitly bound by the taproot commitment).
+     * Bit (gi*(keeper_count+challenger_count)+challenger_idx) is set once the NoPayout
+     * PSBT for that (vault group, challenger) pair is signed, preventing replay of the
+     * same NoPayout PSBT to exhaust the cap.  The vault group index gi is inferred from
+     * the Assert:0 WITNESS_UTXO tweaked output key fingerprint (nopayout_group_spk_fp).
      * Cleared by vault_context_invalidate.
      */
     uint8_t nopayout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) +
@@ -125,6 +125,27 @@ typedef struct {
      * Set by _validate_nopayout; read by sign_custom_inputs to set the dedup bit.
      */
     uint8_t nopayout_challenger_index;
+
+    /**
+     * Group index for the NoPayout currently being validated/signed.
+     * Ranges 0..vault_count-1; assigned by _validate_nopayout on first encounter of each
+     * vault group's Assert:0 WITNESS_UTXO tweaked key fingerprint (nopayout_group_spk_fp).
+     * Set by _validate_nopayout; read by sign_custom_inputs to set the dedup bit.
+     */
+    uint8_t nopayout_group_index;
+
+    /**
+     * Number of distinct vault groups encountered in NoPayout signing this session.
+     * Incremented (up to vault_count) the first time each group's Assert:0 UTXO is seen.
+     */
+    uint8_t nopayout_group_count;
+
+    /**
+     * First 4 bytes of the Assert:0 WITNESS_UTXO tweaked output key (SPK bytes [2..5])
+     * for each encountered NoPayout vault group.  Used to assign a stable gi when the
+     * same vault group's Assert:0 UTXO appears for additional challengers.
+     */
+    uint8_t nopayout_group_spk_fp[VAULT_MAX_VAULTS][4];
 
     /**
      * Dual-use field:

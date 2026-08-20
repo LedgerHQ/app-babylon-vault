@@ -1954,15 +1954,6 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    /* N-02: per-challenger dedup — reject if this challenger has already signed a NoPayout. */
-    {
-        unsigned int slot = (unsigned int) challenger_idx;
-        if (G_vault_context.nopayout_claimer_mask[slot / 8u] & (1u << (slot % 8u))) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
-
     /* Save challenger key before _refund_verify_taproot_commitment clobbers G_scratch.tls. */
     uint8_t challenger_xonly[VAULT_XONLY_PUBKEY_LEN];
     memcpy(challenger_xonly, leaf_challenger, VAULT_XONLY_PUBKEY_LEN);
@@ -1995,6 +1986,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     /* Input 0 WITNESS_UTXO: value in [VAULT_DUST_LIMIT,
      * VAULT_DUST_LIMIT + base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE]; verify taproot
      * commitment via G_scratch.tls.control_block (with siblings). */
+    uint8_t assert0_spk_fp[4];  /* first 4 bytes of tweaked output key; used for group dedup */
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -2026,6 +2018,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             return false;
         }
         if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
+        /* SPK layout: OP_1 OP_PUSHBYTES_32 <tweaked_key[32]>; bytes [2..5] are vault-group-specific. */
+        memcpy(assert0_spk_fp, witness_utxo + 9 + 2, 4);
     }
 
     /* Inputs 1 and 2 (ChallengeAssert connectors): WITNESS_UTXO value must be <= DUST. */
@@ -2067,6 +2061,39 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+    }
+
+    /* N-02: per-(vault_group, challenger) dedup.  The vault group gi is inferred from the
+     * Assert:0 WITNESS_UTXO tweaked output key fingerprint: each group's taproot tree
+     * encodes group-specific payout leaves, giving every group a distinct tweaked key.
+     * Worst-case 4-byte fingerprint collision probability is 2^-32 — negligible, and
+     * the resulting mis-attribution only produces an invalid on-chain signature (DoS,
+     * not fund theft). */
+    {
+        int gi = -1;
+        for (uint8_t g = 0; g < G_vault_context.nopayout_group_count; g++) {
+            if (memcmp(G_vault_context.nopayout_group_spk_fp[g], assert0_spk_fp, 4) == 0) {
+                gi = (int) g;
+                break;
+            }
+        }
+        if (gi < 0) {
+            if (G_vault_context.nopayout_group_count >= intent->vault_count) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+            gi = (int) G_vault_context.nopayout_group_count;
+            memcpy(G_vault_context.nopayout_group_spk_fp[gi], assert0_spk_fp, 4);
+            G_vault_context.nopayout_group_count++;
+        }
+        unsigned int c =
+            (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
+        unsigned int slot = (unsigned int) gi * c + (unsigned int) challenger_idx;
+        if (G_vault_context.nopayout_claimer_mask[slot / 8u] & (1u << (slot % 8u))) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        G_vault_context.nopayout_group_index = (uint8_t) gi;
     }
 
     /* Stash challenger index for sign_custom_inputs to set the dedup bit after signing. */
