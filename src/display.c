@@ -438,19 +438,18 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 
 // ---- Streaming review state machine ----
 //
-// The vault intent is reviewed as a streaming review so the keeper/challenger key
-// list can be made skippable without making the scalar parameters skippable to the
-// approval:
+// The vault intent is reviewed in two streaming phases:
 //
-//   intro → [params segment] → [keys segment] → approve/reject
+//   Phase 1 (non-skippable): intro → [params segment] → confirm
+//   Phase 2 (skippable):     intro → [vault groups] → [keys segment] → approve/reject
 //
-// On touch, SKIPPABLE_OPERATION enables a "Skip" affordance. The SDK shows it on
-// every content segment (it cannot be scoped to one segment), so skip is wired by
-// destination instead: skipping the params segment only advances to the keys
-// segment (params can never be skipped straight to approval), while skipping the
-// keys segment jumps to the approval page. On nano the flag is left off (the SDK
-// would otherwise interleave a skip page after every screen), so the skip
-// callbacks below are simply never invoked there.
+// Params (app name through refund timelock) are deliberately unskippable: the
+// NBGL SDK's SKIPPABLE_OPERATION flag applies to all segments of a streaming
+// review equally, so phases 1 and 2 are separate streaming reviews.  On touch,
+// phase 2 starts after params are confirmed; Skip in phase 2 jumps directly to
+// the approval page.  On nano there is no skip affordance (single streaming
+// review, no SKIPPABLE_OPERATION; non-NULL skipCallback would interleave a skip
+// page after every nano screen).
 //
 // All intent data is already in G_vault_intent, so the whole chain is driven from
 // the choice/skip callbacks within a single io_ui_process() pump in
@@ -511,8 +510,8 @@ static void vault_after_keys(bool confirm) {
     vault_stream_finish();
 }
 
-// After the params segment (paged through) or its Skip: go to the keys segment.
-// vault_stream_finish is the keys segment's skip callback (Skip on keys → approve).
+// After all vault groups are confirmed: show the keys segment.
+// Skip on keys → approval page directly.
 static void vault_stream_keys(void) {
     nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list,
                                            vault_after_keys,
@@ -565,31 +564,49 @@ static void vault_stream_group(void) {
 
     nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list,
                                            vault_after_group,
-                                           VAULT_SKIP_CB(vault_stream_group));
+                                           VAULT_SKIP_CB(vault_stream_finish));
 }
 
+#ifdef SCREEN_SIZE_WALLET
+// Entry point for phase 2 (touch only): the skippable streaming review for vault
+// groups and keys.  Called when the phase 2 intro "Continue" is pressed.
+static void vault_stream_vaults_start(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_group();
+}
+#endif
+
+// After the params segment is confirmed: on touch, start a new skippable streaming
+// review for vault groups and keys (phase 2).  On nano, continue the existing
+// streaming review directly.
 static void vault_after_params(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
         return;
     }
     g_stream_vault_idx = 0;
+#ifdef SCREEN_SIZE_WALLET
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
+                                     &ICON_APP_ACTION,
+                                     VAULT_INTENT_REVIEW_TITLE,
+                                     NULL,
+                                     vault_stream_vaults_start);
+#else
     vault_stream_group();
+#endif
 }
 
-// After the intro page: start the params segment. vault_stream_group is the params
-// segment's skip callback (Skip on params → first vault group, never straight to keys).
-// g_stream_vault_idx is reset here so both the confirm path (vault_after_params) and
-// the skip path (vault_stream_group called directly) start at vault group 0.
+// After the phase 1 intro: start the params segment.  No skip callback — params
+// are always reviewed in full before vault group details are shown.
 static void vault_stream_intro_choice(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
         return;
     }
-    g_stream_vault_idx = 0;
-    nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list,
-                                           vault_after_params,
-                                           VAULT_SKIP_CB(vault_stream_group));
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list, vault_after_params, NULL);
 }
 
 // Called by NBGL lazily for each key pair it needs to render.
@@ -705,15 +722,10 @@ bool display_vault_intent(dispatcher_context_t *dc) {
         (uint8_t) (G_vault_intent.keeper_count + G_vault_intent.challenger_count);
     g_vault_keys_list.nbMaxLinesForValue = 0;
 
-    // Skip is offered on touch only. On nano the SDK interleaves a "press both to
-    // skip" page after every content screen, which is far worse than just clicking
-    // through — so nano gets the plain (non-skippable) streaming review.
-    nbgl_operationType_t op_type = TYPE_OPERATION;
-#ifdef SCREEN_SIZE_WALLET
-    op_type |= SKIPPABLE_OPERATION;
-#endif
-
-    nbgl_useCaseReviewStreamingStart(op_type,
+    // Phase 1: non-skippable review for global parameters.  SKIPPABLE_OPERATION is
+    // intentionally absent — it would apply to all segments equally, including params.
+    // Phase 2 (touch only, started from vault_after_params) carries SKIPPABLE_OPERATION.
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION,
                                      &ICON_APP_ACTION,
                                      VAULT_INTENT_REVIEW_TITLE,
                                      NULL,
