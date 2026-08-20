@@ -1986,7 +1986,6 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     /* Input 0 WITNESS_UTXO: value in [VAULT_DUST_LIMIT,
      * VAULT_DUST_LIMIT + base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE]; verify taproot
      * commitment via G_scratch.tls.control_block (with siblings). */
-    uint8_t assert0_spk_fp[4]; /* first 4 bytes of tweaked output key; used for group dedup */
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -2018,9 +2017,20 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             return false;
         }
         if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
-        /* SPK layout: OP_1 OP_PUSHBYTES_32 <tweaked_key[32]>; bytes [2..5] are
-         * vault-group-specific. */
-        memcpy(assert0_spk_fp, witness_utxo + 9 + 2, 4);
+    }
+
+    /* PSBT_IN_OUTPUT_INDEX must be 0 (Vault UTXO = output 0 of PegIn) */
+    {
+        uint32_t vout;
+        if (call_get_merkleized_map_value_u32_le(dc,
+                                                 &input_map,
+                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
+                                                 1,
+                                                 &vout) != 4 ||
+            vout != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
     }
 
     /* Inputs 1 and 2 (ChallengeAssert connectors): WITNESS_UTXO value must be <= DUST. */
@@ -2064,29 +2074,38 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    /* N-02: per-(vault_group, challenger) dedup.  The vault group gi is inferred from the
-     * Assert:0 WITNESS_UTXO tweaked output key fingerprint: each group's taproot tree
-     * encodes group-specific payout leaves, giving every group a distinct tweaked key.
-     * Worst-case 4-byte fingerprint collision probability is 2^-32 — negligible, and
-     * the resulting mis-attribution only produces an invalid on-chain signature (DoS,
-     * not fund theft). */
+    /* N-02: per-(vault_group, challenger) dedup.  The NoPayout leaf script cannot identify
+     * the vault group by itself — depositor/keeper/challenger keys are shared across every
+     * group in an intent, so the tweaked output key is a function of (depositor, challenger)
+     * only. The vault group gi is instead identified the same way _validate_payout routes
+     * Payout PSBTs: match Input 0's PREVIOUS_TXID against vault_compute_pegin_txid for each
+     * group — the Assert:0/NoPayout leaf spends the group's Vault UTXO (PegIn tx output 0). */
+    int gi = -1;
     {
-        int gi = -1;
-        for (uint8_t g = 0; g < G_vault_context.nopayout_group_count; g++) {
-            if (memcmp(G_vault_context.nopayout_group_spk_fp[g], assert0_spk_fp, 4) == 0) {
+        uint8_t psbt_txid[VAULT_HASH256_LEN];
+        if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                                &input_map,
+                                                                (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                                1,
+                                                                psbt_txid,
+                                                                VAULT_HASH256_LEN)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t computed_txid[VAULT_HASH256_LEN];
+        for (uint8_t g = 0; g < intent->vault_count; g++) {
+            if (vault_compute_pegin_txid(intent, (int) g, computed_txid) &&
+                memcmp(psbt_txid, computed_txid, VAULT_HASH256_LEN) == 0) {
                 gi = (int) g;
                 break;
             }
         }
         if (gi < 0) {
-            if (G_vault_context.nopayout_group_count >= intent->vault_count) {
-                SEND_SW(dc, SW_INCORRECT_DATA);
-                return false;
-            }
-            gi = (int) G_vault_context.nopayout_group_count;
-            memcpy(G_vault_context.nopayout_group_spk_fp[gi], assert0_spk_fp, 4);
-            G_vault_context.nopayout_group_count++;
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
         }
+    }
+    {
         unsigned int c =
             (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
         unsigned int slot = (unsigned int) gi * c + (unsigned int) challenger_idx;

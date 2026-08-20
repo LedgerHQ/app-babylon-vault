@@ -7,13 +7,16 @@ from typing import List, Tuple
 def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) -> int:
     """Compute navigation step count from the screen layout formulas.
 
-    vault_count: total number of vaults (>= 1). The first vault is rendered inline
-                 on the params screen; each additional vault adds dedicated screens.
-    challenger_count: number of challenger/keeper pairs.
+    vault_count: total number of vaults (>= 1).
+    challenger_count: number of challenger/keeper pairs (assumed equal).
 
-    Stax  (touch):  screens = 1+2 + 2*(vault_count-1) + challenger_count,   total + 2
-    Flex/Apex (touch): screens = 1+2 + 2*(vault_count-1) + 2*challenger_count, total + 2
-    Nano:           screens = 1+5 + 7*(vault_count-1) + 4*challenger_count,  total + 7
+    On touch the review runs in two phases:
+      Phase 1 (non-skippable): intro(1) + params pages + confirm
+      Phase 2 (skippable):     intro(1) + vault-group pages + key pages
+
+    Stax  (touch):  1 + 3(params) + 1(ph2 intro) + 2*(vault_count-1) + challenger_count + 2
+    Flex/Apex (touch): 1 + 2(params) + 1(ph2 intro) + 2*(vault_count-1) + 2*challenger_count + 2
+    Nano:           1 + 6 + 7*(vault_count-1) + 4*challenger_count + 7  (unchanged)
 
     n_swipes = total_screens (touch); n_clicks = total_screens (nano).
     Relationship to golden snapshot counts: n_swipes = snapshots - 3, n_clicks = snapshots - 2.
@@ -22,8 +25,8 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
     if device.is_nano:
         return 1 + 6 + 7 * extra + 4 * challenger_count + 7
     if device.name == "stax":
-        return 1 + 2 + 2 * extra + challenger_count + 2
-    return 1 + 2 + 2 * extra + 2 * challenger_count + 2
+        return 1 + 2 + 1 + 2 * extra + challenger_count + 2
+    return 1 + 2 + 1 + 2 * extra + 2 * challenger_count + 2
 
 
 def vault_intent_steps_for_keys(device: Device, total_keys: int) -> int:
@@ -32,16 +35,17 @@ def vault_intent_steps_for_keys(device: Device, total_keys: int) -> int:
     Unlike vault_intent_steps, this handles asymmetric keeper/challenger counts correctly
     by taking the total key count instead of assuming they are equal.
 
-    Stax (touch):     1 key per content page; first keeper shown on params page
-                      → (total_keys - 1) key pages
-    Flex/Apex (touch): 1 key per content page  → total_keys pages
-    Nano:              2 clicks per key
+    Includes the phase-2 intro page (+1) that appears on touch after params are confirmed.
+
+    Stax (touch):     1 key per content page → total_keys key pages + 2 vault-group pages
+    Flex/Apex (touch): 1 key per content page → total_keys key pages + 2 vault-group pages
+    Nano:              2 clicks per key (no phase split)
     """
     if device.is_nano:
         return 1 + 5 + 2 * total_keys + 7
     if device.name == "stax":
-        return 1 + 2 + max(0, total_keys - 1) + 2
-    return 1 + 2 + total_keys + 2
+        return 1 + 2 + 1 + max(0, total_keys - 1) + 2
+    return 1 + 2 + 1 + total_keys + 2
 
 
 def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
@@ -59,36 +63,31 @@ def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavI
 
 
 def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
-    """Navigation that views only the first screen of each segment, then SKIPS.
+    """Navigate through params (mandatory), then skip from the first vault group to approval.
 
-    Exercises the skippable keeper/challenger flow added with the streaming review:
-    skip on the params segment advances to the keys segment, and skip on the keys
-    segment jumps straight to the approval page.  Because skip is taken from the
-    first page of each segment, this sequence is independent of how many param/key
-    pages the layout produces.
+    Params are shown in a non-skippable phase-1 streaming review and must be paged
+    through in full.  After params are confirmed, a skippable phase-2 streaming review
+    starts; pressing Skip on the first vault-group page jumps directly to the approval
+    page.
 
-    Skip is a touch-only affordance: on nano the SDK interleaves a skip page after
-    every screen, so the firmware does not enable SKIPPABLE_OPERATION there.
+    The params swipe count is fixed (always 6 global fields: 2 pages on Flex/Apex,
+    3 pages on Stax).
+
+    Skip is touch-only: nano has no skip affordance.
 
     Touch: RIGHT_HEADER_TAP taps the top-right "Skip" button; USE_CASE_CHOICE_CONFIRM
            taps "Yes, skip" in the confirmation modal.
 
-    NOTE: skip is a UX affordance whose exact page sequence is layout-dependent.
-    Verify/adjust this list against the first --golden_run, as with the
-    step formulas in vault_intent_steps above.
+    NOTE: verify/adjust against the first --golden_run if snapshots mismatch.
     """
     assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
-    return [
-        NavInsID.USE_CASE_REVIEW_TAP,         # intro → first params page
-        NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on params
-        NavInsID.USE_CASE_CHOICE_CONFIRM,     # "Yes, skip" → keys segment
-        NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on params
-        NavInsID.USE_CASE_CHOICE_CONFIRM,     # "Yes, skip" → keys segment
-        NavInsID.RIGHT_HEADER_TAP,            # tap "Skip" on keys
-        NavInsID.USE_CASE_CHOICE_CONFIRM,     # "Yes, skip" → approval page
-        NavInsID.USE_CASE_REVIEW_CONFIRM,     # hold to sign
-        NavInsID.USE_CASE_STATUS_DISMISS,     # dismiss "Operation signed"
-    ]
+    n_params_swipes = 3 if device.name == "stax" else 2
+    return (
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * (1 + n_params_swipes)  # phase 1 intro + params pages
+        + [NavInsID.SWIPE_CENTER_TO_LEFT]                         # phase 2 intro
+        + [NavInsID.RIGHT_HEADER_TAP, NavInsID.USE_CASE_CHOICE_CONFIRM]  # skip vault group → approval
+        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+    )
 
 
 def vault_intent_reject_instructions(device: Device, n_steps: int) -> List[NavInsID]:
