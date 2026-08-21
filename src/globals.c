@@ -26,12 +26,11 @@
 //   nopayout_group_count   1 B
 //   vault_group_index      1 B
 //   is_payout_signing      1 B  + padding
-//   nopayout_group_spk_fp 40 B  (VAULT_MAX_VAULTS=10 × 4-byte tweaked-key fingerprint)
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding
 //   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
 //   app_name_len           1 B  + padding
-//   total               ~678 B  (sizeof verified at compile time)
+//   total               ~638 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B

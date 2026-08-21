@@ -51,6 +51,8 @@ from typing import List, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
+    from ragger.navigator import Navigator
+    from ledgered.devices import Device
 
 import pytest
 
@@ -286,6 +288,8 @@ def _load_speculos_metadata() -> dict:
 )
 def test_device_signs_speculos_pegin(
     client: "RaggerClient",
+    navigator: "Navigator",
+    device: "Device",
 ) -> None:
     """The device signs the Speculos-mnemonic PegIn vector and returns SW_OK.
 
@@ -294,12 +298,18 @@ def test_device_signs_speculos_pegin(
     that when the depositor key matches the test device's derived key, the firmware
     validates and signs the transaction rather than rejecting it.
 
+    APPROVE_VAULT_INTENT's final key-batch APDU blocks on the on-device review
+    screen, so — unlike the foreign-seed vectors above, which are rejected before
+    ever reaching it — this must drive the navigator through to confirmation
+    (mirrors _setup_s2_state's approve_vault_intent_with_nav call in
+    test_sign_psbt_validate.py for the same 1-keeper/1-challenger shape).
+
     Prerequisite: populate tests/vectors/generated-speculos/ by running
     crates/ledger-vector-gen with the Speculos test mnemonic (see README.md).
     The companion metadata.json must be present to provide vault intent parameters.
     """
     from .vault_client import (
-        approve_vault_intent,
+        approve_vault_intent_with_nav,
         build_intent_tlv,
         build_group_tlv,
         derive_context_hash,
@@ -347,7 +357,9 @@ def test_device_signs_speculos_pegin(
         )
         for g in meta["groups"]
     ]
-    approve_vault_intent(client, scalars_tlv, keeper_pks, challenger_pks, groups=groups_tlv)
+    approve_vault_intent_with_nav(
+        client, navigator, device, scalars_tlv, keeper_pks, challenger_pks, groups=groups_tlv,
+    )
 
     # Load and sign each PegIn PSBT — expect SW_OK and a 64-byte signature.
     psbt_hexes = _load_hexes("generated-speculos/deposit-flow/pegin.json")

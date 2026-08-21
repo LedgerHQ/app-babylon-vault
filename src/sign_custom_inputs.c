@@ -262,6 +262,18 @@ bool sign_custom_inputs(
                 return false;
             }
 
+            G_vault_context.nopayout_signed++;
+            /* N-02: mark this (vault_group, challenger) slot as signed to prevent replay.
+             * Committed before the yield so an abort mid-yield (signature already
+             * released to the host) cannot be replayed to re-arm the signing cap. */
+            {
+                unsigned int c =
+                    (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
+                unsigned int slot = (unsigned int) G_vault_context.nopayout_group_index * c +
+                                    (unsigned int) G_vault_context.nopayout_challenger_index;
+                G_vault_context.nopayout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
+            }
+
             if (!sign_sighash_schnorr_and_yield(dc,
                                                 st,
                                                 0,
@@ -274,16 +286,6 @@ bool sign_custom_inputs(
                                                 sighash)) {
                 vault_context_invalidate(&G_vault_context);
                 return false;
-            }
-
-            G_vault_context.nopayout_signed++;
-            /* N-02: mark this (vault_group, challenger) slot as signed to prevent replay. */
-            {
-                unsigned int c =
-                    (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
-                unsigned int slot = (unsigned int) G_vault_context.nopayout_group_index * c +
-                                    (unsigned int) G_vault_context.nopayout_challenger_index;
-                G_vault_context.nopayout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
             }
             return true;
         }
@@ -348,6 +350,12 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        uint16_t slot =
+            (uint16_t) G_vault_context.vault_group_index * ((uint16_t) intent->keeper_count + 2u) +
+            G_vault_context.payout_index;
+        G_vault_context.payout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
+        G_vault_context.payout_signed++;
+
         if (!sign_sighash_schnorr_and_yield(dc,
                                             st,
                                             0,
@@ -361,12 +369,6 @@ bool sign_custom_inputs(
             vault_context_invalidate(&G_vault_context);
             return false; /* SW already sent by callee */
         }
-
-        uint16_t slot =
-            (uint16_t) G_vault_context.vault_group_index * ((uint16_t) intent->keeper_count + 2u) +
-            G_vault_context.payout_index;
-        G_vault_context.payout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
-        G_vault_context.payout_signed++;
         return true;
     }
 

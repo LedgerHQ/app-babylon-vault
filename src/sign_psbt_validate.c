@@ -2019,7 +2019,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
     }
 
-    /* PSBT_IN_OUTPUT_INDEX must be 0 (Vault UTXO = output 0 of PegIn) */
+    /* PSBT_IN_OUTPUT_INDEX must be 0 (Assert:0 = output 0 of Assert tx) */
     {
         uint32_t vout;
         if (call_get_merkleized_map_value_u32_le(dc,
