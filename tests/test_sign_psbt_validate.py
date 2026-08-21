@@ -2938,14 +2938,49 @@ def test_sign_psbt_payout_depositor_wrong_cpfp_anchor_key(
 # NoPayout transaction (NAPPS-1462)
 # ===========================================================================
 
-def _build_nopayout_psbt(depositor_pk: bytes, challenger_pk: bytes) -> PSBT:
+def _build_nopayout_psbt(
+    depositor_pk: bytes,
+    challenger_pk: bytes,
+    prepegin_txid: bytes = _PREPEGIN_TXID,
+    keeper_pks: Optional[List[bytes]] = None,
+    challenger_pks: Optional[List[bytes]] = None,
+    vp_key: Optional[bytes] = None,
+    vault_amount: int = _VAULT_AMOUNT,
+    depositor_claim_value: int = _DEPOSITOR_CLAIM_VALUE,
+    pegin_csv_timelock: int = _PEGIN_CSV_TIMELOCK,
+    htlc_vout: int = _HTLC_VOUT,
+) -> PSBT:
     """Build a NoPayout PSBT: 3 custom inputs, 1 output.
 
     Input 0: NoPayout leaf <D> OP_CHECKSIGVERIFY <Cj> OP_CHECKSIG (68 bytes),
              single-leaf P2TR (NUMS internal key), value=VAULT_DUST_LIMIT.
+             Its prevout must be the group's computed PegIn txid:0 — the firmware
+             identifies the vault group by matching Input 0's PREVIOUS_TXID against
+             vault_compute_pegin_txid (see _validate_nopayout's N-02 dedup comment).
     Inputs 1, 2: ChallengeAssert connectors — WITNESS_UTXO only (device ignores script).
     Output 0: P2TR(key-path-tweak(challenger_pk)) — device verifies this exact scriptPubKey.
+
+    keeper_pks / challenger_pks must match the intent approved via _setup_payout_state /
+    _setup_s2_state (they determine the Vault UTXO scriptPubKey and hence the PegIn txid).
     """
+    if keeper_pks is None:
+        keeper_pks = _TEST_KEEPER_PKS
+    if challenger_pks is None:
+        challenger_pks = _TEST_CHALLENGER_PKS
+    if vp_key is None:
+        vp_key = TEST_VP_KEY
+
+    vault_utxo_leaf = _vault_utxo_leaf(
+        depositor_pk, vp_key, keeper_pks, challenger_pks, pegin_csv_timelock,
+    )
+    claim_leaf = _depositor_claim_leaf(depositor_pk)
+    vault_utxo_spk = _p2tr_from_single_leaf(vault_utxo_leaf)
+    claim_spk = _p2tr_from_single_leaf(claim_leaf)
+    computed_pegin_txid = _compute_pegin_txid(
+        prepegin_txid, htlc_vout, vault_amount, vault_utxo_spk,
+        depositor_claim_value, claim_spk,
+    )
+
     nopayout_leaf = bytes([0x20]) + depositor_pk + bytes([0xAD, 0x20]) + challenger_pk + bytes([0xAC])
     assert len(nopayout_leaf) == 68, f"NoPayout leaf must be exactly 68 bytes, got {len(nopayout_leaf)}"
 
@@ -2963,9 +2998,11 @@ def _build_nopayout_psbt(depositor_pk: bytes, challenger_pk: bytes) -> PSBT:
     tx.nVersion = 2
     tx.nLockTime = 0
     tx.vin = [CTxIn(), CTxIn(), CTxIn()]
-    for i, fill in enumerate([b'\xcc', b'\xdd', b'\xee']):
-        tx.vin[i].prevout = COutPoint(int.from_bytes(fill * 32, 'little'), 0)
-        tx.vin[i].nSequence = 0xFFFFFFFF
+    tx.vin[0].prevout = COutPoint(int.from_bytes(computed_pegin_txid, 'little'), 0)
+    tx.vin[0].nSequence = 0xFFFFFFFF
+    for i, fill in enumerate([b'\xdd', b'\xee']):
+        tx.vin[1 + i].prevout = COutPoint(int.from_bytes(fill * 32, 'little'), 0)
+        tx.vin[1 + i].nSequence = 0xFFFFFFFF
     tx.vout = [CTxOut(1000, out_spk)]
     tx.wit = CTxWitness()
 
@@ -3023,12 +3060,13 @@ def test_sign_psbt_nopayout_cap_exhausted(
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
         client.sign_psbt(psbt, dummy_wallet, None)
 
-    # Replay of an already-signed slot → dedup bit set → SW_INCORRECT_DATA.
-    # The dedup check fires in _validate_nopayout before the flat cap counter is checked.
+    # One more exceeds the cap → SW_CAP_EXCEEDED, even though this exact slot was already
+    # signed. The cap check in _validate_nopayout runs before the dedup check specifically
+    # so that dedup can't mask a cap-exceeded condition.
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+    assert exc.value.status == SW_CAP_EXCEEDED
 
 
 def test_sign_psbt_nopayout_32_challengers(
@@ -3070,7 +3108,8 @@ def test_sign_psbt_nopayout_32_challengers(
 
     # Sign with the last challenger key — the device must walk all 33 entries to find it.
     # NoPayout is silent — no display, no navigator interaction required.
-    psbt = _build_nopayout_psbt(dep_pk, challenger_pks[-1])
+    psbt = _build_nopayout_psbt(dep_pk, challenger_pks[-1],
+                                keeper_pks=keeper_pks, challenger_pks=challenger_pks)
     result = client.sign_psbt(psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
@@ -4161,14 +4200,16 @@ def test_sign_psbt_cap_recovery_via_new_intent(
     bitcoin_network: str,
     device,
 ) -> None:
-    """NoPayout dedup and context recovery: re-approving a fresh intent resets all counters.
+    """Exhausting the NoPayout cap nullifies the intent; re-approving resets all counters.
 
     Steps:
     1. Load intent and advance to payout state (pegin_signed=1).
-    2. Sign all NoPayout slots (vault_count × (K+C) = 1 × 2 = 2 signings).
-    3. Replay an already-signed slot → SW_INCORRECT_DATA (dedup bit set; context not nullified).
-    4. Re-derive and re-approve a fresh intent (DERIVE_CONTEXT_HASH invalidates the old context).
-    5. Sign one NoPayout → SW_OK (dedup mask and cap counters reset).
+    2. Exhaust NoPayout cap (vault_count × (K+C) = 1 × 2 = 2 signings).
+    3. One more NoPayout → SW_CAP_EXCEEDED (intent nullified) — the cap check in
+       _validate_nopayout runs before the dedup check, so this fires even though the
+       slot being replayed was already signed.
+    4. Re-derive and re-approve a fresh intent.
+    5. Sign one NoPayout → SW_OK (cap counters reset).
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -4181,13 +4222,11 @@ def test_sign_psbt_cap_recovery_via_new_intent(
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
         client.sign_psbt(psbt, dummy_wallet, None)
 
-    # Step 3: replay of an already-signed slot → dedup bit set → SW_INCORRECT_DATA.
-    # Context is not nullified here; the subsequent DERIVE_CONTEXT_HASH in step 4
-    # invalidates it before the fresh intent is loaded.
+    # Step 3: exceed cap → intent nullified (no screen shown before SW_CAP_EXCEEDED).
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+    assert exc.value.status == SW_CAP_EXCEEDED
 
     # Step 4: re-approve a fresh intent (also advances through PegIn to reach payout state).
     _setup_payout_state(client, navigator, device, coin_type)

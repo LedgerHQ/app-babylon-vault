@@ -25,7 +25,7 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
     if device.is_nano:
         return 1 + 6 + 7 * extra + 4 * challenger_count + 7
     if device.name == "stax":
-        return 1 + 2 + 1 + 2 * extra + challenger_count + 2
+        return 1 + 1 + 1 + 2 * extra + challenger_count + 2
     return 1 + 2 + 1 + 2 * extra + 2 * challenger_count + 2
 
 
