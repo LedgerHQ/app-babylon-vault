@@ -2084,11 +2084,11 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     {
         uint8_t psbt_txid[VAULT_HASH256_LEN];
         if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
-                                                                &input_map,
-                                                                (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
-                                                                1,
-                                                                psbt_txid,
-                                                                VAULT_HASH256_LEN)) {
+                                                               &input_map,
+                                                               (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                               1,
+                                                               psbt_txid,
+                                                               VAULT_HASH256_LEN)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
