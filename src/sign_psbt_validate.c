@@ -3555,18 +3555,26 @@ bool validate_and_display_transaction(
         leaf[33] == (uint8_t) OP_CHECKSIGVERIFY) {
         /* WC: <D> OP_CHECKSIGVERIFY OP_SIZE ... */
         if (leaf[34] == (uint8_t) OP_SIZE) return _validate_display_wc(dc, st);
-        /* Assert: variable-length leaf; byte 34 is OP_PUSHBYTES_32 (first challenger key
-         * prefix), distinguishing it from Refund (<T> push: 0x01/0x02) and WC (OP_SIZE).
-         * Real leaf is ~11.6 KB (btc-vault claim_assert.rs) and terminates with OP_TRUE.
+        /* Assert: variable-length leaf, ~11.6 KB in practice (btc-vault claim_assert.rs).
          *
-         * The length and terminator are part of the discriminator, not decoration: the
-         * NoPayout leaf (VAULT_NOPAYOUT_LEAF_LEN bytes, <D> OP_CHECKSIGVERIFY <Cj>
-         * OP_CHECKSIG) shares this exact 35-byte prefix.  Without them, an Assert:0 UTXO
-         * re-presented as a 1-in/1-out PSBT would route here instead of to
-         * _validate_nopayout and be signed with no cap, no per-(group, challenger) dedup
-         * and no intent binding.  HLD "Standalone transactions": leaf patterns MUST remain
-         * mutually exclusive. */
-        if (leaf_len > (int) VAULT_NOPAYOUT_LEAF_LEN && leaf_last == (uint8_t) OP_TRUE)
+         * All three conjuncts are load-bearing.  This is the app's weakest validator — no
+         * signing cap, no dedup, no intent binding, no output enforcement, and the screen
+         * shows no destination — so it must match the Assert pattern only and never act as
+         * a catch-all.  HLD "Standalone transactions": patterns MUST remain mutually
+         * exclusive, and a PSBT matching no pattern MUST be rejected.
+         *   byte 34 == OP_PUSHBYTES_32 (the first challenger key's push): without it any
+         *     <D> OP_CHECKSIGVERIFY <free bytes> OP_TRUE leaf lands here, and one whose
+         *     middle is a no-op is spendable with nothing but the depositor signature this
+         *     path hands out.
+         *   length > VAULT_NOPAYOUT_LEAF_LEN and terminal OP_TRUE: keep the 68-byte
+         *     NoPayout leaf out — it shares this whole 35-byte prefix and differs only in
+         *     length and its terminal OP_CHECKSIG, and here it would be signed with no cap
+         *     and no per-(group, challenger) dedup.
+         * Every real leaf satisfies byte 34: generate_assert_script emits the challenger
+         * multisig directly after <claimer> OP_CHECKSIGVERIFY, and a multisig group always
+         * begins with a 32-byte key push. */
+        if (leaf_len > (int) VAULT_NOPAYOUT_LEAF_LEN && leaf[34] == OP_PUSHBYTES_32 &&
+            leaf_last == (uint8_t) OP_TRUE)
             return _validate_display_assert(dc, st);
         /* Refund: <D> OP_CHECKSIGVERIFY <T(1-2 bytes)> OP_CSV */
         if (leaf_last == (uint8_t) OP_CSV) return _validate_display_refund(dc, st);

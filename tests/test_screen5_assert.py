@@ -488,6 +488,43 @@ def test_sign_psbt_assert_leaf_over_stream_cap_is_rejected(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_sign_psbt_assert_spendable_catchall_leaf_is_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A `<D> OP_CHECKSIGVERIFY <no-ops> OP_TRUE` leaf must not route to Assert.
+
+    _validate_display_assert is the weakest validator in the app — no signing cap, no
+    dedup, no intent binding, no output enforcement, and Screen 5 shows no destination.
+    So it must match the Assert pattern only, never act as a catch-all: the HLD requires
+    standalone leaf patterns to stay mutually exclusive and a PSBT matching no pattern to
+    be rejected.
+
+    This leaf is the dangerous shape specifically, not merely an unrecognised one: byte 34
+    is OP_NOP rather than the challenger key's OP_PUSHBYTES_32, and the body is all no-ops,
+    so the script is satisfied by the depositor signature alone — exactly the signature
+    this path would hand out.  Regression guard for a router that required only
+    `leaf_len > 68 && last == OP_TRUE`, which admitted it.
+    """
+    fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
+    psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
+    # 0x20 <D> OP_CHECKSIGVERIFY then 34 x OP_NOP then OP_TRUE = 69 bytes.
+    # byte 34 = 0x61 (OP_NOP): not OP_SIZE so not WC, not OP_PUSHBYTES_32 so not Assert.
+    catchall_leaf = (
+        bytes([0x20]) + leaf_key + bytes([0xAD])
+        + bytes([0x61] * 34)
+        + bytes([0x51])
+    )
+    assert len(catchall_leaf) == 69 and catchall_leaf[34] == 0x61
+    assert len(catchall_leaf) > 68 and catchall_leaf[-1] == 0x51, "must clear the other two conjuncts"
+    _rebuild_assert_commitment(psbt, fingerprint, leaf_key, coin_type, catchall_leaf, 5_000_000)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_sign_psbt_assert_nopayout_shaped_leaf_is_rejected(
     client: "RaggerClient",
     bitcoin_network: str,

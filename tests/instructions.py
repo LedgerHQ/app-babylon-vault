@@ -103,7 +103,7 @@ def vault_intent_reject_instructions(device: Device, n_steps: int) -> List[NavIn
 def vault_intent_approve_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
     """Return (navigate_instruction, validation_instructions, search_text) to approve.
 
-    Touch: SWIPE_CENTER_TO_LEFT until "Hold to sign", USE_CASE_REVIEW_CONFIRM (3 s hold),
+    Touch: SWIPE_CENTER_TO_LEFT to the finish page, USE_CASE_REVIEW_CONFIRM (3 s hold),
            then USE_CASE_STATUS_DISMISS for the "Operation signed" status screen.
     Nano:  RIGHT_CLICK until our custom finishTitle "Approve intent?" appears, BOTH_CLICK.
            No status dismiss needed — Nano NBGL auto-dismisses the status.
@@ -114,9 +114,16 @@ def vault_intent_approve_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], 
         return (NavInsID.RIGHT_CLICK,
                 [NavInsID.BOTH_CLICK],
                 r"^Approve intent\?$")
+    # Match the app's own finishTitle, not the SDK's "Hold to sign" long-press label:
+    # that label is not extractable on Stax, so searching for it walks off the end of the
+    # review and times out.  Every other nav helper here keys off the app title for the
+    # same reason (see derive_context_hash_nav).  On touch VAULT_INTENT_FINISH_TITLE is
+    # "Approve vault\nintent?", so the first rendered line is "Approve vault"; left
+    # unanchored so it matches whether Speculos reports the two lines separately or joined.
+    # No collision with the review intro title ("...to approve vault..." — lowercase).
     return (NavInsID.SWIPE_CENTER_TO_LEFT,
             [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS],
-            "^Hold to sign$")
+            "Approve vault")
 
 
 # Step counts for the DERIVE_CONTEXT_HASH approval screen.
@@ -174,16 +181,18 @@ def vault_intent_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], s
     The count-based vault_intent_reject_instructions has to be recalibrated whenever NBGL
     repacks pairs per page; this walks to the final page by text instead.
 
-    Touch: SWIPE until "Hold to sign", USE_CASE_REVIEW_REJECT, then USE_CASE_CHOICE_CONFIRM.
+    Touch: SWIPE to the finish page, USE_CASE_REVIEW_REJECT, then USE_CASE_CHOICE_CONFIRM.
     Nano:  RIGHT_CLICK until "Reject operation", BOTH_CLICK to confirm.
     """
     if device.is_nano:
         return (NavInsID.RIGHT_CLICK,
                 [NavInsID.BOTH_CLICK],
                 r"^Reject operation$")
+    # Keys off the app's finishTitle rather than the SDK long-press label — see
+    # vault_intent_approve_nav for why "Hold to sign" cannot be used on touch.
     return (NavInsID.SWIPE_CENTER_TO_LEFT,
             [NavInsID.USE_CASE_REVIEW_REJECT, NavInsID.USE_CASE_CHOICE_CONFIRM],
-            "^Hold to sign$")
+            "Approve vault")
 
 
 def derive_context_hash_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
