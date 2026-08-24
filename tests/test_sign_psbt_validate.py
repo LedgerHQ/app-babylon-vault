@@ -55,10 +55,6 @@ from .vault_client import (
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
 )
-from .instructions import (
-    vault_intent_steps,
-    vault_intent_steps_for_keys,
-)
 
 HARDENED = 0x80000000
 VAULT_NUMS_XONLY = bytes.fromhex(
@@ -3095,13 +3091,10 @@ def test_sign_psbt_nopayout_32_challengers(
     # Deterministic step count avoids the Flex/Apex swipe-animation race that can occur
     # with navigate_until_text when there are many keys (33 here: 1 keeper + 32 challengers).
     # Nano and Stax are not affected by this race; leave them with text-based navigation.
-    total_keys = len(keeper_pks) + len(challenger_pks)
-    n_swipes = (None if (device.is_nano or device.name == "stax")
-                else vault_intent_steps_for_keys(device, total_keys))
-
+    # Setup only, no snapshots — navigate until "Hold to sign" instead of pinning a swipe
+    # count, which would need recalibrating every time NBGL repacks pairs per page.
     hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID,
-                               keeper_pks=keeper_pks, challenger_pks=challenger_pks,
-                               n_swipes=n_swipes)
+                               keeper_pks=keeper_pks, challenger_pks=challenger_pks)
     pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, _PREPEGIN_TXID,
                                    keeper_pks=keeper_pks, challenger_pks=challenger_pks)
     client.sign_psbt(pegin_psbt, dummy_wallet, None)
@@ -4325,15 +4318,14 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
         )
         for gi in range(_V)
     ]
-    # Touch devices need a deterministic swipe count that covers 10 vault group screens;
-    # vault_intent_steps accounts for vault_count, unlike vault_intent_steps_for_keys.
-    # Nano uses navigate_until_text (n_swipes=None).
-    n_swipes = None if device.is_nano else vault_intent_steps(device, _V, _C)
+    # Intent approval here is setup, not the assertion, and no snapshots are captured, so
+    # navigate until "Hold to sign" rather than pinning a swipe count.  A fixed count has
+    # to be recalibrated whenever NBGL repacks pairs per page — which it did when
+    # SKIPPABLE_OPERATION was removed from the intent review, freeing header space.
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,
         groups=groups_tlv,
-        n_swipes=n_swipes,
     )
 
     # Sign PegIn for group 0 (htlc_vout=0) to advance pegin_signed to 1.

@@ -138,17 +138,19 @@ static int _read_output_varlen(dispatcher_context_t *dc,
  * ---------------------------------------------------------------------- */
 
 /* -------------------------------------------------------------------------
- * Streaming read of an oversized TAP_LEAF_SCRIPT value
+ * Streaming read of a TAP_LEAF_SCRIPT value
  *
- * Real Assert leaves are 11.5-13.6 KB (btc-vault claim_assert.rs) against a
- * VAULT_SCRIPT_MAX_LEN read buffer, so they cannot be buffered.  They do not need to
- * be: the only things the device requires from an Assert leaf are its TapLeaf hash
- * (to verify the taproot commitment), its 35-byte prefix (shape discriminator and the
- * <D> key), its length, and its terminating opcode.  All four are obtainable in a
- * single pass, in constant memory.
+ * Every standalone leaf is read this way, whatever its size.  Real Assert leaves are
+ * 11.5-13.6 KB (btc-vault claim_assert.rs) against a VAULT_SCRIPT_MAX_LEN buffer, so
+ * they cannot be buffered — and they need not be: the only things the device requires
+ * from an Assert leaf are its TapLeaf hash (to verify the taproot commitment), its
+ * 35-byte prefix (shape discriminator and the <D> key), its length, and its terminating
+ * opcode.  All four are obtainable in a single pass, in constant memory.  Scripts that
+ * do fit are additionally buffered into tls.leaf_script, so the flows that compare a
+ * leaf byte-for-byte against a reconstruction are unaffected.
  *
- * call_stream_preimage hash-verifies the complete preimage exactly as the buffered
- * path does, so a streamed leaf is no less trustworthy than a buffered one.
+ * call_stream_preimage hash-verifies the complete preimage exactly as the buffered path
+ * does, so a streamed leaf is no less trustworthy than a buffered one.
  *
  * Chunk boundaries are host-chosen and may split the prefix or land anywhere relative
  * to the trailing leaf-version byte, so the callback tracks absolute offsets rather
@@ -172,6 +174,9 @@ static void _leaf_stream_len_cb(size_t value_len, void *opaque) {
     ctx->value_len = (uint32_t) value_len;
     ctx->script_len = (uint32_t) value_len - 1u;
     ctx->len_known = true;
+    /* The length arrives before any data, so whether the script can be buffered is known
+     * up front — no partial buffer is ever left behind. */
+    G_leaf_meta.buffered = ctx->script_len <= VAULT_SCRIPT_MAX_LEN;
     vault_taproot_leaf_hash_stream_init(&ctx->tls->leaf_hash_ctx, ctx->script_len);
 }
 
@@ -194,6 +199,12 @@ static void _leaf_stream_data_cb(buffer_t *buf, void *opaque) {
         if (n_script > n) n_script = n;
         vault_taproot_leaf_hash_stream_update(&ctx->tls->leaf_hash_ctx, p, n_script);
 
+        /* Buffer the script itself when it fits, so flows that compare it byte-for-byte
+         * against a reconstruction still work. */
+        if (G_leaf_meta.buffered) {
+            memcpy(ctx->tls->leaf_script + ctx->seen, p, n_script);
+        }
+
         /* Capture the shape-discriminator prefix. */
         if (ctx->seen < VAULT_LEAF_PREFIX_LEN) {
             size_t n_prefix = VAULT_LEAF_PREFIX_LEN - ctx->seen;
@@ -212,8 +223,8 @@ static void _leaf_stream_data_cb(buffer_t *buf, void *opaque) {
     ctx->seen += n;
 }
 
-/* On success fills G_leaf_meta (hash, prefix, last_byte, buffered = false) plus
- * tls.leaf_version and tls.leaf_script_len. */
+/* On success fills G_leaf_meta (hash, prefix, last_byte, buffered) plus tls.leaf_version,
+ * tls.leaf_script_len, and — when the script fits — tls.leaf_script. */
 static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
                                    tap_leaf_script_state_t *state,
                                    const merkleized_map_commitment_t *map_commitment,
@@ -237,7 +248,6 @@ static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
 
     vault_taproot_leaf_hash_stream_final(&state->leaf_hash_ctx, G_leaf_meta.hash);
     state->leaf_script_len = (int) ctx.script_len;
-    G_leaf_meta.buffered = false;
     return true;
 }
 
@@ -283,55 +293,23 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     const uint8_t *full_key = data->ptr + full_key_start;
     size_t full_key_len = 1 + cb_len;
 
-    /* Use leaf_check.actual_buf (union offset VAULT_SCRIPT_MAX_LEN) as the read buffer.
-     * G_scratch.tls (state) occupies union offsets 0..~2830; actual_buf starts at 2560
-     * so it only aliases the tail of tls.leaf_script and tls.leaf_script_len/leaf_version —
-     * fields that haven't been set yet.  Write leaf_version/leaf_script_len AFTER the
-     * memcpy so we don't corrupt the source before copying it. */
-    uint8_t *const value_buf = G_scratch.leaf_check.actual_buf;
-    int value_len = call_get_merkleized_map_value(dc,
-                                                  map_commitment,
-                                                  full_key,
-                                                  full_key_len,
-                                                  value_buf,
-                                                  sizeof(G_scratch.leaf_check.actual_buf));
-    if (value_len == -4) {
-        /* -4 is specifically "value larger than the output buffer" (propagated verbatim
-         * from call_get_merkle_preimage).  The value is never partially read: that path
-         * either fits it whole or errors.  A leaf this large is the real Assert leaf, so
-         * hash it by streaming instead of buffering it. */
-        if (!_stream_tap_leaf_value(dc, state, map_commitment, full_key, full_key_len)) {
-            state->ambiguous = true;
-        }
-        return;
-    }
-    if (value_len < 2) {
-        /* Read failed, or the value is too short to be <script> || <version>. */
+    /* The value is always read by streaming, never with call_get_merkleized_map_value.
+     *
+     * A buffered read cannot be used as the primary path with a streaming fallback for
+     * oversized values: call_get_merkle_preimage decides the value is too large right
+     * after the first GET_PREIMAGE response and returns -4 *without draining the rest*,
+     * leaving the host client's element queue full.  The next client command that needs
+     * an empty queue (GET_MERKLE_LEAF_PROOF) then fails, so the aborted read corrupts the
+     * protocol state rather than merely wasting a round-trip.
+     *
+     * Streaming has no such abort: it consumes the whole value, hash-verifies the
+     * complete preimage exactly as the buffered path does, and buffers the script into
+     * tls.leaf_script when it fits.  Chunks are written straight into leaf_script (union
+     * offset 262), which no longer needs leaf_check.actual_buf as an intermediate — so
+     * the old memmove-overlap hazard is gone too. */
+    if (!_stream_tap_leaf_value(dc, state, map_commitment, full_key, full_key_len)) {
         state->ambiguous = true;
-        return;
     }
-    /* Save leaf_version before writing to tls fields that alias actual_buf. */
-    uint8_t leaf_version = value_buf[value_len - 1];
-    int leaf_script_len = value_len - 1;
-    if (leaf_script_len > (int) VAULT_SCRIPT_MAX_LEN) {
-        state->ambiguous = true;
-        return;
-    }
-    if (leaf_script_len > 0) {
-        /* tls.leaf_script (union+262) and actual_buf (union+2560) overlap when
-         * leaf_script_len > 2298 — use memmove to stay defined in that case. */
-        memmove(state->leaf_script, value_buf, leaf_script_len);
-    }
-    state->leaf_script_len = leaf_script_len;
-    state->leaf_version = leaf_version;
-    G_leaf_meta.buffered = true;
-    G_leaf_meta.last_byte = state->leaf_script[leaf_script_len - 1];
-    memset(G_leaf_meta.prefix, 0, sizeof(G_leaf_meta.prefix));
-    memcpy(G_leaf_meta.prefix,
-           state->leaf_script,
-           leaf_script_len < (int) VAULT_LEAF_PREFIX_LEN ? (size_t) leaf_script_len
-                                                         : VAULT_LEAF_PREFIX_LEN);
-    vault_taproot_leaf_hash(state->leaf_script, leaf_script_len, G_leaf_meta.hash);
 }
 
 /* Guard for consumers that compare the leaf byte-for-byte against a script they

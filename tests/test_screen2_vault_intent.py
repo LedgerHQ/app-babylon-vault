@@ -158,14 +158,16 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
 
 
 # ---------------------------------------------------------------------------
-# Skip flow (streaming review): keeper/challenger keys are skippable
+# Asymmetric keeper/challenger counts (full review — nothing is skippable)
 # ---------------------------------------------------------------------------
 
-# 4 keepers + 3 challengers = 7 keys (245 B) — fits a single P1=0x02 key batch and
-# gives a multi-page keys segment to skip.  TEST_VALID_KEYS is sorted ascending, so
-# each slice is in the strict per-group ascending order the firmware requires.
-_SKIP_KEEPERS = TEST_VALID_KEYS[0:4]
-_SKIP_CHALLENGERS = TEST_VALID_KEYS[4:7]
+# 4 keepers + 3 challengers = 7 keys (245 B) — fits a single P1=0x02 key batch and gives
+# a multi-page keys segment.  The odd total is deliberate: it is the only case that
+# exercises the round-up when keys are packed 2 per page on touch.  TEST_VALID_KEYS is
+# sorted ascending, so each slice is in the strict per-group ascending order the
+# firmware requires.
+_ASYM_KEEPERS = TEST_VALID_KEYS[0:4]
+_ASYM_CHALLENGERS = TEST_VALID_KEYS[4:7]
 
 
 def _scalars_4k3c(bitcoin_network: str) -> bytes:
@@ -178,8 +180,8 @@ def _scalars_4k3c(bitcoin_network: str) -> bytes:
         htlc_refund_timelock=144,
         prepegin_txid=bytes(range(32)),
         depositor_path=depositor_path(ct),
-        keeper_count=len(_SKIP_KEEPERS),
-        challenger_count=len(_SKIP_CHALLENGERS),
+        keeper_count=len(_ASYM_KEEPERS),
+        challenger_count=len(_ASYM_CHALLENGERS),
         prepegin_max_fee=500_000,
         vault_count=1,
     )
@@ -198,9 +200,12 @@ def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navig
     streaming review, so it could not be limited to the vault-group segments while
     keeping the keeper/challenger key list mandatory.
 
-    The asymmetric 4-keeper / 3-challenger fixture is kept — it is the only intent test
-    with unequal counts, so it exercises `vault_intent_steps_for_keys` rather than the
-    equal-counts formula.  Approval returns SW_OK, so no exception is expected.
+    The asymmetric 4-keeper / 3-challenger fixture is kept: it is the only intent test
+    with unequal counts, so it is the only one that must call vault_intent_steps_for_keys
+    directly.  vault_intent_steps is a thin wrapper over that same function for the
+    symmetric case, so both share one calibrated step count — an odd key total also makes
+    this the only test that exercises the round-up in the keys-per-page division.
+    Approval returns SW_OK, so no exception is expected.
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
     client.transport_client.exchange(
@@ -223,8 +228,8 @@ def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navig
         ins=INS_APPROVE_VAULT_INTENT,
         p1=P1_KEY_BATCH,
         p2=P2_UNUSED,
-        data=(b"".join(_ktlv(TAG_KEEPER_PK, k) for k in _SKIP_KEEPERS) +
-              b"".join(_ktlv(TAG_CHALLENGER_PK, k) for k in _SKIP_CHALLENGERS)),
+        data=(b"".join(_ktlv(TAG_KEEPER_PK, k) for k in _ASYM_KEEPERS) +
+              b"".join(_ktlv(TAG_CHALLENGER_PK, k) for k in _ASYM_CHALLENGERS)),
     ):
         navigator.navigate_and_compare(
             path=ROOT_SCREENSHOT_PATH,
@@ -232,7 +237,7 @@ def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navig
             instructions=vault_intent_approve_instructions(
                 device,
                 vault_intent_steps_for_keys(
-                    device, len(_SKIP_KEEPERS) + len(_SKIP_CHALLENGERS)
+                    device, len(_ASYM_KEEPERS) + len(_ASYM_CHALLENGERS)
                 ),
             ),
             screen_change_before_first_instruction=True,

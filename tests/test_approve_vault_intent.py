@@ -23,7 +23,8 @@ from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
-from .instructions import vault_intent_steps, vault_intent_reject_instructions
+from .instructions import (vault_intent_steps, vault_intent_reject_instructions,
+                           vault_intent_reject_nav)
 from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
@@ -800,7 +801,9 @@ def test_user_rejects_intent_approval(client: RaggerClient, navigator: Navigator
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
-    n_steps = vault_intent_steps(device, 1, 1)
+    # No snapshots here, so walk to the final page by text rather than by swipe count —
+    # the count changes whenever NBGL repacks pairs per page.
+    nav_instr, reject_instrs, search_text = vault_intent_reject_nav(device)
     with pytest.raises(ExceptionRAPDU) as exc:
         with client.transport_client.exchange_async(
             cla=CLA_VAULT,
@@ -809,9 +812,11 @@ def test_user_rejects_intent_approval(client: RaggerClient, navigator: Navigator
             p2=P2_UNUSED,
             data=payload,
         ):
-            navigator.navigate(
-                vault_intent_reject_instructions(device, n_steps),
-                screen_change_before_first_instruction=True,
+            navigator.navigate_until_text(
+                navigate_instruction=nav_instr,
+                validation_instructions=reject_instrs,
+                text=search_text,
+                screen_change_before_first_instruction=False,
             )
     assert exc.value.status == SW_DENY
 
