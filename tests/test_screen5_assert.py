@@ -66,28 +66,37 @@ def _build_assert_psbt(
 ) -> PSBT:
     """Build an Assert PSBTv0 for Screen 5.
 
-    Uses a synthetic 68-byte leaf that matches the Assert routing prefix:
-        OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY OP_PUSHBYTES_32 <key[32]> OP_CSV
+    Uses a synthetic leaf that reproduces the real Assert leaf's *shape* at a size that
+    fits the device read buffer:
+        OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY
+        OP_PUSHBYTES_32 <key[32]> OP_CHECKSIG OP_1 OP_NUMEQUALVERIFY
+        OP_TRUE
 
-    The device dispatches to Screen 5 when leaf[34] == OP_PUSHBYTES_32 (first byte
-    of the challenger multisig) and leaf[33] == OP_CHECKSIGVERIFY.  D is verified
-    via TAP_BIP32_DERIVATION (BIP-86 path).
+    The router dispatches to Screen 5 on leaf[33] == OP_CHECKSIGVERIFY and
+    leaf[34] == OP_PUSHBYTES_32 (first byte of the challenger multisig), plus a length
+    strictly greater than the 68-byte NoPayout leaf and an OP_TRUE terminator.  Those
+    last two are load-bearing, not cosmetic: the NoPayout leaf shares the whole 35-byte
+    prefix, so without them an Assert:0 UTXO in a 1-in/1-out PSBT would be signed down
+    the Assert path with no cap and no dedup.  D is verified via TAP_BIP32_DERIVATION
+    (BIP-86 path).
 
-    The real Assert leaf is ~11.6 KB (btc-vault claim_assert.rs).  This synthetic
-    leaf fits in the read buffer so the taproot commitment IS verified.  Real-leaf
-    vectors will be provided by S-08.
+    Real Assert leaves are 11,526-13,636 bytes (btc-vault claim_assert.rs) and do NOT
+    fit the read buffer, so no real Assert is signable yet (L-11).  This synthetic leaf
+    fits, so the taproot commitment IS verified.
     The claim txid comes from tx.vin[0].prevout.hash (PSBTv0).
     """
     assert len(claim_txid) == 32
 
-    # Synthetic Assert leaf: OP_PUSHBYTES_32 D(32B) OP_CHECKSIGVERIFY OP_PUSHBYTES_32 key(32B) OP_CSV
-    # Byte 34 == OP_PUSHBYTES_32 (0x20) satisfies the Assert routing check.
+    # Synthetic Assert leaf, real shape: 35-byte prefix, a 1-of-1 challenger "multisig",
+    # and the OP_TRUE terminator the WOTS verifier body ends with.
     assert_leaf = (
-        bytes([0x20]) + leaf_key
-        + bytes([0xAD, 0x20]) + _ASSERT_INNER_KEY
-        + bytes([0xB2])
+        bytes([0x20]) + leaf_key + bytes([0xAD])           # OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY
+        + bytes([0x20]) + _ASSERT_INNER_KEY + bytes([0xAC])  # OP_PUSHBYTES_32 <C> OP_CHECKSIG
+        + bytes([0x51, 0x9D])                               # OP_1 OP_NUMEQUALVERIFY
+        + bytes([0x51])                                     # OP_TRUE
     )
-    assert len(assert_leaf) == 68
+    assert len(assert_leaf) == 71
+    assert len(assert_leaf) > 68 and assert_leaf[-1] == 0x51
 
     leaf_hash = _tapleaf_hash(assert_leaf)
     parity, tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
@@ -334,6 +343,89 @@ def test_sign_psbt_assert_unrecognized_leaf_shape(
     psbt.inputs[0].tap_bip32_paths = {
         leaf_key: (
             {bad_leaf_hash},
+            KeyOriginInfo(fingerprint, [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]),
+        )
+    }
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_assert_nopayout_shaped_leaf_is_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A NoPayout-shaped leaf presented as a 1-in Assert must be rejected.
+
+    The NoPayout leaf (`OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY OP_PUSHBYTES_32 <Cj>
+    OP_CHECKSIG`, 68 bytes) shares the Assert leaf's entire 35-byte prefix, and NoPayout
+    is routed only by transaction shape (3 inputs / 1 output).  So the same Assert:0 UTXO
+    re-presented in a 1-in/1-out PSBT must not be accepted down the Assert path, which
+    applies no signing cap, no per-(group, challenger) dedup and no intent binding.
+
+    The Assert router therefore requires a leaf longer than the NoPayout leaf and ending
+    in OP_TRUE.  HLD "Standalone transactions": leaf patterns MUST remain mutually
+    exclusive.  Regression guard for the reject->accept flip introduced when the router
+    was reduced to a single byte-34 test.
+    """
+    fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
+    psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
+    # Exactly the NoPayout leaf shape: byte 34 is OP_PUSHBYTES_32 (so the old single-byte
+    # router matched it) and the trailing byte is OP_CHECKSIG rather than OP_TRUE.
+    challenger_key = bytes([0x02] * 32)
+    nopayout_leaf = (
+        bytes([0x20]) + leaf_key + bytes([0xAD])      # OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY
+        + bytes([0x20]) + challenger_key + bytes([0xAC])  # OP_PUSHBYTES_32 <Cj> OP_CHECKSIG
+    )
+    assert len(nopayout_leaf) == 68, "NoPayout leaf must be 68 bytes"
+    # Build a self-consistent single-leaf NUMS commitment so the taproot commitment check
+    # cannot be what rejects it — the router must.
+    leaf_hash = _tapleaf_hash(nopayout_leaf)
+    parity, tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
+    psbt.inputs[0].witness_utxo = CTxOut(5_000_000, bytes([0x51, 0x20]) + tweaked)
+    psbt.inputs[0].tap_scripts = {
+        (nopayout_leaf, 0xC0): {bytes([0xC0 | parity]) + VAULT_NUMS_XONLY}
+    }
+    psbt.inputs[0].tap_bip32_paths = {
+        leaf_key: (
+            {leaf_hash},
+            KeyOriginInfo(fingerprint, [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]),
+        )
+    }
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_assert_leaf_without_op_true_terminator_is_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """An Assert-length leaf not ending in OP_TRUE is rejected.
+
+    Companion to the NoPayout-shape guard above: the real Assert leaf terminates with
+    OP_TRUE (btc-vault `claim_assert.rs`), so a leaf long enough to clear the NoPayout
+    length but with a different terminator matches no pattern.
+    """
+    fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
+    psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
+    # 35-byte Assert prefix, padded past 68 bytes, terminated with OP_CHECKSIG not OP_TRUE.
+    bad_leaf = (
+        bytes([0x20]) + leaf_key + bytes([0xAD])
+        + bytes([0x20]) + bytes([0x03] * 32)
+        + bytes([0x51] * 40)
+        + bytes([0xAC])
+    )
+    assert len(bad_leaf) > 68, "leaf must exceed the NoPayout length to reach the terminator check"
+    leaf_hash = _tapleaf_hash(bad_leaf)
+    parity, tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
+    psbt.inputs[0].witness_utxo = CTxOut(5_000_000, bytes([0x51, 0x20]) + tweaked)
+    psbt.inputs[0].tap_scripts = {(bad_leaf, 0xC0): {bytes([0xC0 | parity]) + VAULT_NUMS_XONLY}}
+    psbt.inputs[0].tap_bip32_paths = {
+        leaf_key: (
+            {leaf_hash},
             KeyOriginInfo(fingerprint, [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 0]),
         )
     }

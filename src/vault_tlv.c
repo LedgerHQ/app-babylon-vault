@@ -264,9 +264,9 @@ vault_tlv_err_t vault_tlv_parse_group(const uint8_t *data,
                 break;
 
             default:
-                /* Unknown tags are tolerated for forward compatibility; skip and continue. */
-                pos += field_len;
-                continue;
+                /* HLD "Intent parsing and binding": parsing must be canonical — no duplicate
+                 * tags, no unknown tags, no alternate encodings. */
+                return VAULT_TLV_ERR_UNKNOWN_TAG;
         }
 
         /* Enforce strictly ascending order (htlc_vout first); this also catches duplicates. */

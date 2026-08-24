@@ -222,9 +222,15 @@ static void handle_continuation_chunk(dispatcher_context_t *dc, const command_t 
         return;
     }
 
-    /* Defense-in-depth (N-05 / G#1): context_received_len must be a valid buffer
-     * offset even if G_scratch were somehow corrupted by another handler. */
-    if (G_derive_streaming.context_received_len > VAULT_CONTEXT_MAX_LEN) {
+    /* Defense-in-depth (N-05 / G#1): the streaming offsets must be self-consistent even
+     * if G_derive_streaming were somehow corrupted.  `received >= total` is the dangerous
+     * case, not just `received > VAULT_CONTEXT_MAX_LEN`: the `remaining` subtraction below
+     * is uint16_t, so `received > total` would wrap it to ~65535, let the `lc > remaining`
+     * check pass, and memcpy up to 255 bytes at an offset past the declared length.
+     * `received == total` is equally invalid here — the stream would already have been
+     * finalized — so this is a `>=`, not a `>`. */
+    if (G_derive_streaming.context_received_len >= G_derive_streaming.context_total_len ||
+        G_derive_streaming.context_total_len > VAULT_CONTEXT_MAX_LEN) {
         explicit_bzero(G_scratch.derive_ctx.context_buf, sizeof(G_scratch.derive_ctx.context_buf));
         vault_context_invalidate(&G_vault_context);
         G_derive_streaming.streaming_in_progress = false;

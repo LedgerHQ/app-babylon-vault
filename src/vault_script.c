@@ -639,36 +639,6 @@ bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
 }
 
 /* --------------------------------------------------------------------------
- * vault_build_assert0_payout_scriptpubkey
- *
- * P2TR scriptPubKey (34 bytes) for an Assert:0 Payout leaf treated as a
- * single-leaf taptree.  This does NOT match the Huffman-encoded multi-leaf
- * taptree that btc-vault produces on-chain; it is retained only for the
- * unit-test suite (test_all_scriptpubkeys_are_p2tr).  Do not use this
- * function for PSBT validation — the callback-based vault_read_payout_leaf_script
- * handles the actual multi-leaf control block correctly.
- * ----------------------------------------------------------------------- */
-
-bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
-                                             int group_idx,
-                                             int claimer_idx,
-                                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
-    uint8_t leaf_hash[VAULT_HASH256_LEN];
-
-    int len = vault_build_assert0_payout_leaf(intent,
-                                              group_idx,
-                                              claimer_idx,
-                                              G_scratch.script_scratch,
-                                              VAULT_SCRIPT_MAX_LEN);
-    if (len < 0) {
-        memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
-        return false;
-    }
-    vault_taproot_leaf_hash(G_scratch.script_scratch, len, leaf_hash);
-    return vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
-}
-
-/* --------------------------------------------------------------------------
  * vault_compute_pegin_txid
  *
  * Computes the SegWit txid of the PegIn transaction (double-SHA256 of the

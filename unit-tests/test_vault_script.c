@@ -324,10 +324,6 @@ static void test_all_scriptpubkeys_are_p2tr(void **state) {
     assert_true(vault_build_depositor_claim_scriptpubkey(&intent, spk));
     assert_int_equal(spk[0], OP_1);
     assert_int_equal(spk[1], OP_PUSHBYTES_32);
-
-    assert_true(vault_build_assert0_payout_scriptpubkey(&intent, 0, 0, spk));
-    assert_int_equal(spk[0], OP_1);
-    assert_int_equal(spk[1], OP_PUSHBYTES_32);
 }
 
 /** Different intents must produce different scriptpubkeys. */

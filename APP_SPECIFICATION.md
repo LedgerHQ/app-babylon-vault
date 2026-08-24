@@ -250,10 +250,11 @@ The depositor asserts the claim by spending a ClaimAssertConnector UTXO.
 | Input count | Exactly 1 |
 | Output count | Not enforced (host-provided connector tree) |
 | Version / locktime | ≥ 2 / 0 |
-| Input 0 leaf shape | Prefix (35 bytes): `OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY OP_PUSHBYTES_32`; variable total length |
+| Input 0 leaf shape | Prefix (35 bytes): `OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY OP_PUSHBYTES_32`; total length strictly greater than the NoPayout leaf (68 bytes); last byte `OP_TRUE` |
 | `<D>` key (prefix) | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path |
 | Remainder | WOTS verifier body + challenger multisig; content not verified by device |
-| Taproot commitment | Verified for leaves that fit in the read buffer (< `VAULT_SCRIPT_MAX_LEN`); skipped for larger leaves (real leaf is ~11.6 KB) |
+| Taproot commitment | Verified unconditionally (binds the unvalidated remainder to the spent scriptPubKey) |
+| Leaf size | A leaf that does not fit in the read buffer (`VAULT_SCRIPT_MAX_LEN`) is rejected. Real leaves are 11,526–13,636 bytes, so no real Assert is signable yet — see the note below |
 | Sighash | `SIGHASH_DEFAULT` only |
 | Fee | `inputs_total − outputs_total ≥ 0` |
 
@@ -265,7 +266,18 @@ OP_DEPTH <WOTS_witness_items> OP_EQUALVERIFY
 [WOTS verifier body for 4 big blocks]
 OP_TRUE
 ```
-Real leaf size is ~11.6 KB.
+Real leaf size is **11,526–13,636 bytes** (11,662 for the 3 local / 3 universal challenger
+configuration in `tests/vectors/depositor-as-claimer/assert.txt`). The body is fixed at compile
+time by `BIG_BLOCK_DIGIT_COUNTS = [64, 64]` and `ASSERT_WOTS_NUM_STREAMS = 1`; only the signer
+prefix varies with the challenger counts.
+
+> **L-11 open.** `VAULT_SCRIPT_MAX_LEN` is 2560 bytes and `call_get_merkle_preimage` returns an
+> error rather than a partial read for anything larger, so a real Assert leaf is rejected and no
+> real Assert transaction can be signed today. Closing this requires computing the tapleaf hash by
+> streaming the PSBT value (`call_stream_merkleized_map_value`) rather than buffering it — the
+> length arrives via the stream's length callback, the 35-byte prefix from the first chunk, and the
+> leaf version from the final byte. The device must not instead relax the taproot commitment check:
+> a host-chosen leaf length would then select whether verification runs.
 
 **User display:** claim txid (from `PSBT_IN_PREVIOUS_TXID`), amount carried (WITNESS_UTXO value), fee.
 

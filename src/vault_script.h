@@ -167,15 +167,6 @@ bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
                                               uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
 /**
- * @param group_idx    Index into intent->groups[]; selects which vault's VP key is used.
- * @param claimer_idx  0 = VP; 1..keeper_count = VK_i; keeper_count+1 = Depositor.
- */
-bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
-                                             int group_idx,
-                                             int claimer_idx,
-                                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
-
-/**
  * Compute the SegWit txid of the PegIn transaction from the loaded intent.
  *
  * @param group_idx    Index into intent->groups[]; selects per-vault amounts and htlc_vout.

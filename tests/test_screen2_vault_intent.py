@@ -46,9 +46,10 @@ from .vault_client import (
     _ktlv,
 )
 from .instructions import (
+    vault_intent_approve_instructions,
     vault_intent_reject_instructions,
-    vault_intent_skip_instructions,
     vault_intent_steps,
+    vault_intent_steps_for_keys,
 )
 
 ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
@@ -184,21 +185,23 @@ def _scalars_4k3c(bitcoin_network: str) -> bytes:
     )
 
 
-def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
-                            device: Device, bitcoin_network: str):
-    """Skip flow: view only the first screen of each segment, then skip to approval.
+def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navigator: Navigator,
+                                                   device: Device, bitcoin_network: str):
+    """The intent review must be paged through in full — there is no Skip affordance.
 
-    The streaming review makes the keeper/challenger key list skippable.  This
-    navigates intro → first params page → Skip (advances to keys) → Skip (jumps to
-    approval) → approve, capturing the short skip path as goldens (far fewer screens
-    than the full review).  Approval returns SW_OK, so no exception is expected.
+    Was `test_skip_intent_screen`, which navigated intro → first params page → Skip →
+    Skip → approve and captured that short path as goldens.  The Skip affordance has
+    since been removed from both phases of the intent review: every field shown here is
+    a displayed-and-approved field in the HLD's intent TLV table, and this approval is
+    the only anchor for the silent signing that follows it (Pre-PegIn signs with no
+    further screen), so none of it may be bypassed.  NBGL arms Skip for a whole
+    streaming review, so it could not be limited to the vault-group segments while
+    keeping the keeper/challenger key list mandatory.
 
-    Skip is touch-only: on nano the SDK interleaves a skip page after every screen,
-    so the firmware does not enable it there and this flow does not apply.
+    The asymmetric 4-keeper / 3-challenger fixture is kept — it is the only intent test
+    with unequal counts, so it exercises `vault_intent_steps_for_keys` rather than the
+    equal-counts formula.  Approval returns SW_OK, so no exception is expected.
     """
-    if device.is_nano:
-        pytest.skip("skip affordance is touch-only; nano uses the full review")
-
     derive_for_intent(client, navigator, device, bitcoin_network)
     client.transport_client.exchange(
         cla=CLA_VAULT,
@@ -225,7 +228,12 @@ def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
     ):
         navigator.navigate_and_compare(
             path=ROOT_SCREENSHOT_PATH,
-            test_case_name="screen2_vault_intent/skip_" + bitcoin_network,
-            instructions=vault_intent_skip_instructions(device),
+            test_case_name="screen2_vault_intent/asymmetric_keys_" + bitcoin_network,
+            instructions=vault_intent_approve_instructions(
+                device,
+                vault_intent_steps_for_keys(
+                    device, len(_SKIP_KEEPERS) + len(_SKIP_CHALLENGERS)
+                ),
+            ),
             screen_change_before_first_instruction=True,
         )

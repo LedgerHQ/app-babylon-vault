@@ -52,12 +52,14 @@ from .vault_client import (
     TAG_KEEPER_COUNT,
     TAG_KEEPER_PK,
     TAG_CHALLENGER_PK,
+    TAG_GRP_PEGIN_MAX_FEE,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     TEST_INVALID_XONLY_KEY,
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
     _ktlv,
+    _tlv_u64be,
 )
 
 HARDENED = 0x80000000
@@ -1069,8 +1071,40 @@ def test_vault_amount_below_min_rejected(client: RaggerClient, navigator: Naviga
 
 
 # ---------------------------------------------------------------------------
-# N-09: Group TLV parser coverage — claim-value dust floor, multi-record cursor walk
+# N-09: Group TLV parser coverage — unknown tag rejection, claim-value dust floor,
+#        multi-record cursor walk
 # ---------------------------------------------------------------------------
+
+def test_group_unknown_tag_is_rejected(client: RaggerClient, navigator: Navigator,
+                                       device: Device, bitcoin_network: str):
+    """An unknown 2-byte tag inside a group TLV must return SW_INCORRECT_DATA.
+
+    HLD "Intent parsing and binding" requires canonical TLV encoding: no duplicate
+    tags, no unknown tags, no alternate encodings — in the scalar (P1=0x00) and the
+    per-group (P1=0x01) payload alike.
+
+    The unknown tag is interleaved *before* the final mandatory field rather than
+    appended, because vault_tlv_parse_group stops as soon as all 6 mandatory fields
+    have been seen: a trailing tag is left for the next record and would instead be
+    rejected as a malformed second group, which would not exercise the unknown-tag
+    path at all.
+    """
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Valid group record, with an unknown tag (0xFFFF, len 1) spliced in ahead of
+    # the last mandatory field so the parser reaches it before completing the group.
+    pegin_max_fee_tlv = _tlv_u64be(TAG_GRP_PEGIN_MAX_FEE, 50_000)
+    group = _make_group()
+    assert group.endswith(pegin_max_fee_tlv), "group layout changed — update this test"
+    unknown_tag_tlv = bytes([0xFF, 0xFF, 0x01, 0x00])
+    group_with_unknown = group[: -len(pegin_max_fee_tlv)] + unknown_tag_tlv + pegin_max_fee_tlv
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, group_with_unknown)
+    assert exc.value.status == SW_INCORRECT_DATA
+
 
 def test_group_depositor_claim_value_below_dust_rejected(
     client: RaggerClient, navigator: Navigator, device: Device, bitcoin_network: str,

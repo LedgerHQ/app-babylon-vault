@@ -44,8 +44,8 @@ vault_tlv_err_t vault_tlv_parse(const uint8_t *data, size_t len, vault_intent_t 
  *
  * Accepts the 6 mandatory per-vault group tags (TAG_GRP_* namespace, 2-byte tags).
  * Stops as soon as all 6 fields have been seen; remaining bytes in the buffer are
- * left for the next call.  All 6 fields must be present; unknown tags are silently skipped
- * to allow forward-compatible protocol extensions (unlike vault_tlv_parse which rejects them).
+ * left for the next call.  All 6 fields must be present, in strictly ascending order;
+ * duplicate and unknown tags are rejected (canonical encoding, as for vault_tlv_parse).
  *
  * On success (VAULT_TLV_OK) all 6 wire fields of @p out are populated and
  * @p *consumed holds the number of bytes consumed from @p data.

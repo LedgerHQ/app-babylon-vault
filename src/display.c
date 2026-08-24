@@ -440,16 +440,17 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 //
 // The vault intent is reviewed in two streaming phases:
 //
-//   Phase 1 (non-skippable): intro → [params segment] → confirm
-//   Phase 2 (skippable):     intro → [vault groups] → [keys segment] → approve/reject
+//   Phase 1: intro → [params segment] → confirm
+//   Phase 2: intro → [vault groups] → [keys segment] → approve/reject
 //
-// Params (app name through refund timelock) are deliberately unskippable: the
-// NBGL SDK's SKIPPABLE_OPERATION flag applies to all segments of a streaming
-// review equally, so phases 1 and 2 are separate streaming reviews.  On touch,
-// phase 2 starts after params are confirmed; Skip in phase 2 jumps directly to
-// the approval page.  On nano there is no skip affordance (single streaming
-// review, no SKIPPABLE_OPERATION; non-NULL skipCallback would interleave a skip
-// page after every nano screen).
+// Neither phase is skippable.  Every field shown here is a displayed-and-approved
+// field in the HLD's intent TLV table, and this approval is the only anchor for the
+// silent signing that follows it (Pre-PegIn signs with no further screen), so no part
+// of it may be bypassed.  The two-phase split remains because the NBGL SDK's
+// SKIPPABLE_OPERATION flag applies to every segment of a streaming review equally:
+// keeping the phases separate means a future decision to make one of them skippable
+// does not silently make the other skippable too.  On nano there is no skip affordance
+// in any case (a non-NULL skipCallback would interleave a skip page after every screen).
 //
 // All intent data is already in G_vault_intent, so the whole chain is driven from
 // the choice/skip callbacks within a single io_ui_process() pump in
@@ -476,15 +477,6 @@ static void vault_stream_keys(void);
 static void vault_stream_finish(void);
 static void vault_stream_group(void);
 
-// Skip is touch-only. On nano, the SDK keys its skip page off a non-NULL
-// skipCallback (not off SKIPPABLE_OPERATION), so passing one would insert a skip
-// page before every screen even with the flag cleared — pass NULL there.
-#ifdef SCREEN_SIZE_WALLET
-#define VAULT_SKIP_CB(cb) (cb)
-#else
-#define VAULT_SKIP_CB(cb) NULL
-#endif
-
 static void vault_stream_reject(void) {
     set_ux_flow_response(false);
     nbgl_useCaseReviewStatus(STATUS_TYPE_OPERATION_REJECTED, ui_menu_main);
@@ -497,7 +489,7 @@ static void vault_stream_final_choice(bool approved) {
         ui_menu_main);
 }
 
-// After the keys segment (paged through) or its Skip: go to the approval page.
+// After the keys segment has been paged through: go to the approval page.
 static void vault_stream_finish(void) {
     nbgl_useCaseReviewStreamingFinish(VAULT_INTENT_FINISH_TITLE, vault_stream_final_choice);
 }
@@ -511,11 +503,10 @@ static void vault_after_keys(bool confirm) {
 }
 
 // After all vault groups are confirmed: show the keys segment.
-// Skip on keys → approval page directly.
 static void vault_stream_keys(void) {
-    nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list,
-                                           vault_after_keys,
-                                           VAULT_SKIP_CB(vault_stream_finish));
+    /* No skip callback: the keeper/challenger key list is the participant set the whole
+     * intent rests on, and must be reviewed in full. */
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list, vault_after_keys, NULL);
 }
 
 static void vault_after_group(bool confirm) {
@@ -562,9 +553,9 @@ static void vault_stream_group(void) {
     g_vault_grp_list.nbPairs = 6;
     g_vault_grp_list.nbMaxLinesForValue = 0;
 
-    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list,
-                                           vault_after_group,
-                                           VAULT_SKIP_CB(vault_stream_finish));
+    /* No skip callback: each group's vault amount, commission fee, depositor claim and
+     * PegIn fee are all displayed-and-approved fields (S-01 / Govard #5 / D7). */
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list, vault_after_group, NULL);
 }
 
 #ifdef SCREEN_SIZE_WALLET
@@ -589,7 +580,13 @@ static void vault_after_params(bool confirm) {
     }
     g_stream_vault_idx = 0;
 #ifdef SCREEN_SIZE_WALLET
-    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
+    /* Deliberately NOT SKIPPABLE_OPERATION.  Every field in this review is marked as
+     * displayed-and-approved by the HLD's intent TLV table, and this approval is the sole
+     * anchor for subsequent *silent* signing (Pre-PegIn signs with no further screen), so
+     * nothing here may be bypassed.  NBGL arms Skip for a whole streaming review and
+     * excludes per-page narrowing for STREAMING_NAV, so the flag cannot be limited to the
+     * vault-group segments while keeping the keeper/challenger key list mandatory. */
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION,
                                      &ICON_APP_ACTION,
                                      VAULT_INTENT_REVIEW_TITLE,
                                      NULL,
@@ -722,9 +719,8 @@ bool display_vault_intent(dispatcher_context_t *dc) {
         (uint8_t) (G_vault_intent.keeper_count + G_vault_intent.challenger_count);
     g_vault_keys_list.nbMaxLinesForValue = 0;
 
-    // Phase 1: non-skippable review for global parameters.  SKIPPABLE_OPERATION is
-    // intentionally absent — it would apply to all segments equally, including params.
-    // Phase 2 (touch only, started from vault_after_params) carries SKIPPABLE_OPERATION.
+    // Phase 1: review for global parameters.  SKIPPABLE_OPERATION is intentionally
+    // absent here and in phase 2 — see the file-header note.
     nbgl_useCaseReviewStreamingStart(TYPE_OPERATION,
                                      &ICON_APP_ACTION,
                                      VAULT_INTENT_REVIEW_TITLE,

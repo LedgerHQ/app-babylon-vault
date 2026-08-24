@@ -10,9 +10,9 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
     vault_count: total number of vaults (>= 1).
     challenger_count: number of challenger/keeper pairs (assumed equal).
 
-    On touch the review runs in two phases:
-      Phase 1 (non-skippable): intro(1) + params pages + confirm
-      Phase 2 (skippable):     intro(1) + vault-group pages + key pages
+    On touch the review runs in two phases, neither skippable:
+      Phase 1: intro(1) + params pages + confirm
+      Phase 2: intro(1) + vault-group pages + key pages
 
     Stax  (touch):  1 + 3(params) + 1(ph2 intro) + 2*(vault_count-1) + challenger_count + 2
     Flex/Apex (touch): 1 + 2(params) + 1(ph2 intro) + 2*(vault_count-1) + 2*challenger_count + 2
@@ -62,32 +62,13 @@ def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavI
     )
 
 
-def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
-    """Navigate through params (mandatory), then skip from the first vault group to approval.
-
-    Params are shown in a non-skippable phase-1 streaming review and must be paged
-    through in full.  After params are confirmed, a skippable phase-2 streaming review
-    starts; pressing Skip on the first vault-group page jumps directly to the approval
-    page.
-
-    The params swipe count is fixed (always 6 global fields: 2 pages on Flex/Apex,
-    3 pages on Stax).
-
-    Skip is touch-only: nano has no skip affordance.
-
-    Touch: RIGHT_HEADER_TAP taps the top-right "Skip" button; USE_CASE_CHOICE_CONFIRM
-           taps "Yes, skip" in the confirmation modal.
-
-    NOTE: verify/adjust against the first --golden_run if snapshots mismatch.
-    """
-    assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
-    n_params_swipes = 3 if device.name == "stax" else 2
-    return (
-        [NavInsID.SWIPE_CENTER_TO_LEFT] * (1 + n_params_swipes)  # phase 1 intro + params pages
-        + [NavInsID.SWIPE_CENTER_TO_LEFT]                         # phase 2 intro
-        + [NavInsID.RIGHT_HEADER_TAP, NavInsID.USE_CASE_CHOICE_CONFIRM]  # skip vault group → approval
-        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
-    )
+# There is deliberately no skip-navigation helper: the intent review carries no
+# SKIPPABLE_OPERATION in either phase, so no Skip button exists to tap.  Every field in
+# this review is a displayed-and-approved field in the HLD's intent TLV table, and the
+# approval is the only anchor for the silent signing that follows it, so none of it may
+# be bypassed.  A previous `vault_intent_skip_instructions` drove that affordance; if
+# Skip is ever reintroduced for a subset of segments, add it back alongside a test that
+# pins which fields remain mandatory.
 
 
 def vault_intent_reject_instructions(device: Device, n_steps: int) -> List[NavInsID]:

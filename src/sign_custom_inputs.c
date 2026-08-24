@@ -103,8 +103,16 @@ bool sign_custom_inputs(
      * flows.  PoP produces no vault-protocol signature and must not increment any
      * signing counter.  validate_and_display_transaction already dispatched PoP to
      * its own handler; here we simply skip counter accounting.
+     *
+     * The shape assert guards the invariant that makes this early return safe: a
+     * version-0 PSBT reaching the signer has been through _validate_display_pop, which
+     * enforces 1-in/1-out.  Asserting tx_version itself would be tautological.
      * ----------------------------------------------------------------------- */
-    if (st->tx_version == 0) return true;
+    if (st->tx_version == 0) {
+        LEDGER_ASSERT(st->n_inputs == 1 && st->n_outputs == 1,
+                      "version-0 tx reached signing with non-PoP shape");
+        return true;
+    }
 
     /* -----------------------------------------------------------------------
      * PegIn (INTENT_LOADED, no wallet policy, n_inputs==1, n_outputs==3)
@@ -233,6 +241,31 @@ bool sign_custom_inputs(
                 return false;
             }
 
+            /* The challenger key must be the one whose dedup bit is about to be consumed,
+             * otherwise the signature and the burnt slot would refer to different
+             * challengers.  Same reasoning as the depositor-key check above: the validator
+             * reconstructed this leaf byte-for-byte, but signing must not rely on it. */
+            {
+                const unsigned int ci = G_vault_context.nopayout_challenger_index;
+                /* Bound before indexing: keepers occupy [0, keeper_count), universal
+                 * challengers [keeper_count, keeper_count+challenger_count). */
+                if (ci >=
+                    (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count) {
+                    vault_context_invalidate(&G_vault_context);
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
+                const uint8_t *challenger_pk =
+                    ci < (unsigned int) intent->keeper_count
+                        ? intent->keeper_pks[ci]
+                        : intent->challenger_pks[ci - (unsigned int) intent->keeper_count];
+                if (memcmp(leaf + 35, challenger_pk, VAULT_XONLY_PUBKEY_LEN) != 0) {
+                    vault_context_invalidate(&G_vault_context);
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
+            }
+
             uint8_t leaf_hash[VAULT_HASH256_LEN];
             vault_taproot_leaf_hash(leaf, leaf_len, leaf_hash);
 
@@ -288,6 +321,18 @@ bool sign_custom_inputs(
                 return false;
             }
             return true;
+        }
+
+        /* Payout: 2 inputs.  A 3-input PSBT that is not the 3-in/1-out NoPayout above must
+         * not fall through here — it would sign against a stale vault_group_index /
+         * payout_index and burn a payout_claimer_mask bit.  Unreachable today (the
+         * validator's dispatch sends 3-in/1-out to NoPayout and every other validator
+         * rejects 3 inputs), but that safety rests on dispatcher statement ordering
+         * rather than on anything local, so reject explicitly. */
+        if (st->n_inputs != 2) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
         }
 
         /* Payout */
@@ -385,7 +430,8 @@ bool sign_custom_inputs(
     /* -----------------------------------------------------------------------
      * PayoutFinalize (Screen 8): standalone flow that signs Input 1, not Input 0.
      *
-     * The payout leaf is on Input 1; Input 0 (Assert:0) carries no signing request.
+     * The payout leaf is on Input 1 (the Assert:0 connector); Input 0 is the Vault UTXO
+     * and carries no signing request.
      * Re-read Input 1's TAP_LEAF_SCRIPT via vault_read_payout_leaf_script because
      * display_payout_finalize clobbered G_scratch.tls.  Signing proceeds identically
      * to other standalone flows except the input index is 1.
