@@ -254,7 +254,7 @@ The depositor asserts the claim by spending a ClaimAssertConnector UTXO.
 | `<D>` key (prefix) | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path |
 | Remainder | WOTS verifier body + challenger multisig; content not verified by device |
 | Taproot commitment | Verified unconditionally (binds the unvalidated remainder to the spent scriptPubKey) |
-| Leaf size | A leaf that does not fit in the read buffer (`VAULT_SCRIPT_MAX_LEN`) is rejected. Real leaves are 11,526–13,636 bytes, so no real Assert is signable yet — see the note below |
+| Leaf size | Up to `VAULT_ASSERT_SCRIPT_MAX_LEN` (16384). A leaf that does not fit the read buffer (`VAULT_SCRIPT_MAX_LEN`, 2560) is hashed by streaming instead of being buffered; beyond 16384 it is rejected |
 | Sighash | `SIGHASH_DEFAULT` only |
 | Fee | `inputs_total − outputs_total ≥ 0` |
 
@@ -271,13 +271,33 @@ configuration in `tests/vectors/depositor-as-claimer/assert.txt`). The body is f
 time by `BIG_BLOCK_DIGIT_COUNTS = [64, 64]` and `ASSERT_WOTS_NUM_STREAMS = 1`; only the signer
 prefix varies with the challenger counts.
 
-> **L-11 open.** `VAULT_SCRIPT_MAX_LEN` is 2560 bytes and `call_get_merkle_preimage` returns an
-> error rather than a partial read for anything larger, so a real Assert leaf is rejected and no
-> real Assert transaction can be signed today. Closing this requires computing the tapleaf hash by
-> streaming the PSBT value (`call_stream_merkleized_map_value`) rather than buffering it — the
-> length arrives via the stream's length callback, the 35-byte prefix from the first chunk, and the
-> leaf version from the final byte. The device must not instead relax the taproot commitment check:
-> a host-chosen leaf length would then select whether verification runs.
+**Long-leaf handling (L-11).** A leaf larger than `VAULT_SCRIPT_MAX_LEN` cannot be buffered, so the
+device does not try. It streams the PSBT value with `call_stream_merkleized_map_value` and folds it
+into the BIP-341 TapLeaf hash incrementally, keeping only what it actually needs in constant memory:
+
+| Kept | Source |
+|---|---|
+| TapLeaf hash | Folded chunk by chunk; `varint(script_len)` can be emitted first because the stream reports its length before any data |
+| 35-byte prefix | First chunk(s) — shape discriminator and the `<D>` key |
+| Script length | The stream's length callback |
+| Terminating byte | Last script byte, tracked across chunk boundaries |
+| Leaf version | Final byte of the value; must equal `0xC0` |
+
+`call_stream_preimage` hash-verifies the complete preimage exactly as the buffered path does, so a
+streamed leaf is no less trustworthy than a buffered one. The taproot commitment is then verified
+against the streamed hash — unconditionally, and identically to the buffered case.
+
+These facts live in `G_leaf_meta`, outside the `G_scratch` union: every byte of the leaf state past
+`leaf_script` aliases `leaf_check.actual_buf`, and `_detect_payout_claimer` rebuilds an expected leaf
+there before the commitment check runs, which would otherwise destroy the hash.
+
+Flows that compare a leaf byte-for-byte against a script they reconstruct (Refund, Claim, WC,
+NoPayout, PayoutFinalize) require `G_leaf_meta.buffered` and reject when it is unset. Their leaves
+are ≤2296 bytes by construction, so this is unreachable in practice; it exists so a future oversized
+leaf can never be compared against a partial buffer.
+
+> The device must never relax the taproot commitment check for large leaves instead: a host-chosen
+> leaf length would then select whether verification runs at all.
 
 **User display:** claim txid (from `PSBT_IN_PREVIOUS_TXID`), amount carried (WITNESS_UTXO value), fee.
 

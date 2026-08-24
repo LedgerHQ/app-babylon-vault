@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "cx.h"
 #include "vault_intent.h"
 #include "../bitcoin_app_base/src/common/script.h"
 
@@ -78,6 +79,19 @@ void crypto_tr_combine_taptree_hashes(const uint8_t left[VAULT_HASH256_LEN],
  * @param out         Output buffer for the leaf hash (VAULT_HASH256_LEN bytes).
  */
 void vault_taproot_leaf_hash(const uint8_t *script, int script_len, uint8_t out[VAULT_HASH256_LEN]);
+
+/**
+ * Incremental TapLeaf hash, for scripts too large to buffer (real Assert leaves are
+ * 11.5-13.6 KB against a VAULT_SCRIPT_MAX_LEN read buffer).
+ *
+ * @p script_len must be the FULL script length and is required at init, because the
+ * BIP-341 preimage puts varint(script_len) ahead of the script bytes.  Feed the script
+ * with successive _update calls (excluding the PSBT value's trailing leaf-version byte),
+ * then _final.  Equivalent to vault_taproot_leaf_hash over the same bytes.
+ */
+void vault_taproot_leaf_hash_stream_init(cx_sha256_t *ctx, uint32_t script_len);
+void vault_taproot_leaf_hash_stream_update(cx_sha256_t *ctx, const uint8_t *data, size_t len);
+void vault_taproot_leaf_hash_stream_final(cx_sha256_t *ctx, uint8_t out[VAULT_HASH256_LEN]);
 
 /* --------------------------------------------------------------------------
  * Per-leaf raw script builders

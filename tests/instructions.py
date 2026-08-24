@@ -44,7 +44,7 @@ def vault_intent_steps_for_keys(device: Device, total_keys: int) -> int:
     if device.is_nano:
         return 1 + 5 + 2 * total_keys + 7
     if device.name == "stax":
-        return 1 + 2 + 1 + max(0, total_keys - 1) + 2
+        return 1 + 1 + 1 + total_keys + 2
     return 1 + 2 + 1 + total_keys + 2
 
 

@@ -42,6 +42,8 @@
 //                                         4-slot callback ring buffer
 //   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
 //   G_derive_streaming          ≤    8 B  (N-05 / G#1: outside union to prevent aliasing)
+//   G_leaf_meta                 ≤   72 B  (L-11: outside union — leaf hash/prefix must
+//                                         survive a leaf_check reconstruction)
 //                                       ≤ 9136 B  (well within remaining SRAM after min stack)
 // display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
 // ---------------------------------------------------------------------------
@@ -88,4 +90,5 @@ vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
 vault_scratch_t G_scratch;
 derive_streaming_state_t G_derive_streaming;
+vault_leaf_meta_t G_leaf_meta;
 approve_intent_state_t G_approve_intent_state;

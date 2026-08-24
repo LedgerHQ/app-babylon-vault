@@ -158,6 +158,34 @@ void vault_taproot_leaf_hash(const uint8_t *script,
 }
 
 /* --------------------------------------------------------------------------
+ * vault_taproot_leaf_hash_stream_{init,update,final}
+ *
+ * Incremental form of vault_taproot_leaf_hash, for scripts too large to buffer
+ * (real Assert leaves are 11.5-13.6 KB against a 2560-byte read buffer).
+ *
+ * The BIP-341 preimage is 0xC0 || varint(script_len) || script, so the length must
+ * be known before the first script byte is hashed — which it is: the PSBT value
+ * stream reports its length up front, before any chunk.  script_len is therefore
+ * taken at init, and update() is called with successive script slices.
+ * ----------------------------------------------------------------------- */
+
+void vault_taproot_leaf_hash_stream_init(cx_sha256_t *ctx, uint32_t script_len) {
+    crypto_tr_tapleaf_hash_init(ctx);
+    _hash_update_u8(&ctx->header, TAPSCRIPT_LEAF_VERSION);
+    uint8_t vbuf[5];
+    int vlen = _varint_write(vbuf, (uint64_t) script_len);
+    _hash_update(&ctx->header, vbuf, (size_t) vlen);
+}
+
+void vault_taproot_leaf_hash_stream_update(cx_sha256_t *ctx, const uint8_t *data, size_t len) {
+    if (len > 0) _hash_update(&ctx->header, data, len);
+}
+
+void vault_taproot_leaf_hash_stream_final(cx_sha256_t *ctx, uint8_t out[VAULT_HASH256_LEN]) {
+    _hash_final(&ctx->header, out);
+}
+
+/* --------------------------------------------------------------------------
  * vault_taproot_tweak_scriptpubkey  (static)
  *
  * Computes the P2TR scriptPubKey (34 bytes: OP_1 OP_PUSHBYTES_32 <key>)

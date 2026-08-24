@@ -225,6 +225,13 @@ bool sign_custom_inputs(
                 return false;
             }
 
+            /* The NoPayout leaf is 68 bytes, so it is always buffered; reject rather than
+             * read a partial buffer if that ever stops holding. */
+            if (!G_leaf_meta.buffered) {
+                vault_context_invalidate(&G_vault_context);
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
             const uint8_t *leaf = G_scratch.tls.leaf_script;
             int leaf_len = G_scratch.tls.leaf_script_len;
 
@@ -450,20 +457,19 @@ bool sign_custom_inputs(
         if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
 
         /* Phase 1: consume G_scratch.tls, populate G_scratch.sign_standalone.
-         * Aliasing rules are the same as the standalone section below. */
-        vault_taproot_leaf_hash(G_scratch.tls.leaf_script,
-                                G_scratch.tls.leaf_script_len,
-                                G_scratch.sign_standalone.leaf_hash);
+         * Aliasing rules are the same as the standalone section below.
+         * The leaf hash and prefix come from G_leaf_meta, not from tls.leaf_script: the
+         * buffer holds the whole script only when G_leaf_meta.buffered is set, and
+         * G_leaf_meta lives outside the union so it is immune to the aliasing dance
+         * below. */
+        memcpy(G_scratch.sign_standalone.leaf_hash, G_leaf_meta.hash, VAULT_HASH256_LEN);
 
-        if (G_scratch.tls.leaf_script_len <= 68 ||
-            G_scratch.tls.leaf_script[0] != OP_PUSHBYTES_32) {
+        if (G_scratch.tls.leaf_script_len <= 68 || G_leaf_meta.prefix[0] != OP_PUSHBYTES_32) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
-        memcpy(G_scratch.sign_standalone.leaf_key,
-               G_scratch.tls.leaf_script + 1,
-               VAULT_XONLY_PUBKEY_LEN);
+        memcpy(G_scratch.sign_standalone.leaf_key, G_leaf_meta.prefix + 1, VAULT_XONLY_PUBKEY_LEN);
 
         if (!read_p2tr_witness_utxo(dc, &input1_map, NULL, G_scratch.sign_standalone.input_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -568,23 +574,23 @@ bool sign_custom_inputs(
          * Each write targets bytes already dead in tls — see sign_standalone_scratch_t
          * in globals.h for the byte-by-byte aliasing map. */
 
-        /* leaf_hash [0..31]: clobbers tls.found/ambiguous/control_block[0..29] — dead. */
-        vault_taproot_leaf_hash(G_scratch.tls.leaf_script,
-                                G_scratch.tls.leaf_script_len,
-                                G_scratch.sign_standalone.leaf_hash);
+        /* leaf_hash [0..31]: clobbers tls.found/ambiguous/control_block[0..29] — dead.
+         * Copied from G_leaf_meta.hash rather than recomputed over tls.leaf_script: an
+         * Assert leaf too large to buffer has leaf_script_len far beyond the buffer, so
+         * re-hashing it would read past the end.  G_leaf_meta.hash was computed when the
+         * value was read (from the buffer, or incrementally while streaming). */
+        memcpy(G_scratch.sign_standalone.leaf_hash, G_leaf_meta.hash, VAULT_HASH256_LEN);
 
-        /* Read tls.leaf_script_len (offset 2628) and tls.leaf_script[0] (offset 68)
-         * before any write reaches those offsets. */
-        if (G_scratch.tls.leaf_script_len < 34 || G_scratch.tls.leaf_script[0] != OP_PUSHBYTES_32) {
+        /* G_leaf_meta is outside G_scratch, so unlike tls.leaf_script it stays readable
+         * here regardless of write ordering, and is valid whether or not the script was
+         * buffered. */
+        if (G_scratch.tls.leaf_script_len < 34 || G_leaf_meta.prefix[0] != OP_PUSHBYTES_32) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
-        /* leaf_key [32..63]: clobbers tls.control_block[30..62] — dead.
-         * Source tls.leaf_script[1..32] is at offsets [69..100], past dst [32..63]. */
-        memcpy(G_scratch.sign_standalone.leaf_key,
-               G_scratch.tls.leaf_script + 1,
-               VAULT_XONLY_PUBKEY_LEN);
+        /* leaf_key [32..63]: clobbers tls.control_block[30..62] — dead. */
+        memcpy(G_scratch.sign_standalone.leaf_key, G_leaf_meta.prefix + 1, VAULT_XONLY_PUBKEY_LEN);
 
         /* tls is fully consumed.  input_spk [64..97] now clobbers tls.control_block_len
          * (offset 67) and tls.leaf_script[0..29] (offsets 68..97) — all dead. */

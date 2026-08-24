@@ -10,6 +10,7 @@
 #include "../bitcoin_app_base/src/common/script.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map_value.h"
+#include "../bitcoin_app_base/src/handler/lib/stream_merkleized_map_value.h"
 #include "../bitcoin_app_base/src/handler/sign_psbt.h"
 
 #include "cx.h"
@@ -136,6 +137,110 @@ static int _read_output_varlen(dispatcher_context_t *dc,
  * State type is tap_leaf_script_state_t (defined in globals.h, lives in G_scratch.tls)
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * Streaming read of an oversized TAP_LEAF_SCRIPT value
+ *
+ * Real Assert leaves are 11.5-13.6 KB (btc-vault claim_assert.rs) against a
+ * VAULT_SCRIPT_MAX_LEN read buffer, so they cannot be buffered.  They do not need to
+ * be: the only things the device requires from an Assert leaf are its TapLeaf hash
+ * (to verify the taproot commitment), its 35-byte prefix (shape discriminator and the
+ * <D> key), its length, and its terminating opcode.  All four are obtainable in a
+ * single pass, in constant memory.
+ *
+ * call_stream_preimage hash-verifies the complete preimage exactly as the buffered
+ * path does, so a streamed leaf is no less trustworthy than a buffered one.
+ *
+ * Chunk boundaries are host-chosen and may split the prefix or land anywhere relative
+ * to the trailing leaf-version byte, so the callback tracks absolute offsets rather
+ * than assuming any chunk layout.
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    tap_leaf_script_state_t *tls;
+    uint32_t value_len;  /* script_len + 1 version byte, from the length callback */
+    uint32_t script_len; /* value_len - 1 */
+    uint32_t seen;       /* value bytes consumed so far */
+    bool len_known;
+    bool overflow; /* stream delivered more bytes than declared */
+} leaf_stream_ctx_t;
+
+static void _leaf_stream_len_cb(size_t value_len, void *opaque) {
+    leaf_stream_ctx_t *ctx = (leaf_stream_ctx_t *) opaque;
+    /* A value of n bytes is <script(n-1)> || <leaf_version(1)>; reject a value with no
+     * room for both, and anything beyond what a taproot script may be. */
+    if (value_len < 2u || value_len > VAULT_ASSERT_SCRIPT_MAX_LEN) return;
+    ctx->value_len = (uint32_t) value_len;
+    ctx->script_len = (uint32_t) value_len - 1u;
+    ctx->len_known = true;
+    vault_taproot_leaf_hash_stream_init(&ctx->tls->leaf_hash_ctx, ctx->script_len);
+}
+
+static void _leaf_stream_data_cb(buffer_t *buf, void *opaque) {
+    leaf_stream_ctx_t *ctx = (leaf_stream_ctx_t *) opaque;
+    if (!ctx->len_known) return;
+
+    const uint8_t *p = buf->ptr + buf->offset;
+    size_t n = buf->size - buf->offset;
+    /* The first chunk is empty when the preimage's leading 0x00 filled it entirely. */
+    if (n == 0) return;
+    if (n > ctx->value_len - ctx->seen) {
+        ctx->overflow = true;
+        return;
+    }
+
+    /* Script bytes are every byte except the final one (the leaf version). */
+    if (ctx->seen < ctx->script_len) {
+        size_t n_script = ctx->script_len - ctx->seen;
+        if (n_script > n) n_script = n;
+        vault_taproot_leaf_hash_stream_update(&ctx->tls->leaf_hash_ctx, p, n_script);
+
+        /* Capture the shape-discriminator prefix. */
+        if (ctx->seen < VAULT_LEAF_PREFIX_LEN) {
+            size_t n_prefix = VAULT_LEAF_PREFIX_LEN - ctx->seen;
+            if (n_prefix > n_script) n_prefix = n_script;
+            memcpy(G_leaf_meta.prefix + ctx->seen, p, n_prefix);
+        }
+        /* Last script byte: remember it whenever this chunk reaches the script end. */
+        if (ctx->seen + n_script == ctx->script_len) {
+            G_leaf_meta.last_byte = p[n_script - 1];
+        }
+    }
+    /* The trailing version byte, whenever it lands in this chunk. */
+    if (ctx->seen + n == ctx->value_len) {
+        ctx->tls->leaf_version = p[n - 1];
+    }
+    ctx->seen += n;
+}
+
+/* On success fills G_leaf_meta (hash, prefix, last_byte, buffered = false) plus
+ * tls.leaf_version and tls.leaf_script_len. */
+static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
+                                   tap_leaf_script_state_t *state,
+                                   const merkleized_map_commitment_t *map_commitment,
+                                   const uint8_t *full_key,
+                                   size_t full_key_len) {
+    leaf_stream_ctx_t ctx = {.tls = state};
+
+    int rc = call_stream_merkleized_map_value(dc,
+                                              map_commitment,
+                                              full_key,
+                                              full_key_len,
+                                              _leaf_stream_len_cb,
+                                              _leaf_stream_data_cb,
+                                              &ctx);
+    if (rc < 0 || !ctx.len_known || ctx.overflow) return false;
+    if ((uint32_t) rc != ctx.value_len || ctx.seen != ctx.value_len) return false;
+
+    /* The device only supports tapscript leaves, and the version byte carried in the
+     * PSBT value must agree with the one the streamed hash assumed. */
+    if (state->leaf_version != TAPSCRIPT_LEAF_VERSION) return false;
+
+    vault_taproot_leaf_hash_stream_final(&state->leaf_hash_ctx, G_leaf_meta.hash);
+    state->leaf_script_len = (int) ctx.script_len;
+    G_leaf_meta.buffered = false;
+    return true;
+}
+
 static void _tap_leaf_script_callback(dispatcher_context_t *dc,
                                       tap_leaf_script_state_t *state,
                                       const merkleized_map_commitment_t *map_commitment,
@@ -190,16 +295,22 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
                                                   full_key_len,
                                                   value_buf,
                                                   sizeof(G_scratch.leaf_check.actual_buf));
-    if (value_len < 1) {
-        state->ambiguous = true; /* failed to read value — treat as ambiguous/error */
+    if (value_len == -4) {
+        /* -4 is specifically "value larger than the output buffer" (propagated verbatim
+         * from call_get_merkle_preimage).  The value is never partially read: that path
+         * either fits it whole or errors.  A leaf this large is the real Assert leaf, so
+         * hash it by streaming instead of buffering it. */
+        if (!_stream_tap_leaf_value(dc, state, map_commitment, full_key, full_key_len)) {
+            state->ambiguous = true;
+        }
         return;
     }
-    /* Save leaf_version before writing to tls fields that alias actual_buf.
-     * The value is <leaf_script> || <leaf_version(1B)> and is never partially read:
-     * call_get_merkle_preimage rejects a preimage larger than the output buffer
-     * (returns -4) and hash-verifies the complete preimage, so value_len always
-     * describes a whole value.  A leaf too large to buffer is therefore rejected by
-     * the value_len < 1 guard above rather than silently truncated. */
+    if (value_len < 2) {
+        /* Read failed, or the value is too short to be <script> || <version>. */
+        state->ambiguous = true;
+        return;
+    }
+    /* Save leaf_version before writing to tls fields that alias actual_buf. */
     uint8_t leaf_version = value_buf[value_len - 1];
     int leaf_script_len = value_len - 1;
     if (leaf_script_len > (int) VAULT_SCRIPT_MAX_LEN) {
@@ -213,6 +324,29 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     }
     state->leaf_script_len = leaf_script_len;
     state->leaf_version = leaf_version;
+    G_leaf_meta.buffered = true;
+    G_leaf_meta.last_byte = state->leaf_script[leaf_script_len - 1];
+    memset(G_leaf_meta.prefix, 0, sizeof(G_leaf_meta.prefix));
+    memcpy(G_leaf_meta.prefix,
+           state->leaf_script,
+           leaf_script_len < (int) VAULT_LEAF_PREFIX_LEN ? (size_t) leaf_script_len
+                                                         : VAULT_LEAF_PREFIX_LEN);
+    vault_taproot_leaf_hash(state->leaf_script, leaf_script_len, G_leaf_meta.hash);
+}
+
+/* Guard for consumers that compare the leaf byte-for-byte against a script they
+ * reconstructed, or otherwise read past the 35-byte prefix.  Only the Assert leaf can
+ * exceed VAULT_SCRIPT_MAX_LEN — it is validated by its taproot commitment instead of by
+ * reconstruction — so every other flow requires the whole script to be buffered.
+ * Unreachable in practice (those flows all pin an exact or bounded leaf length, which a
+ * >2560-byte leaf already fails); it exists so that a future oversized leaf reaching one
+ * of them can never be compared against a partial buffer. */
+static bool _require_buffered_leaf(dispatcher_context_t *dc) {
+    if (!G_leaf_meta.buffered) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    return true;
 }
 
 /* -------------------------------------------------------------------------
@@ -568,11 +702,12 @@ static bool _refund_verify_taproot_commitment(dispatcher_context_t *dc,
         return false;
     }
 
-    uint8_t leaf_hash[VAULT_HASH256_LEN];
-    vault_taproot_leaf_hash(G_scratch.tls.leaf_script, G_scratch.tls.leaf_script_len, leaf_hash);
-
+    /* leaf_hash is computed when the value is read — from the buffer when it fit, or
+     * incrementally while streaming when it did not.  Using it here keeps the commitment
+     * check identical for both, and is what binds an unbuffered leaf's unvalidated
+     * remainder to the spent scriptPubKey. */
     uint8_t merkle_root[VAULT_HASH256_LEN];
-    memcpy(merkle_root, leaf_hash, VAULT_HASH256_LEN);
+    memcpy(merkle_root, G_leaf_meta.hash, VAULT_HASH256_LEN);
     int pos = 1 + VAULT_XONLY_PUBKEY_LEN;
     while (pos + VAULT_HASH256_LEN <= cb_len) {
         uint8_t combined[VAULT_HASH256_LEN];
@@ -662,6 +797,8 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
 
     /* Find TAP_LEAF_SCRIPT using the callback — lives in G_scratch.tls (saves 2636 B BSS). */
     memset(&G_scratch.tls, 0, sizeof(G_scratch.tls));
+    /* G_leaf_meta lives outside the union, so it is not covered by the memset above. */
+    memset(&G_leaf_meta, 0, sizeof(G_leaf_meta));
     if (call_get_merkleized_map_with_callback(
             dc,
             &G_scratch.tls,
@@ -680,6 +817,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     }
 
     /* Parse leaf script shape — also extracts the CSV timelock value */
+    if (!_require_buffered_leaf(dc)) return false;
     uint8_t leaf_key[VAULT_XONLY_PUBKEY_LEN];
     uint32_t csv_value;
     if (!parse_refund_leaf_script(G_scratch.tls.leaf_script,
@@ -1395,6 +1533,7 @@ static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
 static int _detect_payout_claimer(dispatcher_context_t *dc, int gi) {
     const vault_intent_t *intent = &G_vault_intent;
 
+    if (!_require_buffered_leaf(dc)) return -1;
     int script_len = G_scratch.tls.leaf_script_len;
 
     /* Minimum valid payout leaf: OP_PUSHBYTES_32 <key(32)> OP_CHECKSIGVERIFY = 34 bytes. */
@@ -1901,6 +2040,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     merkleized_map_commitment_t input_map;
     if (!vault_read_refund_leaf_script(dc, st, &input_map)) return false;
 
+    if (!_require_buffered_leaf(dc)) return false;
     const uint8_t *leaf = G_scratch.tls.leaf_script;
     int leaf_len = G_scratch.tls.leaf_script_len;
 
@@ -2158,7 +2298,10 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
         return false;
     }
 
-    /* G_scratch.tls already populated; dispatcher guarantees leaf is 34 bytes <D> OP_CHECKSIG */
+    /* G_scratch.tls already populated; dispatcher guarantees leaf is 34 bytes <D> OP_CHECKSIG.
+     * Check buffered before the length assert so an oversized leaf is rejected cleanly
+     * rather than tripping the assert. */
+    if (!_require_buffered_leaf(dc)) return false;
     LEDGER_ASSERT(G_scratch.tls.leaf_script_len == VAULT_DEPOSITOR_CLAIM_LEAF_LEN,
                   "unexpected claim leaf length");
     const uint8_t *leaf = G_scratch.tls.leaf_script;
@@ -2364,12 +2507,11 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
      * What makes the unvalidated remainder safe to sign over is the taproot commitment
      * check below, which binds the whole leaf to the spent scriptPubKey.
      *
-     * NOTE (L-11): real leaves are 11,526-13,636 bytes depending on the challenger
-     * counts, well over VAULT_SCRIPT_MAX_LEN, so they cannot be buffered and are
-     * rejected in _tap_leaf_script_callback.  Signing a real Assert therefore requires
-     * streaming the tapleaf hash (call_stream_merkleized_map_value) instead of buffering
-     * the value; until that lands this path only accepts leaves that fit. */
-    const uint8_t *leaf = G_scratch.tls.leaf_script;
+     * Real leaves are 11,526-13,636 bytes depending on the challenger counts, far over
+     * VAULT_SCRIPT_MAX_LEN, so this flow must not assume the script was buffered: read
+     * the <D> key from G_leaf_meta.prefix, which is populated in both the buffered and
+     * the streamed case (L-11). */
+    const uint8_t *leaf = G_leaf_meta.prefix;
     uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
     memcpy(d_key, leaf + 1, VAULT_XONLY_PUBKEY_LEN);
 
@@ -2515,6 +2657,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
     merkleized_map_commitment_t input_map;
     if (!vault_read_refund_leaf_script(dc, st, &input_map)) return false;
 
+    if (!_require_buffered_leaf(dc)) return false;
     const uint8_t *leaf = G_scratch.tls.leaf_script;
     int leaf_len = G_scratch.tls.leaf_script_len;
 
@@ -2992,6 +3135,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
     merkleized_map_commitment_t input1_map;
     if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
 
+    if (!_require_buffered_leaf(dc)) return false;
     uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
     uint32_t csv_value;
     if (!parse_payout_leaf_script(G_scratch.tls.leaf_script,
@@ -3252,6 +3396,8 @@ bool vault_read_refund_leaf_script(dispatcher_context_t *dc,
                                    sign_psbt_state_t *st,
                                    merkleized_map_commitment_t *input_map_out) {
     memset(&G_scratch.tls, 0, sizeof(G_scratch.tls));
+    /* G_leaf_meta lives outside the union, so it is not covered by the memset above. */
+    memset(&G_leaf_meta, 0, sizeof(G_leaf_meta));
     if (call_get_merkleized_map_with_callback(
             dc,
             &G_scratch.tls,
@@ -3275,6 +3421,8 @@ bool vault_read_payout_leaf_script(dispatcher_context_t *dc,
                                    sign_psbt_state_t *st,
                                    merkleized_map_commitment_t *input_map_out) {
     memset(&G_scratch.tls, 0, sizeof(G_scratch.tls));
+    /* G_leaf_meta lives outside the union, so it is not covered by the memset above. */
+    memset(&G_leaf_meta, 0, sizeof(G_leaf_meta));
     if (call_get_merkleized_map_with_callback(
             dc,
             &G_scratch.tls,
@@ -3410,8 +3558,11 @@ bool validate_and_display_transaction(
     merkleized_map_commitment_t dispatch_map;
     if (!vault_read_refund_leaf_script(dc, st, &dispatch_map)) return false;
 
-    const uint8_t *leaf = G_scratch.tls.leaf_script;
+    /* Dispatch reads only the prefix, the length and the terminating byte, so it works
+     * identically for a buffered leaf and for a streamed one too large to buffer. */
+    const uint8_t *leaf = G_leaf_meta.prefix;
     int leaf_len = G_scratch.tls.leaf_script_len;
+    const uint8_t leaf_last = G_leaf_meta.last_byte;
 
     if (leaf_len < (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN || leaf[0] != OP_PUSHBYTES_32) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -3437,12 +3588,10 @@ bool validate_and_display_transaction(
          * _validate_nopayout and be signed with no cap, no per-(group, challenger) dedup
          * and no intent binding.  HLD "Standalone transactions": leaf patterns MUST remain
          * mutually exclusive. */
-        if (leaf_len > (int) VAULT_NOPAYOUT_LEAF_LEN &&
-            (uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_TRUE)
+        if (leaf_len > (int) VAULT_NOPAYOUT_LEAF_LEN && leaf_last == (uint8_t) OP_TRUE)
             return _validate_display_assert(dc, st);
         /* Refund: <D> OP_CHECKSIGVERIFY <T(1-2 bytes)> OP_CSV */
-        if ((uint8_t) leaf[leaf_len - 1] == (uint8_t) OP_CSV)
-            return _validate_display_refund(dc, st);
+        if (leaf_last == (uint8_t) OP_CSV) return _validate_display_refund(dc, st);
     }
 
     SEND_SW(dc, SW_INCORRECT_DATA);
