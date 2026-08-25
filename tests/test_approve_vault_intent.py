@@ -23,7 +23,8 @@ from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
-from .instructions import vault_intent_steps, vault_intent_reject_instructions
+from .instructions import (vault_intent_steps, vault_intent_reject_instructions,
+                           vault_intent_reject_nav)
 from .vault_client import (
     approve_vault_intent_with_nav,
     build_intent_tlv,
@@ -52,12 +53,14 @@ from .vault_client import (
     TAG_KEEPER_COUNT,
     TAG_KEEPER_PK,
     TAG_CHALLENGER_PK,
+    TAG_GRP_PEGIN_MAX_FEE,
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     TEST_INVALID_XONLY_KEY,
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
     _ktlv,
+    _tlv_u64be,
 )
 
 HARDENED = 0x80000000
@@ -79,6 +82,13 @@ TXID = bytes(range(32))
 KEY_A = TEST_VALID_KEYS[0]
 KEY_B = TEST_VALID_KEYS[1]
 KEY_C = TEST_VALID_KEYS[2]
+
+# VP_KEYS: a pool of distinct vault_provider_pk values for multi-group tests that
+# want each group to have a different provider. All are distinct from KEY_A/KEY_B
+# and from the depositor x-only key, and absent from _MAX_KEEPERS/_MAX_CHALLENGERS.
+# Note: groups are not required to have unique vault_provider_pk — see
+# test_same_vault_provider_pk_across_groups_accepted.
+VP_KEYS = [VP_KEY] + [k for k in TEST_VALID_KEYS if k not in (KEY_A, KEY_B)]
 
 
 def _coin_type(network: str) -> int:
@@ -690,7 +700,8 @@ def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,
     animation fires between wait_for_screen_change() and compare_screen_with_text().
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
-    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
+    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1),
+                          vault_provider_pk=VP_KEYS[i]) for i in range(10)]
     scalars = _make_scalars(bitcoin_network, vault_count=10, keeper_count=1, challenger_count=1)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
                                   keeper_pks=[KEY_A], challenger_pks=[KEY_B],
@@ -708,7 +719,8 @@ def test_10_vaults_32_keepers_32_challengers(client: RaggerClient, navigator: Na
     key set (64 keys in 10 P1=0x02 batches).
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
-    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1)) for i in range(10)]
+    groups = [_make_group(htlc_vout=i, vault_amount=100_000 * (i + 1),
+                          vault_provider_pk=VP_KEYS[i]) for i in range(10)]
     scalars = _make_scalars(bitcoin_network, vault_count=10,
                             keeper_count=32, challenger_count=32)
     approve_vault_intent_with_nav(client, navigator, device, scalars,
@@ -789,7 +801,9 @@ def test_user_rejects_intent_approval(client: RaggerClient, navigator: Navigator
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
-    n_steps = vault_intent_steps(device, 1, 1)
+    # No snapshots here, so walk to the final page by text rather than by swipe count —
+    # the count changes whenever NBGL repacks pairs per page.
+    nav_instr, reject_instrs, search_text = vault_intent_reject_nav(device)
     with pytest.raises(ExceptionRAPDU) as exc:
         with client.transport_client.exchange_async(
             cla=CLA_VAULT,
@@ -798,9 +812,11 @@ def test_user_rejects_intent_approval(client: RaggerClient, navigator: Navigator
             p2=P2_UNUSED,
             data=payload,
         ):
-            navigator.navigate(
-                vault_intent_reject_instructions(device, n_steps),
-                screen_change_before_first_instruction=True,
+            navigator.navigate_until_text(
+                navigate_instruction=nav_instr,
+                validation_instructions=reject_instrs,
+                text=search_text,
+                screen_change_before_first_instruction=False,
             )
     assert exc.value.status == SW_DENY
 
@@ -1011,7 +1027,7 @@ def test_multi_group_per_p1_01_apdu_accepted(client: RaggerClient, navigator: Na
     scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     grp0 = _make_group(htlc_vout=0)
-    grp1 = _make_group(htlc_vout=1, vault_amount=200_000)
+    grp1 = _make_group(htlc_vout=1, vault_amount=200_000, vault_provider_pk=KEY_C)
     _raw_exchange(client, P1_GROUP, grp0 + grp1)   # both groups in one APDU
     payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
     nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
@@ -1057,3 +1073,131 @@ def test_vault_amount_below_min_rejected(client: RaggerClient, navigator: Naviga
         _raw_exchange(client, P1_GROUP,
                       _make_group(vault_amount=below_min, commission_fee=commission_fee))
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# N-09: Group TLV parser coverage — unknown tag rejection, claim-value dust floor,
+#        multi-record cursor walk
+# ---------------------------------------------------------------------------
+
+def test_group_unknown_tag_is_rejected(client: RaggerClient, navigator: Navigator,
+                                       device: Device, bitcoin_network: str):
+    """An unknown 2-byte tag inside a group TLV must return SW_INCORRECT_DATA.
+
+    HLD "Intent parsing and binding" requires canonical TLV encoding: no duplicate
+    tags, no unknown tags, no alternate encodings — in the scalar (P1=0x00) and the
+    per-group (P1=0x01) payload alike.
+
+    The unknown tag is interleaved *before* the final mandatory field rather than
+    appended, because vault_tlv_parse_group stops as soon as all 6 mandatory fields
+    have been seen: a trailing tag is left for the next record and would instead be
+    rejected as a malformed second group, which would not exercise the unknown-tag
+    path at all.
+    """
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Valid group record, with an unknown tag (0xFFFF, len 1) spliced in ahead of
+    # the last mandatory field so the parser reaches it before completing the group.
+    pegin_max_fee_tlv = _tlv_u64be(TAG_GRP_PEGIN_MAX_FEE, 50_000)
+    group = _make_group()
+    assert group.endswith(pegin_max_fee_tlv), "group layout changed — update this test"
+    unknown_tag_tlv = bytes([0xFF, 0xFF, 0x01, 0x00])
+    group_with_unknown = group[: -len(pegin_max_fee_tlv)] + unknown_tag_tlv + pegin_max_fee_tlv
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, group_with_unknown)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_group_depositor_claim_value_below_dust_rejected(
+    client: RaggerClient, navigator: Navigator, device: Device, bitcoin_network: str,
+):
+    """depositor_claim_value strictly below VAULT_DUST_LIMIT (546 sat) must be rejected.
+
+    A sub-dust depositor claim UTXO would be non-standard and unspendable under
+    relay policy.  The firmware must reject it at intent-loading time so the device
+    never commits to a dust-valued claim output.
+    """
+    DUST = 546
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP, _make_group(depositor_claim_value=DUST - 1))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_group_multi_record_cursor_walk(client: RaggerClient, navigator: Navigator,
+                                         device: Device, bitcoin_network: str):
+    """Multiple group records sent across separate P1=0x01 APDUs are all parsed correctly.
+
+    Exercises the group TLV cursor walking with vault_count=3: one group per APDU,
+    each carrying a distinct htlc_vout.  All three must be accepted and the intent
+    must load successfully (SW_OK after the final key batch).
+    """
+    from .instructions import vault_intent_approve_nav
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=3, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+
+    # Send three group TLVs each in a separate P1=0x01 APDU.
+    for htlc_vout in range(3):
+        _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=htlc_vout,
+                                                     vault_amount=100_000 + htlc_vout * 10_000,
+                                                     vault_provider_pk=VP_KEYS[htlc_vout]))
+
+    payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
+    nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=payload,
+    ):
+        navigator.navigate_until_text(
+            navigate_instruction=nav_instr,
+            validation_instructions=confirm_instrs,
+            text=search_text,
+            screen_change_before_first_instruction=False,
+        )
+    _sw, _ = client.last_async_response()
+    assert _sw == SW_OK
+
+
+def test_same_vault_provider_pk_across_groups_accepted(
+    client: RaggerClient, navigator: Navigator, device: Device, bitcoin_network: str,
+):
+    """Two groups sharing the same vault_provider_pk but different htlc_vout must be accepted.
+
+    A batched Pre-PegIn deposit can place multiple vault UTXOs (distinguished by htlc_vout)
+    under a single provider key in one intent.  The firmware must not reject that as a
+    duplicate — htlc_vout is the group discriminator, not vault_provider_pk.
+    """
+    from .instructions import vault_intent_approve_nav
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, vault_count=2, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    # Both groups use the same VP_KEY; they are distinguished solely by htlc_vout.
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=0, vault_provider_pk=VP_KEY))
+    _raw_exchange(client, P1_GROUP, _make_group(htlc_vout=1, vault_provider_pk=VP_KEY,
+                                                vault_amount=200_000))
+    payload = _ktlv(TAG_KEEPER_PK, KEY_A) + _ktlv(TAG_CHALLENGER_PK, KEY_B)
+    nav_instr, confirm_instrs, search_text = vault_intent_approve_nav(device)
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=payload,
+    ):
+        navigator.navigate_until_text(
+            navigate_instruction=nav_instr,
+            validation_instructions=confirm_instrs,
+            text=search_text,
+            screen_change_before_first_instruction=False,
+        )
+    _sw, _ = client.last_async_response()
+    assert _sw == SW_OK

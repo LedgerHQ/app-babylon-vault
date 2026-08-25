@@ -89,11 +89,12 @@ The depositor creates one or more HTLC outputs (one per vault group) that lock B
 - Inputs: wallet inputs (BIP-86 P2TR), signed by the base app
 - Output at `htlc_vout` (per group): P2TR matching the 2-leaf HTLC reconstructed from the intent; value in `[vault_amount + depositor_claim_value + 240, vault_amount + depositor_claim_value + 240 + pegin_max_fee]` (the minimum covers `vault_amount`, `depositor_claim_value`, and the 240-sat P2A anchor funded by the PegIn transaction)
 - Optional OP_RETURN output (positioned strictly after all HTLC outputs): 34-byte scriptPubKey `0x6A 0x20 <auth_anchor_hash>`, value `0`; when present the device validates the 32-byte payload against `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` computed at `APPROVE_VAULT_INTENT` time. At most one such output is permitted.
+- Optional CPFP anchor output (positioned strictly after all HTLC outputs): P2TR(depositor_pk) BIP-86 key-path scriptPubKey, value exactly `VAULT_DUST_LIMIT` (546 sat). At most one such output is permitted.
 - All other outputs: BIP-86 change outputs owned by this device (verified via `TAP_BIP32_DERIVATION`)
 - Sighash: `SIGHASH_ALL` or `SIGHASH_DEFAULT`; version ≥ 2; locktime = 0
 - Fee: `total_inputs − total_outputs ≤ prepegin_max_fee`
 
-**User display:** vault amount, depositor claim value, fee, HTLC address.
+**User display:** Pre-PegIn signing is silent — no per-signing screen is shown. The fee bound (`prepegin_max_fee`) is displayed on the intent approval screen (Screen 2).
 
 **HTLC scripts (2-leaf P2TR, NUMS internal key):**
 - *Leaf 0 — Hashlock + All-Party:* `OP_SIZE <32> OP_EQUALVERIFY / OP_SHA256 <h> OP_EQUALVERIFY / <D> OP_CHECKSIGVERIFY / <VP> OP_CHECKSIGVERIFY / <VK N-of-N> / <UC M-of-M>`
@@ -240,7 +241,7 @@ The depositor spends the Depositor Claim UTXO created by the PegIn transaction.
 
 The depositor asserts the claim by spending a ClaimAssertConnector UTXO.
 
-**Requires:** any state (including `IDLE`); no wallet policy; 68-byte leaf `<D> OP_CHECKSIGVERIFY <key> OP_CSV`.
+**Requires:** any state (including `IDLE`); no wallet policy; Assert leaf beginning with `OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY OP_PUSHBYTES_32`.
 
 **PSBT requirements:**
 
@@ -249,15 +250,54 @@ The depositor asserts the claim by spending a ClaimAssertConnector UTXO.
 | Input count | Exactly 1 |
 | Output count | Not enforced (host-provided connector tree) |
 | Version / locktime | ≥ 2 / 0 |
-| Input 0 leaf shape | 68 bytes: `<D>(32B) OP_CHECKSIGVERIFY <key>(32B) OP_CSV` |
+| Input 0 leaf shape | Prefix (35 bytes): `OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY OP_PUSHBYTES_32`; total length strictly greater than the NoPayout leaf (68 bytes); last byte `OP_TRUE` |
 | `<D>` key (prefix) | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path |
-| `<key>` | Not verified against intent; host-provided assert connector key |
-| Taproot commitment | Control block must produce a valid commitment to the leaf |
+| Remainder | WOTS verifier body + challenger multisig; content not verified by device |
+| Taproot commitment | Verified unconditionally (binds the unvalidated remainder to the spent scriptPubKey) |
+| Leaf size | Up to `VAULT_ASSERT_SCRIPT_MAX_LEN` (16384). A leaf that does not fit the read buffer (`VAULT_SCRIPT_MAX_LEN`, 2560) is hashed by streaming instead of being buffered; beyond 16384 it is rejected |
 | Sighash | `SIGHASH_DEFAULT` only |
 | Fee | `inputs_total − outputs_total ≥ 0` |
 
-**Assert leaf script:**
-`<D> OP_CHECKSIGVERIFY <key> OP_CSV`
+**Assert leaf script (btc-vault `claim_assert.rs`):**
+```
+<D> OP_CHECKSIGVERIFY
+<Challenger_1> OP_CHECKSIG ... <N> OP_NUMEQUALVERIFY   (N-of-N + M-of-M multisig)
+OP_DEPTH <WOTS_witness_items> OP_EQUALVERIFY
+[WOTS verifier body for 4 big blocks]
+OP_TRUE
+```
+Real leaf size is **11,526–13,636 bytes** (11,662 for the 3 local / 3 universal challenger
+configuration in `tests/vectors/depositor-as-claimer/assert.txt`). The body is fixed at compile
+time by `BIG_BLOCK_DIGIT_COUNTS = [64, 64]` and `ASSERT_WOTS_NUM_STREAMS = 1`; only the signer
+prefix varies with the challenger counts.
+
+**Long-leaf handling (L-11).** A leaf larger than `VAULT_SCRIPT_MAX_LEN` cannot be buffered, so the
+device does not try. It streams the PSBT value with `call_stream_merkleized_map_value` and folds it
+into the BIP-341 TapLeaf hash incrementally, keeping only what it actually needs in constant memory:
+
+| Kept | Source |
+|---|---|
+| TapLeaf hash | Folded chunk by chunk; `varint(script_len)` can be emitted first because the stream reports its length before any data |
+| 35-byte prefix | First chunk(s) — shape discriminator and the `<D>` key |
+| Script length | The stream's length callback |
+| Terminating byte | Last script byte, tracked across chunk boundaries |
+| Leaf version | Final byte of the value; must equal `0xC0` |
+
+`call_stream_preimage` hash-verifies the complete preimage exactly as the buffered path does, so a
+streamed leaf is no less trustworthy than a buffered one. The taproot commitment is then verified
+against the streamed hash — unconditionally, and identically to the buffered case.
+
+These facts live in `G_leaf_meta`, outside the `G_scratch` union: every byte of the leaf state past
+`leaf_script` aliases `leaf_check.actual_buf`, and `_detect_payout_claimer` rebuilds an expected leaf
+there before the commitment check runs, which would otherwise destroy the hash.
+
+Flows that compare a leaf byte-for-byte against a script they reconstruct (Refund, Claim, WC,
+NoPayout, PayoutFinalize) require `G_leaf_meta.buffered` and reject when it is unset. Their leaves
+are ≤2296 bytes by construction, so this is unreachable in practice; it exists so a future oversized
+leaf can never be compared against a partial buffer.
+
+> The device must never relax the taproot commitment check for large leaves instead: a host-chosen
+> leaf length would then select whether verification runs at all.
 
 **User display:** claim txid (from `PSBT_IN_PREVIOUS_TXID`), amount carried (WITNESS_UTXO value), fee.
 

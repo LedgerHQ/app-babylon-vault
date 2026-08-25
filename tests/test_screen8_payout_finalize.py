@@ -442,10 +442,13 @@ def test_payout_finalize_input0_marked_internal(
 ) -> None:
     """PayoutFinalize fails when Input 0 carries the payout leaf (inputs swapped).
 
-    The firmware guards against Input 0 being signed via bitvector_get(internal_inputs, 0).
-    Swapping the two inputs produces a PSBT where Input 0 has the payout leaf and
-    TAP_BIP32_DERIVATION (so the sign_psbt framework marks it internal), while Input 1
-    is external.  The guard fires before any further validation.
+    PayoutFinalize signs Input 1 (the Assert:0 connector); Input 0 is the Vault UTXO and
+    carries no signing request.  Swapping the two inputs therefore leaves Input 1 without
+    a TAP_LEAF_SCRIPT, and validation rejects it when it tries to read the payout leaf.
+
+    Note this does NOT exercise a bitvector_get(internal_inputs, 0) guard: preprocess_inputs
+    only sets bits for wallet-policy inputs, so that bit is structurally always 0 in a
+    no-wallet-policy flow, and the guard was removed as dead.
     """
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
@@ -497,12 +500,12 @@ def test_payout_finalize_sequence_time_based(
 def test_payout_finalize_input1_wrong_value(
     client: "RaggerClient", bitcoin_network: str,
 ) -> None:
-    """PayoutFinalize fails when Input 1 witness_utxo value != VAULT_DUST_LIMIT."""
+    """PayoutFinalize fails when Input 1 witness_utxo value < VAULT_DUST_LIMIT."""
     from ledger_bitcoin.tx import CTxOut
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
     psbt.inputs[1].witness_utxo = CTxOut(
-        _VAULT_DUST_LIMIT + 1,
+        _VAULT_DUST_LIMIT - 1,
         psbt.inputs[1].witness_utxo.scriptPubKey,
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])

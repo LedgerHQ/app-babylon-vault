@@ -99,6 +99,22 @@ bool sign_custom_inputs(
     const vault_intent_t *const intent = &G_vault_intent;
 
     /* -----------------------------------------------------------------------
+     * PoP BIP-322: tx_version == 0 is the unique sentinel for Proof-of-Possession
+     * flows.  PoP produces no vault-protocol signature and must not increment any
+     * signing counter.  validate_and_display_transaction already dispatched PoP to
+     * its own handler; here we simply skip counter accounting.
+     *
+     * The shape assert guards the invariant that makes this early return safe: a
+     * version-0 PSBT reaching the signer has been through _validate_display_pop, which
+     * enforces 1-in/1-out.  Asserting tx_version itself would be tautological.
+     * ----------------------------------------------------------------------- */
+    if (st->tx_version == 0) {
+        LEDGER_ASSERT(st->n_inputs == 1 && st->n_outputs == 1,
+                      "version-0 tx reached signing with non-PoP shape");
+        return true;
+    }
+
+    /* -----------------------------------------------------------------------
      * PegIn (INTENT_LOADED, no wallet policy, n_inputs==1, n_outputs==3)
      *
      * Sign HTLC Leaf 0 (input 0) with the depositor key.
@@ -164,6 +180,9 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        G_vault_context.pegin_group_mask[gi / 8u] |= (1u << (gi % 8u));
+        G_vault_context.pegin_signed++;
+
         if (!sign_sighash_schnorr_and_yield(dc,
                                             st,
                                             0,
@@ -177,8 +196,6 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
-        G_vault_context.pegin_group_mask[gi / 8u] |= (1u << (gi % 8u));
-        G_vault_context.pegin_signed++;
         return true;
     }
 
@@ -201,13 +218,20 @@ bool sign_custom_inputs(
          * Re-read Input 0's TAP_LEAF_SCRIPT (G_scratch.tls clobbered by display).
          * Sign with the depositor path using the reconstructed Assert:0 leaf hash.
          * ------- */
-        if (st->has_no_wallet_policy && st->n_inputs == 3 && st->n_outputs == 1) {
+        if (st->n_inputs == 3 && st->n_outputs == 1) {
             merkleized_map_commitment_t input_map;
             if (!vault_read_refund_leaf_script(dc, st, &input_map)) {
                 vault_context_invalidate(&G_vault_context);
                 return false;
             }
 
+            /* The NoPayout leaf is 68 bytes, so it is always buffered; reject rather than
+             * read a partial buffer if that ever stops holding. */
+            if (!G_leaf_meta.buffered) {
+                vault_context_invalidate(&G_vault_context);
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
             const uint8_t *leaf = G_scratch.tls.leaf_script;
             int leaf_len = G_scratch.tls.leaf_script_len;
 
@@ -215,13 +239,38 @@ bool sign_custom_inputs(
              * depositor.  The validator already checked this on the same PSBT, but
              * the signing path must not silently rely on that to remain safe if
              * validation and signing are ever decoupled. */
-            if (leaf_len != 68 || leaf[0] != OP_PUSHBYTES_32 ||
+            if (leaf_len != (int) VAULT_NOPAYOUT_LEAF_LEN || leaf[0] != OP_PUSHBYTES_32 ||
                 leaf[33] != (uint8_t) OP_CHECKSIGVERIFY || leaf[34] != OP_PUSHBYTES_32 ||
-                leaf[67] != (uint8_t) OP_CHECKSIG ||
+                leaf[VAULT_NOPAYOUT_LEAF_LEN - 1] != (uint8_t) OP_CHECKSIG ||
                 memcmp(leaf + 1, intent->depositor_pk, VAULT_XONLY_PUBKEY_LEN) != 0) {
                 vault_context_invalidate(&G_vault_context);
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
+            }
+
+            /* The challenger key must be the one whose dedup bit is about to be consumed,
+             * otherwise the signature and the burnt slot would refer to different
+             * challengers.  Same reasoning as the depositor-key check above: the validator
+             * reconstructed this leaf byte-for-byte, but signing must not rely on it. */
+            {
+                const unsigned int ci = G_vault_context.nopayout_challenger_index;
+                /* Bound before indexing: keepers occupy [0, keeper_count), universal
+                 * challengers [keeper_count, keeper_count+challenger_count). */
+                if (ci >=
+                    (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count) {
+                    vault_context_invalidate(&G_vault_context);
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
+                const uint8_t *challenger_pk =
+                    ci < (unsigned int) intent->keeper_count
+                        ? intent->keeper_pks[ci]
+                        : intent->challenger_pks[ci - (unsigned int) intent->keeper_count];
+                if (memcmp(leaf + 35, challenger_pk, VAULT_XONLY_PUBKEY_LEN) != 0) {
+                    vault_context_invalidate(&G_vault_context);
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
             }
 
             uint8_t leaf_hash[VAULT_HASH256_LEN];
@@ -253,6 +302,18 @@ bool sign_custom_inputs(
                 return false;
             }
 
+            G_vault_context.nopayout_signed++;
+            /* N-02: mark this (vault_group, challenger) slot as signed to prevent replay.
+             * Committed before the yield so an abort mid-yield (signature already
+             * released to the host) cannot be replayed to re-arm the signing cap. */
+            {
+                unsigned int c =
+                    (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
+                unsigned int slot = (unsigned int) G_vault_context.nopayout_group_index * c +
+                                    (unsigned int) G_vault_context.nopayout_challenger_index;
+                G_vault_context.nopayout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
+            }
+
             if (!sign_sighash_schnorr_and_yield(dc,
                                                 st,
                                                 0,
@@ -266,9 +327,19 @@ bool sign_custom_inputs(
                 vault_context_invalidate(&G_vault_context);
                 return false;
             }
-
-            G_vault_context.nopayout_signed++;
             return true;
+        }
+
+        /* Payout: 2 inputs.  A 3-input PSBT that is not the 3-in/1-out NoPayout above must
+         * not fall through here — it would sign against a stale vault_group_index /
+         * payout_index and burn a payout_claimer_mask bit.  Unreachable today (the
+         * validator's dispatch sends 3-in/1-out to NoPayout and every other validator
+         * rejects 3 inputs), but that safety rests on dispatcher statement ordering
+         * rather than on anything local, so reject explicitly. */
+        if (st->n_inputs != 2) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
         }
 
         /* Payout */
@@ -331,6 +402,12 @@ bool sign_custom_inputs(
             return false; /* SW already sent by callee */
         }
 
+        uint16_t slot =
+            (uint16_t) G_vault_context.vault_group_index * ((uint16_t) intent->keeper_count + 2u) +
+            G_vault_context.payout_index;
+        G_vault_context.payout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
+        G_vault_context.payout_signed++;
+
         if (!sign_sighash_schnorr_and_yield(dc,
                                             st,
                                             0,
@@ -344,12 +421,6 @@ bool sign_custom_inputs(
             vault_context_invalidate(&G_vault_context);
             return false; /* SW already sent by callee */
         }
-
-        uint16_t slot =
-            (uint16_t) G_vault_context.vault_group_index * ((uint16_t) intent->keeper_count + 2u) +
-            G_vault_context.payout_index;
-        G_vault_context.payout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
-        G_vault_context.payout_signed++;
         return true;
     }
 
@@ -360,14 +431,14 @@ bool sign_custom_inputs(
      * through to the standalone signing section.
      * ----------------------------------------------------------------------- */
     if (!st->has_no_wallet_policy && bitvector_get(internal_inputs, 0)) {
-        G_vault_context.pre_pegin_signed++;
         return true;
     }
 
     /* -----------------------------------------------------------------------
      * PayoutFinalize (Screen 8): standalone flow that signs Input 1, not Input 0.
      *
-     * The payout leaf is on Input 1; Input 0 (Assert:0) carries no signing request.
+     * The payout leaf is on Input 1 (the Assert:0 connector); Input 0 is the Vault UTXO
+     * and carries no signing request.
      * Re-read Input 1's TAP_LEAF_SCRIPT via vault_read_payout_leaf_script because
      * display_payout_finalize clobbered G_scratch.tls.  Signing proceeds identically
      * to other standalone flows except the input index is 1.
@@ -386,20 +457,19 @@ bool sign_custom_inputs(
         if (!vault_read_payout_leaf_script(dc, st, &input1_map)) return false;
 
         /* Phase 1: consume G_scratch.tls, populate G_scratch.sign_standalone.
-         * Aliasing rules are the same as the standalone section below. */
-        vault_taproot_leaf_hash(G_scratch.tls.leaf_script,
-                                G_scratch.tls.leaf_script_len,
-                                G_scratch.sign_standalone.leaf_hash);
+         * Aliasing rules are the same as the standalone section below.
+         * The leaf hash and prefix come from G_leaf_meta, not from tls.leaf_script: the
+         * buffer holds the whole script only when G_leaf_meta.buffered is set, and
+         * G_leaf_meta lives outside the union so it is immune to the aliasing dance
+         * below. */
+        memcpy(G_scratch.sign_standalone.leaf_hash, G_leaf_meta.hash, VAULT_HASH256_LEN);
 
-        if (G_scratch.tls.leaf_script_len <= 68 ||
-            G_scratch.tls.leaf_script[0] != OP_PUSHBYTES_32) {
+        if (G_scratch.tls.leaf_script_len <= 68 || G_leaf_meta.prefix[0] != OP_PUSHBYTES_32) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
-        memcpy(G_scratch.sign_standalone.leaf_key,
-               G_scratch.tls.leaf_script + 1,
-               VAULT_XONLY_PUBKEY_LEN);
+        memcpy(G_scratch.sign_standalone.leaf_key, G_leaf_meta.prefix + 1, VAULT_XONLY_PUBKEY_LEN);
 
         if (!read_p2tr_witness_utxo(dc, &input1_map, NULL, G_scratch.sign_standalone.input_spk)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
@@ -504,23 +574,23 @@ bool sign_custom_inputs(
          * Each write targets bytes already dead in tls — see sign_standalone_scratch_t
          * in globals.h for the byte-by-byte aliasing map. */
 
-        /* leaf_hash [0..31]: clobbers tls.found/ambiguous/control_block[0..29] — dead. */
-        vault_taproot_leaf_hash(G_scratch.tls.leaf_script,
-                                G_scratch.tls.leaf_script_len,
-                                G_scratch.sign_standalone.leaf_hash);
+        /* leaf_hash [0..31]: clobbers tls.found/ambiguous/control_block[0..29] — dead.
+         * Copied from G_leaf_meta.hash rather than recomputed over tls.leaf_script: an
+         * Assert leaf too large to buffer has leaf_script_len far beyond the buffer, so
+         * re-hashing it would read past the end.  G_leaf_meta.hash was computed when the
+         * value was read (from the buffer, or incrementally while streaming). */
+        memcpy(G_scratch.sign_standalone.leaf_hash, G_leaf_meta.hash, VAULT_HASH256_LEN);
 
-        /* Read tls.leaf_script_len (offset 2628) and tls.leaf_script[0] (offset 68)
-         * before any write reaches those offsets. */
-        if (G_scratch.tls.leaf_script_len < 34 || G_scratch.tls.leaf_script[0] != OP_PUSHBYTES_32) {
+        /* G_leaf_meta is outside G_scratch, so unlike tls.leaf_script it stays readable
+         * here regardless of write ordering, and is valid whether or not the script was
+         * buffered. */
+        if (G_scratch.tls.leaf_script_len < 34 || G_leaf_meta.prefix[0] != OP_PUSHBYTES_32) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
-        /* leaf_key [32..63]: clobbers tls.control_block[30..62] — dead.
-         * Source tls.leaf_script[1..32] is at offsets [69..100], past dst [32..63]. */
-        memcpy(G_scratch.sign_standalone.leaf_key,
-               G_scratch.tls.leaf_script + 1,
-               VAULT_XONLY_PUBKEY_LEN);
+        /* leaf_key [32..63]: clobbers tls.control_block[30..62] — dead. */
+        memcpy(G_scratch.sign_standalone.leaf_key, G_leaf_meta.prefix + 1, VAULT_XONLY_PUBKEY_LEN);
 
         /* tls is fully consumed.  input_spk [64..97] now clobbers tls.control_block_len
          * (offset 67) and tls.leaf_script[0..29] (offsets 68..97) — all dead. */

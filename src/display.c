@@ -152,7 +152,8 @@ bool display_claim_transaction(dispatcher_context_t *dc,
                                uint64_t amount_spent,
                                uint64_t connector_amount,
                                uint64_t fee,
-                               const uint8_t *pegin_txid) {
+                               const uint8_t *pegin_txid,
+                               const char *out0_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
@@ -160,7 +161,8 @@ bool display_claim_transaction(dispatcher_context_t *dc,
     format_sats_amount(COIN_COINID_SHORT, amount_spent, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, connector_amount, G_scratch.display_tx.extra_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
-    format_hex(pegin_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
+    /* txid_str (65 B): 32-byte txid as 64 hex chars + NUL; addr_str is free for out0_address. */
+    format_hex(pegin_txid, 32, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
 
     int n = 0;
     tx_pairs[n++] =
@@ -170,7 +172,8 @@ bool display_claim_transaction(dispatcher_context_t *dc,
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] =
-        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.addr_str};
+        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Output 0 address", .value = out0_address};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -298,7 +301,8 @@ bool display_wc_transaction(dispatcher_context_t *dc,
 bool display_pop_transaction(dispatcher_context_t *dc,
                              const char *eth_addr,
                              const char *chain_id,
-                             const char *registry) {
+                             const char *registry,
+                             const char *btc_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
@@ -309,6 +313,10 @@ bool display_pop_transaction(dispatcher_context_t *dc,
     strlcpy(G_scratch.display_tx.extra_str, chain_id, TX_DISPLAY_AMOUNT_STR_SIZE);
     // txid_str (65 B): registry address (42 chars + NUL fits within 65 B)
     strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
+    /* btc_addr_buf lives on this function's stack frame, which remains active while
+     * io_ui_process blocks below — NBGL pointer stays valid throughout rendering. */
+    char btc_addr_buf[TX_DISPLAY_ADDR_STR_SIZE];
+    strlcpy(btc_addr_buf, btc_address, sizeof(btc_addr_buf));
 
     int n = 0;
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Ethereum address",
@@ -317,6 +325,7 @@ bool display_pop_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Chain id", .value = G_scratch.display_tx.extra_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry address",
                                              .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Bitcoin address", .value = btc_addr_buf};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -347,7 +356,9 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 bool display_payout_finalize(dispatcher_context_t *dc,
                              uint64_t amount_received,
                              const char *address,
-                             const char *cpfp_address) {
+                             const char *cpfp_address,
+                             uint64_t fee,
+                             const char *vault_prevout_txid) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     nbgl_layoutTagValueList_t pair_list = {0};
@@ -355,10 +366,17 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
 
     int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Vault UTXO txid", .value = vault_prevout_txid};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount received",
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
+    if (fee > 0) {
+        format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+        tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee",
+                                                 .value = G_scratch.display_tx.fee_str};
+    }
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -420,19 +438,19 @@ static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
 
 // ---- Streaming review state machine ----
 //
-// The vault intent is reviewed as a streaming review so the keeper/challenger key
-// list can be made skippable without making the scalar parameters skippable to the
-// approval:
+// The vault intent is reviewed in two streaming phases:
 //
-//   intro → [params segment] → [keys segment] → approve/reject
+//   Phase 1: intro → [params segment] → confirm
+//   Phase 2: intro → [vault groups] → [keys segment] → approve/reject
 //
-// On touch, SKIPPABLE_OPERATION enables a "Skip" affordance. The SDK shows it on
-// every content segment (it cannot be scoped to one segment), so skip is wired by
-// destination instead: skipping the params segment only advances to the keys
-// segment (params can never be skipped straight to approval), while skipping the
-// keys segment jumps to the approval page. On nano the flag is left off (the SDK
-// would otherwise interleave a skip page after every screen), so the skip
-// callbacks below are simply never invoked there.
+// Neither phase is skippable.  Every field shown here is a displayed-and-approved
+// field in the HLD's intent TLV table, and this approval is the only anchor for the
+// silent signing that follows it (Pre-PegIn signs with no further screen), so no part
+// of it may be bypassed.  The two-phase split remains because the NBGL SDK's
+// SKIPPABLE_OPERATION flag applies to every segment of a streaming review equally:
+// keeping the phases separate means a future decision to make one of them skippable
+// does not silently make the other skippable too.  On nano there is no skip affordance
+// in any case (a non-NULL skipCallback would interleave a skip page after every screen).
 //
 // All intent data is already in G_vault_intent, so the whole chain is driven from
 // the choice/skip callbacks within a single io_ui_process() pump in
@@ -459,15 +477,6 @@ static void vault_stream_keys(void);
 static void vault_stream_finish(void);
 static void vault_stream_group(void);
 
-// Skip is touch-only. On nano, the SDK keys its skip page off a non-NULL
-// skipCallback (not off SKIPPABLE_OPERATION), so passing one would insert a skip
-// page before every screen even with the flag cleared — pass NULL there.
-#ifdef SCREEN_SIZE_WALLET
-#define VAULT_SKIP_CB(cb) (cb)
-#else
-#define VAULT_SKIP_CB(cb) NULL
-#endif
-
 static void vault_stream_reject(void) {
     set_ux_flow_response(false);
     nbgl_useCaseReviewStatus(STATUS_TYPE_OPERATION_REJECTED, ui_menu_main);
@@ -480,7 +489,7 @@ static void vault_stream_final_choice(bool approved) {
         ui_menu_main);
 }
 
-// After the keys segment (paged through) or its Skip: go to the approval page.
+// After the keys segment has been paged through: go to the approval page.
 static void vault_stream_finish(void) {
     nbgl_useCaseReviewStreamingFinish(VAULT_INTENT_FINISH_TITLE, vault_stream_final_choice);
 }
@@ -493,12 +502,11 @@ static void vault_after_keys(bool confirm) {
     vault_stream_finish();
 }
 
-// After the params segment (paged through) or its Skip: go to the keys segment.
-// vault_stream_finish is the keys segment's skip callback (Skip on keys → approve).
+// After all vault groups are confirmed: show the keys segment.
 static void vault_stream_keys(void) {
-    nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list,
-                                           vault_after_keys,
-                                           VAULT_SKIP_CB(vault_stream_finish));
+    /* No skip callback: the keeper/challenger key list is the participant set the whole
+     * intent rests on, and must be reviewed in full. */
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list, vault_after_keys, NULL);
 }
 
 static void vault_after_group(bool confirm) {
@@ -535,7 +543,7 @@ static void vault_stream_group(void) {
         (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = g_grp_vp_str};
     g_vault_grp_pairs[2] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = g_grp_amt_str};
     g_vault_grp_pairs[3] =
-        (nbgl_layoutTagValue_t) {.item = "Commission fee", .value = g_grp_comm_str};
+        (nbgl_layoutTagValue_t) {.item = "Max commission fee", .value = g_grp_comm_str};
     g_vault_grp_pairs[4] =
         (nbgl_layoutTagValue_t) {.item = "Depositor claim", .value = g_grp_claim_str};
     g_vault_grp_pairs[5] =
@@ -545,30 +553,57 @@ static void vault_stream_group(void) {
     g_vault_grp_list.nbPairs = 6;
     g_vault_grp_list.nbMaxLinesForValue = 0;
 
-    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list,
-                                           vault_after_group,
-                                           VAULT_SKIP_CB(vault_stream_keys));
+    /* No skip callback: each group's vault amount, commission fee, depositor claim and
+     * PegIn fee are all displayed-and-approved fields (S-01 / Govard #5 / D7). */
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list, vault_after_group, NULL);
 }
 
+#ifdef SCREEN_SIZE_WALLET
+// Entry point for phase 2 (touch only): the skippable streaming review for vault
+// groups and keys.  Called when the phase 2 intro "Continue" is pressed.
+static void vault_stream_vaults_start(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_group();
+}
+#endif
+
+// After the params segment is confirmed: on touch, start a new skippable streaming
+// review for vault groups and keys (phase 2).  On nano, continue the existing
+// streaming review directly.
 static void vault_after_params(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
         return;
     }
     g_stream_vault_idx = 0;
+#ifdef SCREEN_SIZE_WALLET
+    /* Deliberately NOT SKIPPABLE_OPERATION.  Every field in this review is marked as
+     * displayed-and-approved by the HLD's intent TLV table, and this approval is the sole
+     * anchor for subsequent *silent* signing (Pre-PegIn signs with no further screen), so
+     * nothing here may be bypassed.  NBGL arms Skip for a whole streaming review and
+     * excludes per-page narrowing for STREAMING_NAV, so the flag cannot be limited to the
+     * vault-group segments while keeping the keeper/challenger key list mandatory. */
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION,
+                                     &ICON_APP_ACTION,
+                                     VAULT_INTENT_REVIEW_TITLE,
+                                     NULL,
+                                     vault_stream_vaults_start);
+#else
     vault_stream_group();
+#endif
 }
 
-// After the intro page: start the params segment. vault_stream_keys is the params
-// segment's skip callback (Skip on params → keys, never straight to approval).
+// After the phase 1 intro: start the params segment.  No skip callback — params
+// are always reviewed in full before vault group details are shown.
 static void vault_stream_intro_choice(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
         return;
     }
-    nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list,
-                                           vault_after_params,
-                                           VAULT_SKIP_CB(vault_stream_keys));
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list, vault_after_params, NULL);
 }
 
 // Called by NBGL lazily for each key pair it needs to render.
@@ -602,6 +637,7 @@ static nbgl_contentTagValue_t *_vault_key_pair_callback(uint8_t pairIndex) {
                G_scratch.display.key_str[slot],
                sizeof(G_scratch.display.key_str[slot]));
     nbgl_contentTagValue_t *pair = (nbgl_contentTagValue_t *) G_scratch.display.key_pair_raw[slot];
+    memset(pair, 0, sizeof(*pair));
     pair->item = G_scratch.display.key_label[slot];
     pair->value = G_scratch.display.key_str[slot];
     return pair;
@@ -621,6 +657,7 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_refund_tl_str[VAULT_TIMELOCK_STR_SIZE];
+    char vault_prepegin_fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
 
     int n = 0;
 
@@ -661,6 +698,10 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Refund timelock", .value = vault_refund_tl_str};
 
+    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.prepegin_max_fee, vault_prepegin_fee_str);
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Max Pre-PegIn fee", .value = vault_prepegin_fee_str};
+
     LEDGER_ASSERT(n <= VAULT_INTENT_MAX_PAIRS, "Too many pairs");
 
     // Scalar params segment: pairs live in vault_pairs_raw; value strings live on
@@ -678,15 +719,9 @@ bool display_vault_intent(dispatcher_context_t *dc) {
         (uint8_t) (G_vault_intent.keeper_count + G_vault_intent.challenger_count);
     g_vault_keys_list.nbMaxLinesForValue = 0;
 
-    // Skip is offered on touch only. On nano the SDK interleaves a "press both to
-    // skip" page after every content screen, which is far worse than just clicking
-    // through — so nano gets the plain (non-skippable) streaming review.
-    nbgl_operationType_t op_type = TYPE_OPERATION;
-#ifdef SCREEN_SIZE_WALLET
-    op_type |= SKIPPABLE_OPERATION;
-#endif
-
-    nbgl_useCaseReviewStreamingStart(op_type,
+    // Phase 1: review for global parameters.  SKIPPABLE_OPERATION is intentionally
+    // absent here and in phase 2 — see the file-header note.
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION,
                                      &ICON_APP_ACTION,
                                      VAULT_INTENT_REVIEW_TITLE,
                                      NULL,
