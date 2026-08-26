@@ -302,17 +302,9 @@ bool sign_custom_inputs(
                 return false;
             }
 
-            G_vault_context.nopayout_signed++;
-            /* N-02: mark this (vault_group, challenger) slot as signed to prevent replay.
-             * Committed before the yield so an abort mid-yield (signature already
+            /* Incremented before the yield so an abort mid-yield (signature already
              * released to the host) cannot be replayed to re-arm the signing cap. */
-            {
-                unsigned int c =
-                    (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
-                unsigned int slot = (unsigned int) G_vault_context.nopayout_group_index * c +
-                                    (unsigned int) G_vault_context.nopayout_challenger_index;
-                G_vault_context.nopayout_claimer_mask[slot / 8u] |= (1u << (slot % 8u));
-            }
+            G_vault_context.nopayout_signed++;
 
             if (!sign_sighash_schnorr_and_yield(dc,
                                                 st,

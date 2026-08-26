@@ -20,16 +20,14 @@
 //   sig cap counters       8 B  (pre_pegin/pegin/payout/nopayout _signed, 2 B each)
 //   payout_claimer_mask   43 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+2) bits, per-slot dedup)
 //   pegin_group_mask       2 B  (VAULT_MAX_VAULTS=10 bits, per-group dedup)
-//   nopayout_claimer_mask 80 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+VAULT_MAX_CHALLENGERS) bits)
 //   nopayout_challenger_index 1 B
-//   nopayout_group_index   1 B
 //   vault_group_index      1 B
 //   is_payout_signing      1 B  + padding
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding
 //   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
 //   app_name_len           1 B  + padding
-//   total               ~638 B  (sizeof verified at compile time)
+//   total               ~557 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B
@@ -54,21 +52,16 @@ _Static_assert(sizeof(vault_context_t) <= 700, "vault_context_t exceeds expected
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
                "vault_scratch_t size != refund_leaf_check_t; check union definition");
-/* The dedup slot counts must cover the worst case each slot formula can produce, given the
- * parse-time ranges (vault_count <= VAULT_MAX_VAULTS, keeper_count <= VAULT_MAX_KEEPERS,
- * challenger_count <= VAULT_MAX_CHALLENGERS).  The masks are sized from these same counts,
- * so this is what actually ties the formulas to the allocation:
- *   payout   worst slot = (V-1)*(N+2)   + (N+1)     = V*(N+2)   - 1
- *   nopayout worst slot = (V-1)*(N+M)   + (N+M-1)   = V*(N+M)   - 1
- * Widening a stride without updating the SLOT_COUNT macro breaks the build here rather
+/* The dedup slot count must cover the worst case the slot formula can produce, given the
+ * parse-time ranges (vault_count <= VAULT_MAX_VAULTS, keeper_count <= VAULT_MAX_KEEPERS).
+ * The mask is sized from these same counts, so this is what actually ties the formula to
+ * the allocation:
+ *   payout worst slot = (V-1)*(N+2) + (N+1) = V*(N+2) - 1
+ * Widening the stride without updating the SLOT_COUNT macro breaks the build here rather
  * than overflowing the bitmask at runtime. */
 _Static_assert((VAULT_MAX_VAULTS - 1u) * (VAULT_MAX_KEEPERS + 2u) + (VAULT_MAX_KEEPERS + 1u) <
                    VAULT_PAYOUT_SLOT_COUNT,
                "payout slot formula can exceed VAULT_PAYOUT_SLOT_COUNT");
-_Static_assert((VAULT_MAX_VAULTS - 1u) * (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) +
-                       (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS - 1u) <
-                   VAULT_NOPAYOUT_SLOT_COUNT,
-               "nopayout slot formula can exceed VAULT_NOPAYOUT_SLOT_COUNT");
 
 /* refund_leaf_check.actual_buf must hold the largest possible leaf0 script + 1 version byte.
  * encode_multisig_group upper bound: key_count * 34 + 6 bytes per group.

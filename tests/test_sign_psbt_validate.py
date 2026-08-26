@@ -136,6 +136,11 @@ VAULT_SCRIPT_MAX_LEN  = 2560
 # Pre-PegIn txid committed in the intent; used by PegIn/Payout validators.
 _PREPEGIN_TXID = bytes(range(32))
 
+# Assert txid spent by NoPayout Input 0. Arbitrary on purpose: the device cannot
+# reconstruct the Assert txid (Assert:0 embeds Council keys and the connectors embed fresh
+# WOTS chain tips, none of them carried in the intent), so it never checks this value.
+_ASSERT_TXID = bytes([0xA5]) * 32
+
 
 # ---------------------------------------------------------------------------
 # Python replicas of the C vault_script.c leaf builders
@@ -2160,6 +2165,101 @@ def test_sign_psbt_payout_wrong_claimer_order(
     _assert_single_schnorr_sig(result, dep_pk)
 
 
+# ===========================================================================
+# Payout — host-provided (VK/VP registered address) output script length
+#
+# Out0 of a VK payout is value-only: the address is registered in the vault contract, so
+# the device cannot derive it and enforces only length and not-OP_RETURN. The accepted
+# range is VAULT_PAYOUT_SPK_MIN_LEN..VAULT_PAYOUT_SPK_MAX_LEN.
+#
+# The upper bound is the base app's MAX_OUTPUT_SCRIPTPUBKEY_LEN, not the vault contract's
+# MAX_PAYOUT_ADDRESS_LENGTH (128): hash_output_n reads every output script into that buffer
+# while computing the sighash, so a longer output cannot be signed at all. Registrable
+# addresses in 84..128 bytes — in practice only bare multisig of 3+ compressed keys — are
+# therefore out of reach until the submoduled base app widens its buffer.
+# ===========================================================================
+
+_PAYOUT_SPK_MIN_LEN = 22  # must match VAULT_PAYOUT_SPK_MIN_LEN in vault_script.h
+_PAYOUT_SPK_MAX_LEN = 83  # must match MAX_OUTPUT_SCRIPTPUBKEY_LEN in the base app
+
+
+@pytest.mark.parametrize("spk_len", [_PAYOUT_SPK_MIN_LEN, 34, 42, _PAYOUT_SPK_MAX_LEN])
+def test_sign_psbt_payout_host_spk_length_accepted(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+    spk_len: int,
+) -> None:
+    """A VK payout Out0 script anywhere in 22..83 bytes is accepted.
+
+    Covers every standard address type the device can sign for: P2WPKH (22), P2WSH/P2TR
+    (34), the longest future witness program (42), and the buffer boundary (83).
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
+    psbt.tx.vout[0].scriptPubKey = bytes([0x51, spk_len - 2]) + bytes(spk_len - 2)
+    assert len(psbt.tx.vout[0].scriptPubKey) == spk_len
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
+
+
+@pytest.mark.parametrize("spk_len", [1, _PAYOUT_SPK_MIN_LEN - 1, _PAYOUT_SPK_MAX_LEN + 1, 105])
+def test_sign_psbt_payout_host_spk_length_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+    spk_len: int,
+) -> None:
+    """A VK payout Out0 script outside 22..83 bytes is refused.
+
+    Below 22 no standard output script exists. Above 83 the base app cannot hash the output
+    into the sighash, so the signature could never be produced; 105 is the concrete case —
+    a compressed 3-of-3 bare multisig, registrable in the contract but unsignable here.
+    Both ends fail closed rather than being signed over.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
+    psbt.tx.vout[0].scriptPubKey = bytes([0x51]) + bytes(spk_len - 1)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_payout_host_spk_op_return_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """A VK payout Out0 paying to OP_RETURN is refused — the funds would be unspendable."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
+    psbt.tx.vout[0].scriptPubKey = bytes([0x6A, 0x20]) + bytes(32)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_sign_psbt_payout_fee_too_high(
     client: "RaggerClient",
     navigator: Navigator,
@@ -2937,46 +3037,21 @@ def test_sign_psbt_payout_depositor_wrong_cpfp_anchor_key(
 def _build_nopayout_psbt(
     depositor_pk: bytes,
     challenger_pk: bytes,
-    prepegin_txid: bytes = _PREPEGIN_TXID,
-    keeper_pks: Optional[List[bytes]] = None,
-    challenger_pks: Optional[List[bytes]] = None,
-    vp_key: Optional[bytes] = None,
-    vault_amount: int = _VAULT_AMOUNT,
-    depositor_claim_value: int = _DEPOSITOR_CLAIM_VALUE,
-    pegin_csv_timelock: int = _PEGIN_CSV_TIMELOCK,
-    htlc_vout: int = _HTLC_VOUT,
+    assert_txid: bytes = _ASSERT_TXID,
 ) -> PSBT:
     """Build a NoPayout PSBT: 3 custom inputs, 1 output.
 
     Input 0: NoPayout leaf <D> OP_CHECKSIGVERIFY <Cj> OP_CHECKSIG (68 bytes),
              single-leaf P2TR (NUMS internal key), value=VAULT_DUST_LIMIT.
-             Its prevout must be the group's computed PegIn txid:0 — the firmware
-             identifies the vault group by matching Input 0's PREVIOUS_TXID against
-             vault_compute_pegin_txid (see _validate_nopayout's N-02 dedup comment).
+             Its prevout is Assert:0 (HLD: NoPayout Input 0 spends the depositor graph's
+             Assert output 0). Only vout==0 is checked; the txid is unconstrained because
+             the device cannot reconstruct the Assert txid.
     Inputs 1, 2: ChallengeAssert connectors — WITNESS_UTXO only (device ignores script).
     Output 0: P2TR(key-path-tweak(challenger_pk)) — device verifies this exact scriptPubKey.
 
-    keeper_pks / challenger_pks must match the intent approved via _setup_payout_state /
-    _setup_s2_state (they determine the Vault UTXO scriptPubKey and hence the PegIn txid).
+    Needs no intent geometry: the leaf and the output are functions of (depositor,
+    challenger) alone, which is exactly why the device cannot tell vault groups apart here.
     """
-    if keeper_pks is None:
-        keeper_pks = _TEST_KEEPER_PKS
-    if challenger_pks is None:
-        challenger_pks = _TEST_CHALLENGER_PKS
-    if vp_key is None:
-        vp_key = TEST_VP_KEY
-
-    vault_utxo_leaf = _vault_utxo_leaf(
-        depositor_pk, vp_key, keeper_pks, challenger_pks, pegin_csv_timelock,
-    )
-    claim_leaf = _depositor_claim_leaf(depositor_pk)
-    vault_utxo_spk = _p2tr_from_single_leaf(vault_utxo_leaf)
-    claim_spk = _p2tr_from_single_leaf(claim_leaf)
-    computed_pegin_txid = _compute_pegin_txid(
-        prepegin_txid, htlc_vout, vault_amount, vault_utxo_spk,
-        depositor_claim_value, claim_spk,
-    )
-
     nopayout_leaf = bytes([0x20]) + depositor_pk + bytes([0xAD, 0x20]) + challenger_pk + bytes([0xAC])
     assert len(nopayout_leaf) == 68, f"NoPayout leaf must be exactly 68 bytes, got {len(nopayout_leaf)}"
 
@@ -2994,7 +3069,7 @@ def _build_nopayout_psbt(
     tx.nVersion = 2
     tx.nLockTime = 0
     tx.vin = [CTxIn(), CTxIn(), CTxIn()]
-    tx.vin[0].prevout = COutPoint(int.from_bytes(computed_pegin_txid, 'little'), 0)
+    tx.vin[0].prevout = COutPoint(int.from_bytes(assert_txid, 'little'), 0)
     tx.vin[0].nSequence = 0xFFFFFFFF
     for i, fill in enumerate([b'\xdd', b'\xee']):
         tx.vin[1 + i].prevout = COutPoint(int.from_bytes(fill * 32, 'little'), 0)
@@ -3037,6 +3112,56 @@ def test_sign_psbt_nopayout(
     _assert_single_schnorr_sig(result, dep_pk)
 
 
+def test_sign_psbt_nopayout_assert_txid_unconstrained(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout Input 0 accepts any Assert txid — it is not the group's PegIn txid.
+
+    Regression guard: the device used to identify the vault group by matching Input 0's
+    PREVIOUS_TXID against each group's computed PegIn txid, which no real NoPayout PSBT
+    can satisfy — Input 0 spends Assert:0, so its prevout is the Assert txid. That made
+    every NoPayout from btc-vault fail with SW_INCORRECT_DATA.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    # A txid unrelated to any PegIn the intent can compute.
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0], assert_txid=bytes([0x7C]) * 32)
+
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
+
+
+def test_sign_psbt_nopayout_wrong_input0_vout(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout fails when Input 0's prevout vout is not 0 (Assert:0 is always output 0).
+
+    The vout check is the only binding left on the Input 0 prevout, so it must hold.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
+    psbt.tx.vin[0].prevout = COutPoint(psbt.tx.vin[0].prevout.hash, 1)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_sign_psbt_nopayout_cap_exhausted(
     client: "RaggerClient",
     navigator: Navigator,
@@ -3056,9 +3181,8 @@ def test_sign_psbt_nopayout_cap_exhausted(
         psbt = _build_nopayout_psbt(dep_pk, ch_pk)
         client.sign_psbt(psbt, dummy_wallet, None)
 
-    # One more exceeds the cap → SW_CAP_EXCEEDED, even though this exact slot was already
-    # signed. The cap check in _validate_nopayout runs before the dedup check specifically
-    # so that dedup can't mask a cap-exceeded condition.
+    # One more exceeds the cap → SW_CAP_EXCEEDED. nopayout_signed is the only bound on
+    # NoPayout: the vault group is unidentifiable from the PSBT, so there is no per-slot mask.
     over_cap_psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(over_cap_psbt, dummy_wallet, None)
@@ -3101,8 +3225,7 @@ def test_sign_psbt_nopayout_32_challengers(
 
     # Sign with the last challenger key — the device must walk all 33 entries to find it.
     # NoPayout is silent — no display, no navigator interaction required.
-    psbt = _build_nopayout_psbt(dep_pk, challenger_pks[-1],
-                                keeper_pks=keeper_pks, challenger_pks=challenger_pks)
+    psbt = _build_nopayout_psbt(dep_pk, challenger_pks[-1])
     result = client.sign_psbt(psbt, dummy_wallet, None)
     _assert_single_schnorr_sig(result, dep_pk)
 
@@ -4198,9 +4321,7 @@ def test_sign_psbt_cap_recovery_via_new_intent(
     Steps:
     1. Load intent and advance to payout state (pegin_signed=1).
     2. Exhaust NoPayout cap (vault_count × (K+C) = 1 × 2 = 2 signings).
-    3. One more NoPayout → SW_CAP_EXCEEDED (intent nullified) — the cap check in
-       _validate_nopayout runs before the dedup check, so this fires even though the
-       slot being replayed was already signed.
+    3. One more NoPayout → SW_CAP_EXCEEDED (intent nullified).
     4. Re-derive and re-approve a fresh intent.
     5. Sign one NoPayout → SW_OK (cap counters reset).
     """

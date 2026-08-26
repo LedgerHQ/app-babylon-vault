@@ -54,6 +54,22 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
 
+/* Upper bound on a host-provided payout scriptPubKey (VP/VK registered address).
+ *
+ * The vault contract admits up to MAX_PAYOUT_ADDRESS_LENGTH = 128 bytes (Constants.sol),
+ * but the device cannot sign an output longer than the base app hashes: hash_output_n
+ * reads every output script into a MAX_OUTPUT_SCRIPTPUBKEY_LEN buffer while computing the
+ * sighash, so a longer script fails there regardless of what this validator accepts.
+ * Binding the two makes the real ceiling explicit and lifts it automatically if the
+ * submoduled base app ever widens its buffer.
+ *
+ * Practical effect: every standard address type is covered (P2WPKH 22, P2SH 23, P2PKH 25,
+ * P2WSH/P2TR 34, future witness programs <= 42).  Bare multisig above 2 compressed keys
+ * (>= 105 bytes if 3-of-3) is the one registrable script this excludes. */
+#define VAULT_PAYOUT_SPK_MAX_LEN MAX_OUTPUT_SCRIPTPUBKEY_LEN
+_Static_assert(VAULT_PAYOUT_SPK_MAX_LEN >= VAULT_PAYOUT_SPK_MIN_LEN,
+               "payout scriptPubKey bounds inverted — no length would be accepted");
+
 /* NoPayout council transaction vsize upper bound.
  * Assert:0 WITNESS_UTXO value must not exceed VAULT_DUST_LIMIT + base_fee_rate * this value. */
 #define MAX_COUNCIL_NOPAYOUT_VSIZE 500u
@@ -1807,6 +1823,9 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* --- Outputs --- */
     uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
     uint64_t out_value;
+    /* Shared across the host-provided (VP/VK registered address) output reads below; only
+     * one is live at a time, so a single buffer keeps this off the stack three times. */
+    uint8_t host_spk[VAULT_PAYOUT_SPK_MAX_LEN];
 
     /* Out0:
      *   VP or Depositor claimer: depositor receives V - fee (± Fc) — BIP-86 P2TR(depositor).
@@ -1831,16 +1850,16 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
     } else {
         /* VK claimer: value only (v22) — host-provided scriptPubKey from the vault contract,
-         * not reconstructed by the device. Sanity: reject OP_RETURN and sub-P2WPKH scripts. */
-        uint8_t vk_spk[100];
+         * not reconstructed by the device. Sanity: reject OP_RETURN and sub-P2WPKH scripts.
+         * A script above VAULT_PAYOUT_SPK_MAX_LEN does not fit host_spk and so reads short. */
         int vk_spk_len = _read_output_varlen(dc,
                                              st->outputs_root,
                                              st->n_outputs,
                                              0,
-                                             vk_spk,
-                                             sizeof(vk_spk),
+                                             host_spk,
+                                             sizeof(host_spk),
                                              &out_value);
-        if (vk_spk_len < 22 || (uint8_t) vk_spk[0] == 0x6Au) {
+        if (vk_spk_len < (int) VAULT_PAYOUT_SPK_MIN_LEN || host_spk[0] == OP_RETURN) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1869,13 +1888,12 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
         }
     } else {
         /* VP/VK: value only (v22) — host-provided registered address, any standard script. */
-        uint8_t tmp_spk[100];
         if (_read_output_varlen(dc,
                                 st->outputs_root,
                                 st->n_outputs,
                                 1,
-                                tmp_spk,
-                                sizeof(tmp_spk),
+                                host_spk,
+                                sizeof(host_spk),
                                 &out_value) < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1924,13 +1942,12 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* VP only: Out2 = CPFP anchor (VAULT_DUST_LIMIT) to VP's registered address — value only (v22).
      * VP's registered address may be any standard script type; only value is enforced. */
     if (claimer_idx == 0) {
-        uint8_t tmp_spk[100];
         if (_read_output_varlen(dc,
                                 st->outputs_root,
                                 st->n_outputs,
                                 2,
-                                tmp_spk,
-                                sizeof(tmp_spk),
+                                host_spk,
+                                sizeof(host_spk),
                                 &out_value) < 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2187,54 +2204,20 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    /* N-02: per-(vault_group, challenger) dedup.  The NoPayout leaf script cannot identify
-     * the vault group by itself — depositor/keeper/challenger keys are shared across every
-     * group in an intent, so the tweaked output key is a function of (depositor, challenger)
-     * only. The vault group gi is instead identified the same way _validate_payout routes
-     * Payout PSBTs: match Input 0's PREVIOUS_TXID against vault_compute_pegin_txid for each
-     * group — the Assert:0/NoPayout leaf spends the group's Vault UTXO (PegIn tx output 0). */
-    int gi = -1;
-    {
-        uint8_t psbt_txid[VAULT_HASH256_LEN];
-        if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
-                                                               &input_map,
-                                                               (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
-                                                               1,
-                                                               psbt_txid,
-                                                               VAULT_HASH256_LEN)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t computed_txid[VAULT_HASH256_LEN];
-        for (uint8_t g = 0; g < intent->vault_count; g++) {
-            if (vault_compute_pegin_txid(intent, (int) g, computed_txid) &&
-                memcmp(psbt_txid, computed_txid, VAULT_HASH256_LEN) == 0) {
-                gi = (int) g;
-                break;
-            }
-        }
-        if (gi < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
-    {
-        unsigned int c =
-            (unsigned int) intent->keeper_count + (unsigned int) intent->challenger_count;
-        unsigned int slot = (unsigned int) gi * c + (unsigned int) challenger_idx;
-        if (G_vault_context.nopayout_claimer_mask[slot / 8u] & (1u << (slot % 8u))) {
-            /* Replay of an already-signed (group, challenger) slot.  Nullify the intent as
-             * the PegIn and Payout dedup paths do: per HLD, any error during a signature
-             * flow nullifies the loaded intent, the context_root and the counters. */
-            vault_context_invalidate(&G_vault_context);
-            SEND_SW(dc, SW_CAP_EXCEEDED);
-            return false;
-        }
-        G_vault_context.nopayout_group_index = (uint8_t) gi;
-    }
+    /* No per-slot dedup is possible here, so nopayout_signed is the only bound.
+     *
+     * Identifying the vault group would be a prerequisite, and nothing in a NoPayout PSBT
+     * can supply it: depositor/keeper/challenger keys are shared across every group in an
+     * intent, so the leaf and its tweaked output key are a function of (depositor,
+     * challenger) alone.  Input 0's PREVIOUS_TXID is the Assert txid, which the device
+     * cannot recompute — Assert:0 embeds Council keys and the connectors embed fresh WOTS
+     * chain tips, none of which are carried in the intent.  Per HLD the residual exposure
+     * is DoS only: an unbound prevout cannot redirect funds, because Output 0 is pinned to
+     * P2TR(Challenger_j) and the taproot commitment above binds the spent UTXO to the
+     * reconstructed leaf.  The V×(N+M) cap bounds how far a host can push that DoS. */
 
-    /* Stash challenger index for sign_custom_inputs, which commits the dedup bit before
-     * the signature yield (so an abort mid-yield cannot be replayed). */
+    /* Stash challenger index for sign_custom_inputs, which re-checks the leaf's challenger
+     * key against the intent before signing. */
     G_vault_context.nopayout_challenger_index = (uint8_t) challenger_idx;
 
     return true;
