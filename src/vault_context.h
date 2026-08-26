@@ -17,14 +17,11 @@
  *
  *   payout   slot = gi * (keeper_count + 2) + payout_index,
  *                   payout_index in [0, keeper_count + 1]   (0 = VP, 1..N = VK, N+1 = depositor)
- *   nopayout slot = gi * (keeper_count + challenger_count) + challenger_idx,
- *                   challenger_idx in [0, keeper_count + challenger_count - 1]
  *
- * nopayout_claimer_mask is exactly full at the maximum configuration
- * (10 * 64 = 640 bits), so it has no spare bits to absorb a widened stride.
+ * NoPayout has no slot formula: its vault group cannot be identified from the PSBT, so it
+ * is bounded by the nopayout_signed counter alone (see _validate_nopayout).
  */
-#define VAULT_PAYOUT_SLOT_COUNT   (VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + 2u))
-#define VAULT_NOPAYOUT_SLOT_COUNT (VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS))
+#define VAULT_PAYOUT_SLOT_COUNT (VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + 2u))
 
 /**
  * @brief Session state machine states.
@@ -133,30 +130,15 @@ typedef struct {
     uint8_t pegin_group_mask[(VAULT_MAX_VAULTS + 7u) / 8u];
 
     /**
-     * Per-(vault_group, challenger) NoPayout deduplication bitmask.
-     *
-     * Bit (gi*(keeper_count+challenger_count)+challenger_idx) is set before the NoPayout
-     * PSBT for that (vault group, challenger) pair is signed, preventing replay of the
-     * same NoPayout PSBT to exhaust the cap.  The vault group index gi is inferred by
-     * matching Input 0's PREVIOUS_TXID against each group's computed PegIn txid.
-     * Cleared by vault_context_invalidate.
-     */
-    uint8_t nopayout_claimer_mask[VAULT_BITMASK_BYTES(VAULT_NOPAYOUT_SLOT_COUNT)];
-
-    /**
      * Challenger index for the NoPayout currently being validated/signed.
      * Ranges 0..keeper_count+challenger_count-1.
-     * Set by _validate_nopayout; read by sign_custom_inputs to set the dedup bit.
+     * Set by _validate_nopayout; read by sign_custom_inputs to re-check the leaf's
+     * challenger key against the intent before signing.
+     *
+     * NoPayout has no per-slot dedup mask: its vault group is unidentifiable from the
+     * PSBT (see _validate_nopayout), so nopayout_signed is the only bound.
      */
     uint8_t nopayout_challenger_index;
-
-    /**
-     * Group index for the NoPayout currently being validated/signed.
-     * Ranges 0..vault_count-1; assigned by _validate_nopayout by matching Input 0's
-     * PREVIOUS_TXID against each group's computed PegIn txid.
-     * Set by _validate_nopayout; read by sign_custom_inputs to set the dedup bit.
-     */
-    uint8_t nopayout_group_index;
 
     /**
      * Dual-use field:

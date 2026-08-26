@@ -24,6 +24,7 @@
  * absent from the upstream opcodetype enum.  Bitcoin consensus constants —
  * these values are immutable (changing them would be a hard fork). */
 #define OP_1            0x51u /* SegWit version 1 (first byte of every P2TR scriptPubKey) */
+#define OP_RETURN       0x6Au /* marks an output provably unspendable */
 #define OP_PUSHBYTES_1  0x01u
 #define OP_PUSHBYTES_2  0x02u
 #define OP_PUSHBYTES_32 0x20u
@@ -33,6 +34,14 @@
 #define TAPSCRIPT_LEAF_VERSION      0xC0u /* BIP-341 tapscript leaf version */
 #define VAULT_SCRIPT_MAX_LEN        2560
 #define VAULT_P2TR_SCRIPTPUBKEY_LEN (2 + VAULT_XONLY_PUBKEY_LEN) /* OP_1 OP_PUSHBYTES_32 <key> */
+
+/* Lower bound on a host-provided payout scriptPubKey — a VaultProvider or VaultKeeper
+ * address registered in the vault contract, which the device cannot derive and so accepts
+ * as-is.  P2WPKH is the shortest standard output script: the HLD admits "any standard
+ * address type", and anything shorter is non-standard and unspendable, so it is refused
+ * rather than signed over.  The upper bound lives in sign_psbt_validate.c, where the
+ * base app's sighash constraint that sets it is in scope. */
+#define VAULT_PAYOUT_SPK_MIN_LEN 22u
 
 /** Byte length of the depositor-claim leaf: OP_PUSHBYTES_32 <D[32]> OP_CHECKSIG */
 #define VAULT_DEPOSITOR_CLAIM_LEAF_LEN (1u + VAULT_XONLY_PUBKEY_LEN + 1u)
