@@ -364,7 +364,10 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
+    // The fee pair is unconditional: a suppressed row is indistinguishable from a
+    // zero fee, and the user must never approve a payout with no fee shown.
     int n = 0;
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Vault UTXO txid", .value = vault_prevout_txid};
@@ -372,11 +375,8 @@ bool display_payout_finalize(dispatcher_context_t *dc,
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
-    if (fee > 0) {
-        format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
-        tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee",
-                                                 .value = G_scratch.display_tx.fee_str};
-    }
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
