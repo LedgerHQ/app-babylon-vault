@@ -133,8 +133,9 @@ bool display_pop_transaction(dispatcher_context_t *dc,
  * @param cpfp_address        NUL-terminated bech32m address for Output 1 (CPFP anchor);
  *                            caller keeps valid.
  * @param fee                 Transaction fee in satoshis (total inputs − outputs).
- * @param vault_prevout_txid  NUL-terminated 64-char hex string of the Vault UTXO prevout txid;
- *                            caller must keep valid across the blocking io_ui_process call.
+ * @param vault_prevout_txid  NUL-terminated 64-char hex string of Input 0's prevout txid —
+ *                            the Vault UTXO the funds leave from.  Caller must keep it valid
+ *                            across the blocking io_ui_process call.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */

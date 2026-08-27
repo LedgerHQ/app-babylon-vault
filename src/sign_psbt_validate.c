@@ -3296,11 +3296,22 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
      * The zero-floor above and the intent-bound fee cap below (when Input 0 txid matches a
      * vault group) guard the depositor's payout. */
 
-    /* Read Input 1 prevout txid (Assert:0 UTXO) for display on Screen 8. */
+    /* Read Input 0's prevout txid — the Vault UTXO the funds leave from — for Screen 8.
+     * Input 0 carries no signing request and no attested value, so naming it on screen is
+     * the only way the depositor learns which UTXO is being spent; Input 1 (the Assert:0
+     * connector) is already pinned by the leaf-script and taproot-commitment checks above.
+     * G_scratch discipline: sign_standalone (which aliases display_tx) is fully consumed by
+     * the derivation block above, so writing txid_str here is safe, and this read only
+     * touches base-app buffers. */
     {
+        merkleized_map_commitment_t input0_map;
+        if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, 0, &input0_map) < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
         uint8_t vault_txid[VAULT_HASH256_LEN];
         if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
-                                                               &input1_map,
+                                                               &input0_map,
                                                                (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
                                                                1,
                                                                vault_txid,
