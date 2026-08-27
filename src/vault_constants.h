@@ -153,6 +153,14 @@
  *  time in btc-vault by BIG_BLOCK_DIGIT_COUNTS = [64, 64] and
  *  ASSERT_WOTS_NUM_STREAMS = 1; only the signer prefix varies with the challenger
  *  counts, giving 11,526 B at 1/1 and 13,636 B at the 32/32 maximum.  16 KB leaves
- *  headroom for the prefix without admitting an unbounded stream, which would
- *  otherwise let a host hold the device in a read loop indefinitely. */
+ *  headroom for the prefix.
+ *
+ *  Scope of the cap: it bounds what the device will *process*.  A value declaring
+ *  more than this is refused before any byte of it is hashed or buffered, and the
+ *  read is failed once it returns.  It does NOT bound the exchange itself: the base
+ *  app's call_stream_preimage takes a length callback returning void, so the app has
+ *  no way to abort a read the host has already started, and the host still drives one
+ *  CCMD_GET_MORE_ELEMENTS round-trip per chunk of whatever length it declared.
+ *  Bounding the round-trips requires an abort channel in the base app — see
+ *  docs/upstream-stream-preimage-abort.md. */
 #define VAULT_ASSERT_SCRIPT_MAX_LEN 16384u

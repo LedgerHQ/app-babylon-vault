@@ -468,18 +468,31 @@ def test_sign_psbt_assert_real_size_leaf_screen(
                                        nav_instructions=sign_psbt_assert_approve_nav(device))
 
 
+@pytest.mark.parametrize("script_len", [
+    16384,  # first REJECTED script length: the PSBT value is script_len + 1 = 16385 > cap
+    16385,
+])
 def test_sign_psbt_assert_leaf_over_stream_cap_is_rejected(
     client: "RaggerClient",
     bitcoin_network: str,
+    script_len: int,
 ) -> None:
-    """A leaf beyond VAULT_ASSERT_SCRIPT_MAX_LEN is rejected rather than streamed.
+    """A leaf whose PSBT value exceeds VAULT_ASSERT_SCRIPT_MAX_LEN is refused, not hashed.
 
-    The streaming path is bounded so a host cannot hold the device in an unbounded read
-    loop.  16384 is the cap, so 16385 must be refused.
+    The cap is applied to the PSBT *value* — <script> || <leaf_version(1)> — so the largest
+    accepted script is 16383 bytes and a 16384-byte script is already one too many.  16384
+    pins that off-by-one; the accepted side of the streaming path is covered by
+    test_sign_psbt_assert_real_size_leaf_screen (11,662 bytes, signs successfully).
+
+    What this proves is that the device refuses to *process* an over-length value: no chunk
+    of it is folded into the TapLeaf hash or buffered, and the read fails.  It does not, and
+    cannot, prove the exchange is bounded — call_stream_preimage's length callback returns
+    void, so the app cannot terminate a read the host has already started.  See
+    docs/upstream-stream-preimage-abort.md.
     """
     fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
     psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
-    leaf = _realistic_assert_leaf(leaf_key, 16385)
+    leaf = _realistic_assert_leaf(leaf_key, script_len)
     _rebuild_assert_commitment(psbt, fingerprint, leaf_key, coin_type, leaf, 5_000_000)
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])

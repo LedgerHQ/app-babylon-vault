@@ -181,14 +181,22 @@ typedef struct {
     uint32_t script_len; /* value_len - 1 */
     uint32_t seen;       /* value bytes consumed so far */
     bool len_known;
-    bool overflow; /* stream delivered more bytes than declared */
+    bool len_rejected; /* declared length outside the accepted range */
+    bool overflow;     /* stream delivered more bytes than declared */
 } leaf_stream_ctx_t;
 
 static void _leaf_stream_len_cb(size_t value_len, void *opaque) {
     leaf_stream_ctx_t *ctx = (leaf_stream_ctx_t *) opaque;
     /* A value of n bytes is <script(n-1)> || <leaf_version(1)>; reject a value with no
-     * room for both, and anything beyond what a taproot script may be. */
-    if (value_len < 2u || value_len > VAULT_ASSERT_SCRIPT_MAX_LEN) return;
+     * room for both, and anything beyond what a taproot script may be.
+     * Recording the rejection is all the app can do here: the base app's length callback
+     * returns void, so the exchange runs to the length the host declared regardless.
+     * This bounds the work per chunk, not the number of round-trips — see
+     * docs/upstream-stream-preimage-abort.md. */
+    if (value_len < 2u || value_len > VAULT_ASSERT_SCRIPT_MAX_LEN) {
+        ctx->len_rejected = true;
+        return;
+    }
     ctx->value_len = (uint32_t) value_len;
     ctx->script_len = (uint32_t) value_len - 1u;
     ctx->len_known = true;
@@ -200,7 +208,9 @@ static void _leaf_stream_len_cb(size_t value_len, void *opaque) {
 
 static void _leaf_stream_data_cb(buffer_t *buf, void *opaque) {
     leaf_stream_ctx_t *ctx = (leaf_stream_ctx_t *) opaque;
-    if (!ctx->len_known) return;
+    /* Once the length was rejected the read still runs to completion, so do no work at
+     * all for the remaining chunks: no hashing, no buffering, no bookkeeping. */
+    if (ctx->len_rejected || !ctx->len_known) return;
 
     const uint8_t *p = buf->ptr + buf->offset;
     size_t n = buf->size - buf->offset;
@@ -257,7 +267,7 @@ static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
                                               _leaf_stream_len_cb,
                                               _leaf_stream_data_cb,
                                               &ctx);
-    if (rc < 0 || !ctx.len_known || ctx.overflow) return false;
+    if (rc < 0 || ctx.len_rejected || !ctx.len_known || ctx.overflow) return false;
     if ((uint32_t) rc != ctx.value_len || ctx.seen != ctx.value_len) return false;
 
     /* The device only supports tapscript leaves, and the version byte carried in the
