@@ -159,15 +159,26 @@ typedef struct {
  *
  * Zeroed by vault_read_refund_leaf_script / vault_read_payout_leaf_script before each
  * scan, alongside the G_scratch.tls memset.
+ *
+ * What survives union reuse, and what does not:
+ *   - Every member of THIS struct (buffered, last_byte, prefix, hash) stays valid across
+ *     a leaf_check reconstruction — that is the whole reason it sits outside the union.
+ *   - Nothing in G_scratch.tls does.  leaf_script, leaf_script_len and leaf_version are
+ *     members of tap_leaf_script_state_t, which aliases leaf_check.actual_buf; note that
+ *     leaf_script_len lands *inside* actual_buf, so rebuilding an expected script there
+ *     destroys it.  The layout assertions in sign_custom_inputs.c and globals.c pin the
+ *     offsets this depends on.
+ * Read leaf_script / leaf_script_len / leaf_version only between a vault_read_* return
+ * and the next write to leaf_check.
  */
 typedef struct {
     /**
      * True when G_scratch.tls.leaf_script holds the complete script.  False when the
      * script was too large to buffer (real Assert leaves are 11.5-13.6 KB) and was
-     * hashed by streaming instead — in that case leaf_script holds nothing usable and
-     * only the fields below, plus leaf_script_len, are meaningful.  Any consumer that
-     * compares the leaf byte-for-byte against a reconstructed script MUST reject when
-     * this is false.
+     * hashed by streaming instead — in that case leaf_script holds nothing usable, and
+     * the fields below are the only description of the leaf that outlives a leaf_check
+     * reconstruction.  Any consumer that compares the leaf byte-for-byte against a
+     * reconstructed script MUST reject when this is false.
      */
     bool buffered;
 

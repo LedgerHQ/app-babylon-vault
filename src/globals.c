@@ -84,6 +84,24 @@ _Static_assert(
         2298,
     "G_scratch union overlap threshold changed; update comment in _tap_leaf_script_callback");
 
+/* _detect_payout_claimer rebuilds the expected payout leaf into leaf_check.actual_buf and
+ * compares it byte-for-byte against tls.leaf_script.  Because the two alias, a
+ * reconstruction longer than the overlap threshold would overwrite the very bytes being
+ * compared, and the memcmp would compare the rebuild against itself.
+ * vault_build_assert0_payout_leaf upper bound:
+ *   34 (claimer push + OP_CHECKSIGVERIFY) + AppChallengers group + UC group
+ *   + 6 (timelock push + OP_CSV), each group bounded by key_count * 34 + 6
+ *   = 34 + (32K * 34 + 6) + (32C * 34 + 6) + 6 = 2228 B against a 2298 B threshold.
+ * Raising VAULT_MAX_KEEPERS / VAULT_MAX_CHALLENGERS therefore breaks the build here
+ * rather than silently invalidating the comparison. */
+#define _VAULT_MAX_ASSERT0_PAYOUT_LEAF \
+    (34 + (VAULT_MAX_KEEPERS * 34 + 6) + (VAULT_MAX_CHALLENGERS * 34 + 6) + 6)
+_Static_assert(_VAULT_MAX_ASSERT0_PAYOUT_LEAF <= offsetof(vault_scratch_t, leaf_check.actual_buf) -
+                                                     offsetof(vault_scratch_t, tls.leaf_script),
+               "max assert0 payout leaf exceeds the tls.leaf_script/actual_buf overlap "
+               "threshold; the byte-for-byte compare in _detect_payout_claimer would "
+               "read bytes the reconstruction just overwrote");
+
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
 vault_scratch_t G_scratch;
