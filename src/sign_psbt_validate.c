@@ -3325,36 +3325,47 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
                    TX_DISPLAY_TXID_STR_SIZE);
     }
 
-    /* Fee bound and display: attested from the sole group's vault_amount when a
-     * single-vault intent is loaded; 0 otherwise (pf_group_idx < 0).
+    /* Fee cap (enforcement only, HLD "PayoutFinalize"): attested from the sole group's
+     * vault_amount when a single-vault intent is loaded; skipped otherwise (pf_group_idx < 0).
      * Formula: implied_fee = vault_amount - VAULT_DUST_LIMIT - amount_received, bounded by
      * base_fee_rate * MAX_PAYOUTFINALIZE_VSIZE.  PayoutFinalize is a fixed 2-in/2-out
      * spend, so its own vsize bound is used rather than the participant-scaled Payout one.
      * No trust is placed in Input 0's WITNESS_UTXO value: the bound rests on the intent.
      * vault_amount > 2*VAULT_DUST_LIMIT is enforced at intent loading time, so
-     * the subtraction of VAULT_DUST_LIMIT cannot underflow. */
-    uint64_t display_fee = 0;
+     * the subtraction of VAULT_DUST_LIMIT cannot underflow.
+     * This bound is deliberately not what gets displayed: it omits Input 1's value and so
+     * understates the real fee. */
     if (pf_group_idx >= 0) {
         uint64_t va = G_vault_intent.groups[pf_group_idx].vault_amount;
         if (amount_received >= va - VAULT_DUST_LIMIT) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        uint64_t fee_pf = va - VAULT_DUST_LIMIT - amount_received;
+        uint64_t implied_fee = va - VAULT_DUST_LIMIT - amount_received;
         if ((uint64_t) MAX_PAYOUTFINALIZE_VSIZE > UINT64_MAX / G_vault_intent.base_fee_rate ||
-            fee_pf > G_vault_intent.base_fee_rate * (uint64_t) MAX_PAYOUTFINALIZE_VSIZE) {
+            implied_fee > G_vault_intent.base_fee_rate * (uint64_t) MAX_PAYOUTFINALIZE_VSIZE) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        display_fee = fee_pf;
     }
+
+    /* Displayed fee is the transaction's own: every input must carry a witness or
+     * non-witness UTXO for preprocess_inputs to accept the PSBT, so inputs_total_amount
+     * covers both inputs.  Input 0's value is host-stated, but Input 1 is signed
+     * SIGHASH_DEFAULT, which commits to every prevout amount — a misstated Input 0 yields
+     * an unusable signature, not a fee the user was misled about. */
+    if (st->inputs_total_amount < st->outputs.total_amount) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint64_t fee = st->inputs_total_amount - st->outputs.total_amount;
 
     /* Both outputs pay the depositor's own BIP-86 address (addr_str, same key for both). */
     if (!display_payout_finalize(dc,
                                  amount_received,
                                  G_scratch.display_tx.addr_str,
                                  G_scratch.display_tx.addr_str,
-                                 display_fee,
+                                 fee,
                                  G_scratch.display_tx.txid_str))
         return false;
     return true;

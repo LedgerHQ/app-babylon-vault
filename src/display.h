@@ -132,7 +132,9 @@ bool display_pop_transaction(dispatcher_context_t *dc,
  * @param address             NUL-terminated bech32m address for Output 0; caller keeps valid.
  * @param cpfp_address        NUL-terminated bech32m address for Output 1 (CPFP anchor);
  *                            caller keeps valid.
- * @param fee                 Transaction fee in satoshis (total inputs − outputs).
+ * @param fee                 Transaction fee in satoshis, as stated by the PSBT: the sum of
+ *                            all input prevout values minus the sum of all output values.
+ *                            Always displayed, including when it is zero.
  * @param vault_prevout_txid  NUL-terminated 64-char hex string of Input 0's prevout txid —
  *                            the Vault UTXO the funds leave from.  Caller must keep it valid
  *                            across the blocking io_ui_process call.
