@@ -126,9 +126,9 @@ bool display_pop_transaction(dispatcher_context_t *dc,
  * @brief Screen 8 — Payout finalize review.
  *
  * Shown when the depositor self-claims after a successful Claim + Assert chain.
- * Displays the vault UTXO txid (Input 0), the amount received, transaction fee,
+ * Displays the vault UTXO txid (Input 0), the amount received, the transaction fee,
  * and both output addresses so the user can verify both outputs pay their own
- * BIP-86 address.
+ * BIP-86 address.  Every field is always rendered; there is no "unknown" encoding.
  *
  * @param amount_received     Output 0 value in satoshis (funds going to depositor).
  * @param address             NUL-terminated bech32m address for Output 0; caller keeps valid.
