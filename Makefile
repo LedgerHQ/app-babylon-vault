@@ -22,7 +22,7 @@
 # Application version
 APPVERSION_M = 0
 APPVERSION_N = 9
-APPVERSION_P = 5
+APPVERSION_P = 6
 APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
 
 # Setting to allow building variant applications
