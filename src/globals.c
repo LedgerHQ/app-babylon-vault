@@ -40,9 +40,9 @@
 //                                         4-slot callback ring buffer
 //   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
 //   G_derive_streaming          ≤    8 B  (N-05 / G#1: outside union to prevent aliasing)
-//   G_leaf_meta                 ≤   72 B  (L-11: outside union — leaf hash/prefix must
+//   G_leaf_meta                 ≤  104 B  (L-11: outside union — leaf hash/prefix must
 //                                         survive a leaf_check reconstruction)
-//                                       ≤ 9136 B  (well within remaining SRAM after min stack)
+//                                       ≤ 9169 B  (well within remaining SRAM after min stack)
 // display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
 // ---------------------------------------------------------------------------
 
@@ -50,6 +50,11 @@ _Static_assert(sizeof(vault_intent_t) <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
 _Static_assert(sizeof(vault_context_t) <= 700, "vault_context_t exceeds expected size");
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
+/* The standalone leaf dispatcher reads the captured prefix up to VAULT_LEAF_GROUP0_OP_OFF
+ * for leaves too large to buffer; a shorter capture would silently hand it a zero byte. */
+_Static_assert(VAULT_LEAF_PREFIX_LEN > VAULT_LEAF_GROUP0_OP_OFF,
+               "captured leaf prefix no longer covers the group-0 shape discriminator");
+_Static_assert(sizeof(vault_leaf_meta_t) <= 104, "vault_leaf_meta_t exceeds its RAM budget");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
                "vault_scratch_t size != refund_leaf_check_t; check union definition");
 /* The dedup slot count must cover the worst case the slot formula can produce, given the

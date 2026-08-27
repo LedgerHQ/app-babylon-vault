@@ -141,9 +141,11 @@
 #define VAULT_MAX_TAPTREE_DEPTH 7u
 
 /** Bytes of a standalone leaf script captured verbatim for shape discrimination.
- *  The widest discriminator reads byte 34 (the Assert challenger-multisig push that
- *  follows OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY), so 35 bytes suffice. */
-#define VAULT_LEAF_PREFIX_LEN 35u
+ *  The widest discriminator reads VAULT_LEAF_GROUP0_OP_OFF (byte 67), the opcode closing
+ *  the first key of the Assert challenger multisig, so 68 bytes are needed.  Capturing
+ *  the whole first signer group rather than only its opening push costs 33 bytes of BSS
+ *  and is what keeps the Assert pattern from matching a leaf whose middle is a no-op. */
+#define VAULT_LEAF_PREFIX_LEN 68u
 
 /** Upper bound on a leaf script the device will hash by streaming.
  *

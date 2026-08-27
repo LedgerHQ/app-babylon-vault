@@ -171,8 +171,8 @@ typedef struct {
     uint8_t last_byte;
 
     /** Leading script bytes, zero-padded, for the standalone shape discriminator (which
-     *  reads up to byte 34) and the <D> key at [1..32].  Callers must still check
-     *  leaf_script_len before trusting a given byte. */
+     *  reads up to VAULT_LEAF_GROUP0_OP_OFF) and the <D> key at [1..32].  Callers must
+     *  still check leaf_script_len before trusting a given byte. */
     uint8_t prefix[VAULT_LEAF_PREFIX_LEN];
 
     /** BIP-341 TapLeaf hash over the whole script, however it was read. */

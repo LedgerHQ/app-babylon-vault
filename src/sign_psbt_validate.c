@@ -160,8 +160,8 @@ static int _read_output_varlen(dispatcher_context_t *dc,
  * 11.5-13.6 KB (btc-vault claim_assert.rs) against a VAULT_SCRIPT_MAX_LEN buffer, so
  * they cannot be buffered — and they need not be: the only things the device requires
  * from an Assert leaf are its TapLeaf hash (to verify the taproot commitment), its
- * 35-byte prefix (shape discriminator and the <D> key), its length, and its terminating
- * opcode.  All four are obtainable in a single pass, in constant memory.  Scripts that
+ * VAULT_LEAF_PREFIX_LEN prefix (shape discriminator and the <D> key), its length, and its
+ * terminating opcode.  All four are obtainable in a single pass, in constant memory.  Scripts that
  * do fit are additionally buffered into tls.leaf_script, so the flows that compare a
  * leaf byte-for-byte against a reconstruction are unaffected.
  *
@@ -329,7 +329,7 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
 }
 
 /* Guard for consumers that compare the leaf byte-for-byte against a script they
- * reconstructed, or otherwise read past the 35-byte prefix.  Only the Assert leaf can
+ * reconstructed, or otherwise read past the captured prefix.  Only the Assert leaf can
  * exceed VAULT_SCRIPT_MAX_LEN — it is validated by its taproot commitment instead of by
  * reconstruction — so every other flow requires the whole script to be buffered.
  * Unreachable in practice (those flows all pin an exact or bounded leaf length, which a
@@ -2463,7 +2463,7 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
      *   OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY
      *   <Challenger[32]> OP_CHECKSIG ... <N> OP_NUMEQUALVERIFY  (N-of-N + M-of-M multisig)
      *   OP_DEPTH ... [WOTS verifier body] ... OP_TRUE
-     * Only the 35-byte prefix, the length and the OP_TRUE terminator are validated as
+     * Only the captured prefix, the length and the OP_TRUE terminator are validated as
      * shape; the WOTS chain tips and challenger keys are outside the device's knowledge.
      * What makes the unvalidated remainder safe to sign over is the taproot commitment
      * check below, which binds the whole leaf to the spent scriptPubKey.
@@ -3562,23 +3562,31 @@ bool validate_and_display_transaction(
         if (leaf[34] == (uint8_t) OP_SIZE) return _validate_display_wc(dc, st);
         /* Assert: variable-length leaf, ~11.6 KB in practice (btc-vault claim_assert.rs).
          *
-         * All three conjuncts are load-bearing.  This is the app's weakest validator — no
-         * signing cap, no dedup, no intent binding, no output enforcement, and the screen
-         * shows no destination — so it must match the Assert pattern only and never act as
-         * a catch-all.  HLD "Standalone transactions": patterns MUST remain mutually
-         * exclusive, and a PSBT matching no pattern MUST be rejected.
-         *   byte 34 == OP_PUSHBYTES_32 (the first challenger key's push): without it any
-         *     <D> OP_CHECKSIGVERIFY <free bytes> OP_TRUE leaf lands here, and one whose
-         *     middle is a no-op is spendable with nothing but the depositor signature this
-         *     path hands out.
+         * This is the app's weakest validator — no signing cap, no dedup, no intent
+         * binding, no output enforcement, and the screen shows no destination — so it must
+         * match the Assert pattern only and never act as a catch-all.  HLD "Standalone
+         * transactions": patterns MUST remain mutually exclusive, and a PSBT matching no
+         * pattern MUST be rejected.  What each conjunct guarantees:
+         *   bytes 34 and 67 (VAULT_LEAF_GROUP0_*): the leaf continues into a challenger
+         *     multisig group — a 32-byte key push closed by OP_CHECKSIG — rather than into
+         *     free-form bytes.  generate_assert_script emits that group directly after
+         *     <claimer> OP_CHECKSIGVERIFY, so every real leaf satisfies both.  Byte 34
+         *     alone does not: <D> OP_CHECKSIGVERIFY <32B push> OP_DROP OP_TRUE also has a
+         *     key push at 34, and its no-op middle makes it spendable with nothing but the
+         *     depositor signature this path hands out.
          *   length > VAULT_NOPAYOUT_LEAF_LEN and terminal OP_TRUE: keep the 68-byte
-         *     NoPayout leaf out — it shares this whole 35-byte prefix and differs only in
-         *     length and its terminal OP_CHECKSIG, and here it would be signed with no cap
-         *     and no per-(group, challenger) dedup.
-         * Every real leaf satisfies byte 34: generate_assert_script emits the challenger
-         * multisig directly after <claimer> OP_CHECKSIGVERIFY, and a multisig group always
-         * begins with a 32-byte key push. */
-        if (leaf_len > (int) VAULT_NOPAYOUT_LEAF_LEN && leaf[34] == OP_PUSHBYTES_32 &&
+         *     NoPayout leaf out — it satisfies both shape bytes and differs only in length
+         *     and its terminal OP_CHECKSIG, and here it would be signed with no cap and no
+         *     per-(group, challenger) dedup.  Terminal OP_TRUE also excludes the Vault UTXO
+         *     and Refund leaves, which end <t> OP_CSV.
+         * This is a shape test, not a reconstruction: the leaf embeds host-chosen WOTS
+         * chain tips the device cannot derive, so a host that persuaded the depositor to
+         * fund a P2TR whose taptree it controls can still craft a leaf matching this
+         * pattern.  The pattern bounds which leaves reach the validator; it does not make
+         * the leaf trustworthy. */
+        if (leaf_len > (int) VAULT_NOPAYOUT_LEAF_LEN &&
+            leaf[VAULT_LEAF_GROUP0_PUSH_OFF] == OP_PUSHBYTES_32 &&
+            leaf[VAULT_LEAF_GROUP0_OP_OFF] == (uint8_t) OP_CHECKSIG &&
             leaf_last == (uint8_t) OP_TRUE)
             return _validate_display_assert(dc, st);
         /* Refund: <D> OP_CHECKSIGVERIFY <T(1-2 bytes)> OP_CSV */

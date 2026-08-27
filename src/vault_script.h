@@ -50,6 +50,23 @@
 #define VAULT_NOPAYOUT_LEAF_LEN \
     (1u + VAULT_XONLY_PUBKEY_LEN + 1u + 1u + VAULT_XONLY_PUBKEY_LEN + 1u)
 
+/* Offsets of the first signer group that follows the leading OP_PUSHBYTES_32 <key[32]>
+ * OP_CHECKSIGVERIFY in every depositor-signed leaf.  Together the two bytes they name
+ * separate the leaves whose leading 34 bytes are otherwise identical:
+ *
+ *   Assert:0 payout / Assert   <Claimer> OP_CHECKSIGVERIFY <challenger multisig> ...
+ *   Vault UTXO                 <D> OP_CHECKSIGVERIFY <VaultProvider> OP_CHECKSIGVERIFY ...
+ *
+ * A multisig group always opens with a 32-byte key push terminated by OP_CHECKSIG, so
+ * OP_CHECKSIG at VAULT_LEAF_GROUP0_OP_OFF means "a signer group starts here" and
+ * OP_CHECKSIGVERIFY means "another single required signer follows".  Reading these
+ * offsets requires a script strictly longer than VAULT_LEAF_GROUP0_OP_OFF. */
+
+/** Offset of the first signer group's key-push opcode. */
+#define VAULT_LEAF_GROUP0_PUSH_OFF (1u + VAULT_XONLY_PUBKEY_LEN + 1u)
+/** Offset of the opcode that terminates that group's first key. */
+#define VAULT_LEAF_GROUP0_OP_OFF (VAULT_LEAF_GROUP0_PUSH_OFF + 1u + VAULT_XONLY_PUBKEY_LEN)
+
 /* --------------------------------------------------------------------------
  * Low-level taproot crypto primitives (implemented in vault_script.c)
  * ----------------------------------------------------------------------- */
