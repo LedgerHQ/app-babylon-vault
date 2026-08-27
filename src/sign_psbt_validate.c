@@ -8,6 +8,7 @@
 #include "../bitcoin_app_base/src/common/bitvector.h"
 #include "../bitcoin_app_base/src/common/psbt.h"
 #include "../bitcoin_app_base/src/common/script.h"
+#include "../bitcoin_app_base/src/common/wallet.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map_value.h"
 #include "../bitcoin_app_base/src/handler/lib/stream_merkleized_map_value.h"
@@ -348,8 +349,21 @@ static bool _require_buffered_leaf(dispatcher_context_t *dc) {
  * Pre-PegIn validation
  * ---------------------------------------------------------------------- */
 
+/* True iff the wallet policy spends through a native SegWit scriptPubKey, and therefore
+ * every input it can sign has an empty scriptSig.  sh(wpkh())/sh(wsh()) inputs push a
+ * redeemScript and bare legacy inputs push a full unlocking script, neither of which the
+ * device sees; get_policy_segwit_version reports 0 for wrapped SegWit too, so the sh()
+ * wrapper is excluded on the node type.  A no-wallet-policy PSBT leaves policy_map NULL. */
+static bool _prepegin_policy_is_native_segwit(const sign_psbt_state_t *st) {
+    if (st->has_no_wallet_policy || st->account.policy_map == NULL) return false;
+    if (st->account.policy_map->type == TOKEN_SH) return false;
+    return get_policy_segwit_version(st->account.policy_map) >= 0;
+}
+
 /* Computes the double-SHA256 txid of the Pre-PegIn transaction from PSBT fields.
- * All Pre-PegIn inputs are SegWit (no scriptSig), so the serialisation is:
+ * Every input's scriptSig is serialised as empty; _validate_prepegin makes this an
+ * enforced precondition by requiring a native SegWit wallet policy
+ * (_prepegin_policy_is_native_segwit).  The serialisation is:
  *   version_le4 | n_inputs | (prev_txid | vout_le4 | 0x00 | seq_le4) * n_inputs |
  *   n_outputs | (value_le8 | script_len | script) * n_outputs | locktime_le4.
  * All Pre-PegIn output scripts are 34 bytes (P2TR or OP_RETURN); prior validation
@@ -482,6 +496,16 @@ static bool _validate_prepegin(
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+    }
+
+    /* Every input is internal to the wallet policy, so the policy alone decides whether
+     * their scriptSigs are empty — the precondition _compute_prepegin_txid relies on to
+     * reconstruct the txid the intent commits to.  A policy that spends through a
+     * redeemScript or a legacy unlocking script would broadcast under a different txid,
+     * stranding the deposit at an outpoint no ceremony participant expects. */
+    if (!_prepegin_policy_is_native_segwit(st)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
     }
 
     if (st->tx_version < 2 || st->locktime != 0) {

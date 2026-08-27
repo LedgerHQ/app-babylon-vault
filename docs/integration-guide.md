@@ -172,15 +172,18 @@ txid before calling `APPROVE_VAULT_INTENT`). All intent-bound signing flows are 
 ### Step 3 — Sign Pre-PegIn: `0x04 SIGN_PSBT`
 
 Required state: `INTENT_LOADED`.  
-Required wallet policy: **BIP-86 wallet policy provided** (host passes the policy;
-`has_no_wallet_policy == false`).
+Required wallet policy: **a native SegWit wallet policy provided** (host passes the policy;
+`has_no_wallet_policy == false`). Accepted templates: `wpkh(@0/**)` / `wsh(...)` (SegWit v0)
+and `tr(...)` (SegWit v1). `sh(wpkh(@0/**))` (BIP-49) and `pkh(@0/**)` (BIP-44) are rejected
+with `SW_INCORRECT_DATA`: their inputs spend through a scriptSig the device never sees, so
+the reconstructed Pre-PegIn txid could not match the broadcast one.
 
 #### PSBT requirements
 
 | Field | Requirement |
 |-------|-------------|
 | `nVersion` | ≥ 2 |
-| Inputs | All inputs must be wallet-policy (BIP-86) owned — device rejects any non-internal input |
+| Inputs | All inputs must be wallet-policy owned — device rejects any non-internal input, and any policy that is not native SegWit |
 | Sighash | `SIGHASH_DEFAULT` (absent) or `SIGHASH_ALL` (1) per input |
 | Output at `htlc_vout` | P2TR scriptPubKey matching `vault_build_htlc_scriptpubkey(intent, htlc_hashlock)` |
 | Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value, vault_amount + depositor_claim_value + pegin_max_fee]` |

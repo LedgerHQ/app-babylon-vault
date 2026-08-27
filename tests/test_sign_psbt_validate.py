@@ -24,6 +24,7 @@ from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
 from ledger_bitcoin import WalletPolicy
+from ledger_bitcoin.common import hash160
 from ledger_bitcoin.key import ExtendedKey, KeyOriginInfo
 from ledger_bitcoin.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
 from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
@@ -57,6 +58,24 @@ from .vault_client import (
 )
 
 HARDENED = 0x80000000
+
+# BIP-44 purposes for the four standard single-key policies the base app accepts without
+# an HMAC.  Only the two native-SegWit ones spend with an empty scriptSig, which is the
+# precondition _validate_prepegin enforces before trusting its own txid reconstruction.
+BIP44_LEGACY        = 44   # pkh(@0/**)
+BIP49_NESTED_SEGWIT = 49   # sh(wpkh(@0/**))
+BIP84_NATIVE_SEGWIT = 84   # wpkh(@0/**)
+BIP86_TAPROOT       = 86   # tr(@0/**)
+
+# Script opcodes used to build the non-Taproot scriptPubKeys under test.
+OP_0            = 0x00
+OP_PUSHBYTES_20 = 0x14
+OP_DUP          = 0x76
+OP_EQUAL        = 0x87
+OP_EQUALVERIFY  = 0x88
+OP_HASH160      = 0xA9
+OP_CHECKSIG     = 0xAC
+
 VAULT_NUMS_XONLY = bytes.fromhex(
     '50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0'
 )
@@ -232,16 +251,43 @@ def _htlc_output(depositor_pk: bytes, vp_pk: bytes,
 # Wallet-policy helpers
 # ---------------------------------------------------------------------------
 
-def _standard_taproot_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
-    """Standard BIP-86 P2TR wallet for the test device.  wallet_id != all-zeros →
-    has_no_wallet_policy = false → SIGN_PSBT routes to Pre-PegIn validator."""
+def _standard_single_key_wallet(client: "RaggerClient", coin_type: int,
+                                purpose: int, descriptor_template: str) -> WalletPolicy:
+    """Default (HMAC-less) single-key wallet policy for the test device.
+
+    wallet_id != all-zeros → has_no_wallet_policy = false → SIGN_PSBT routes to the
+    Pre-PegIn validator.  The base app only accepts such a policy without an HMAC when
+    the key origin is m/purpose'/coin_type'/account', so purpose must match the template.
+    """
     fingerprint = client.get_master_fingerprint()
-    xpub = client.get_extended_pubkey(f"m/86'/{coin_type}'/0'", display=False)
+    xpub = client.get_extended_pubkey(f"m/{purpose}'/{coin_type}'/0'", display=False)
     return WalletPolicy(
         name="",
-        descriptor_template="tr(@0/**)",
-        keys_info=[f"[{fingerprint.hex()}/86'/{coin_type}'/0']{xpub}"],
+        descriptor_template=descriptor_template,
+        keys_info=[f"[{fingerprint.hex()}/{purpose}'/{coin_type}'/0']{xpub}"],
     )
+
+
+def _standard_taproot_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
+    """BIP-86 tr() wallet — SegWit v1, empty scriptSig."""
+    return _standard_single_key_wallet(client, coin_type, BIP86_TAPROOT, "tr(@0/**)")
+
+
+def _standard_native_segwit_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
+    """BIP-84 wpkh() wallet — SegWit v0, empty scriptSig."""
+    return _standard_single_key_wallet(client, coin_type, BIP84_NATIVE_SEGWIT, "wpkh(@0/**)")
+
+
+def _standard_nested_segwit_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
+    """BIP-49 sh(wpkh()) wallet — SegWit v0 wrapped in P2SH, so the scriptSig carries a
+    23-byte redeemScript push."""
+    return _standard_single_key_wallet(client, coin_type, BIP49_NESTED_SEGWIT, "sh(wpkh(@0/**))")
+
+
+def _standard_legacy_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
+    """BIP-44 pkh() wallet — legacy, so the scriptSig carries the full ~106-byte
+    signature + pubkey unlocking script."""
+    return _standard_single_key_wallet(client, coin_type, BIP44_LEGACY, "pkh(@0/**)")
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +371,128 @@ def _bip86_depositor_spk(dep_pk: bytes) -> bytes:
     """BIP-86 P2TR scriptPubKey for the depositor key (used as CPFP anchor)."""
     _, tweaked = taproot_tweak_pubkey(dep_pk, b'')
     return bytes([0x51, 0x20]) + tweaked
+
+
+# ---------------------------------------------------------------------------
+# Non-Taproot (ECDSA) wallet-input helpers
+#
+# The Pre-PegIn validator only trusts its own txid reconstruction under a wallet policy
+# whose inputs carry an empty scriptSig.  These helpers build the three non-Taproot
+# standard policies' inputs so that acceptance and rejection can be tested end to end.
+# ---------------------------------------------------------------------------
+
+def _p2wpkh_spk(pubkey: bytes) -> bytes:
+    """P2WPKH scriptPubKey: OP_0 <20-byte key hash>."""
+    return bytes([OP_0, OP_PUSHBYTES_20]) + hash160(pubkey)
+
+
+def _p2sh_spk(redeem_script: bytes) -> bytes:
+    """P2SH scriptPubKey: OP_HASH160 <20-byte script hash> OP_EQUAL."""
+    return bytes([OP_HASH160, OP_PUSHBYTES_20]) + hash160(redeem_script) + bytes([OP_EQUAL])
+
+
+def _p2pkh_spk(pubkey: bytes) -> bytes:
+    """P2PKH scriptPubKey: OP_DUP OP_HASH160 <20-byte key hash> OP_EQUALVERIFY OP_CHECKSIG."""
+    return (bytes([OP_DUP, OP_HASH160, OP_PUSHBYTES_20]) + hash160(pubkey)
+            + bytes([OP_EQUALVERIFY, OP_CHECKSIG]))
+
+
+def _ecdsa_input_key(client: "RaggerClient", purpose: int, coin_type: int):
+    """Return (fingerprint, 33-byte compressed pubkey) at m/{purpose}'/{coin_type}'/0'/0/0.
+
+    Non-Taproot policies identify a wallet input through PSBT_IN_BIP32_DERIVATION on the
+    compressed pubkey, not through the x-only key used by tr().
+    """
+    fingerprint = client.get_master_fingerprint()
+    pubkey = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/{purpose}'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey
+    return fingerprint, pubkey
+
+
+def _funding_tx(spk: bytes, value: int) -> CTransaction:
+    """Single-output transaction supplied as PSBT_IN_NON_WITNESS_UTXO.
+
+    The device recomputes this transaction's txid and requires it to match the spending
+    input's PSBT_IN_PREVIOUS_TXID, so callers must take the outpoint from `tx.hash`.
+    """
+    tx = CTransaction()
+    tx.nVersion = 2
+    tx.nLockTime = 0
+    tx.vin = [CTxIn(COutPoint(int.from_bytes(b'\xbb' * 32, 'little'), 0), b'', 0xFFFFFFFF)]
+    tx.vout = [CTxOut(value, spk)]
+    tx.wit = CTxWitness()
+    tx.rehash()
+    return tx
+
+
+def _build_prepegin_psbt_ecdsa(
+    htlc_spk: bytes,
+    purpose: int,
+    fingerprint: bytes,
+    pubkey: bytes,
+    coin_type: int,
+    auth_anchor: bytes,
+    htlc_value: int = _HTLC_VALUE,
+) -> PSBT:
+    """Pre-PegIn PSBTv0 whose single wallet input belongs to a non-Taproot standard policy.
+
+    `purpose` selects the address type and must match the wallet policy passed to
+    sign_psbt:
+      BIP44_LEGACY        → P2PKH; legacy inputs must carry the non-witness UTXO and no
+                            witness UTXO.
+      BIP49_NESTED_SEGWIT → P2SH-P2WPKH; the redeemScript is published so the base app can
+                            match it against the scriptPubKey.
+      BIP84_NATIVE_SEGWIT → P2WPKH.
+    Both SegWit v0 variants need the witness UTXO *and* the non-witness UTXO: derived apps
+    reject a segwitv0 input whose previous transaction is absent.
+
+    Outputs are the HTLC and the auth-anchor OP_RETURN, both 34 bytes, which is what the
+    device's txid reconstruction expects.
+    """
+    redeem_script = b''
+    if purpose == BIP44_LEGACY:
+        input_spk = _p2pkh_spk(pubkey)
+    elif purpose == BIP49_NESTED_SEGWIT:
+        redeem_script = _p2wpkh_spk(pubkey)
+        input_spk = _p2sh_spk(redeem_script)
+    elif purpose == BIP84_NATIVE_SEGWIT:
+        input_spk = _p2wpkh_spk(pubkey)
+    else:
+        raise ValueError(f"unsupported BIP-44 purpose for an ECDSA input: {purpose}")
+
+    input_value = htlc_value + 3_456  # pre-pegin tx fee = 3456 sats = 0.00003456 BTC
+    prev_tx = _funding_tx(input_spk, input_value)
+
+    tx = CTransaction()
+    tx.nVersion = 2
+    tx.nLockTime = 0
+    tx.vin = [CTxIn()]
+    tx.vin[0].prevout = COutPoint(int.from_bytes(prev_tx.hash, 'little'), 0)
+    tx.vin[0].nSequence = 0xFFFFFFFF
+    tx.vout = [
+        CTxOut(htlc_value, htlc_spk),
+        CTxOut(0, bytes([0x6A, 0x20]) + auth_anchor),
+    ]
+    tx.wit = CTxWitness()
+
+    psbt = PSBT()
+    psbt.version = 0
+    psbt.tx = tx
+    psbt.inputs = [PartiallySignedInput(0)]
+    psbt.outputs = [PartiallySignedOutput(0) for _ in tx.vout]
+
+    psbt.inputs[0].non_witness_utxo = prev_tx
+    if purpose != BIP44_LEGACY:
+        psbt.inputs[0].witness_utxo = CTxOut(input_value, input_spk)
+    if redeem_script:
+        psbt.inputs[0].redeem_script = redeem_script
+    psbt.inputs[0].hd_keypaths[pubkey] = KeyOriginInfo(
+        fingerprint,
+        [HARDENED | purpose, HARDENED | coin_type, HARDENED | 0, 0, 0],
+    )
+
+    return psbt
 
 
 def _build_pegin_psbt(
@@ -923,6 +1091,127 @@ def test_sign_psbt_prepegin(
     assert len(partial_sig.signature) == 64, (
         f"expected 64-byte SIGHASH_DEFAULT Schnorr sig, got {len(partial_sig.signature)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wallet-policy scriptSig precondition
+#
+# _validate_prepegin reconstructs the Pre-PegIn txid with an empty scriptSig on every
+# input.  That only matches the broadcast transaction under a native SegWit policy, so
+# the validator rejects anything else before the txid gate.  Each case below commits the
+# intent to the txid the device *does* compute, so acceptance or rejection is decided by
+# the policy alone and never by a txid mismatch.
+# ---------------------------------------------------------------------------
+
+def _setup_prepegin_ecdsa_case(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    purpose: int,
+):
+    """Approve an intent bound to a Pre-PegIn PSBT spending a `purpose` wallet input.
+
+    Returns (psbt, coin_type, pubkey) where pubkey is the input's compressed wallet key.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
+    _, _, _, _, htlc_spk = _htlc_output(
+        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        _HTLC_REFUND_TIMELOCK, hashlock,
+    )
+
+    fingerprint, pubkey = _ecdsa_input_key(client, purpose, coin_type)
+    psbt = _build_prepegin_psbt_ecdsa(
+        htlc_spk, purpose, fingerprint, pubkey, coin_type,
+        auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
+    )
+
+    scalars_tlv = _build_intent_tlv_for_test(
+        coin_type, _hash256(psbt.tx.serialize_without_witness())
+    )
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=[_build_group_for_test()],
+    )
+    return psbt, coin_type, pubkey
+
+
+def test_sign_psbt_prepegin_native_segwit_wallet(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """Pre-PegIn under wpkh() (BIP-84) is accepted and signed.
+
+    Native SegWit v0 inputs spend with an empty scriptSig, so the HLD's "SIGHASH_ALL
+    (SegWit v0) or SIGHASH_DEFAULT (Taproot v1)" rule stays satisfiable and the device's
+    txid reconstruction is exact.
+    """
+    psbt, coin_type, pubkey = _setup_prepegin_ecdsa_case(
+        client, navigator, device, bitcoin_network, BIP84_NATIVE_SEGWIT
+    )
+    wallet = _standard_native_segwit_wallet(client, coin_type)
+
+    result = client.sign_psbt(psbt, wallet, None)
+
+    assert len(result) == 1, f"expected one signature, got {len(result)}"
+    input_index, partial_sig = result[0]
+    assert input_index == 0
+    assert partial_sig.pubkey == pubkey, "signed with an unexpected key"
+    # SegWit v0 is signed with ECDSA: a DER signature plus a trailing SIGHASH_ALL byte.
+    sig = partial_sig.signature
+    assert sig[0] == 0x30, f"expected a DER-encoded ECDSA signature, got 0x{sig[0]:02x}"
+    assert len(sig) == sig[1] + 3, (
+        f"DER length byte {sig[1]} inconsistent with a {len(sig)}-byte signature"
+    )
+    assert sig[-1] == 0x01, f"expected a SIGHASH_ALL trailer, got 0x{sig[-1]:02x}"
+
+
+def test_sign_psbt_prepegin_nested_segwit_wallet_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """Pre-PegIn under sh(wpkh()) (BIP-49) is refused.
+
+    A P2SH-wrapped input spends with a 23-byte redeemScript push in its scriptSig, so the
+    broadcast txid can never equal the one the device computed and the intent committed to.
+    """
+    psbt, coin_type = _setup_prepegin_ecdsa_case(
+        client, navigator, device, bitcoin_network, BIP49_NESTED_SEGWIT
+    )
+    wallet = _standard_nested_segwit_wallet(client, coin_type)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_prepegin_legacy_wallet_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """Pre-PegIn under pkh() (BIP-44) is refused.
+
+    A legacy input spends with a ~106-byte signature + pubkey scriptSig, so the broadcast
+    txid can never equal the one the device computed and the intent committed to.
+    """
+    psbt, coin_type = _setup_prepegin_ecdsa_case(
+        client, navigator, device, bitcoin_network, BIP44_LEGACY
+    )
+    wallet = _standard_legacy_wallet(client, coin_type)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
 
 
 def test_sign_psbt_prepegin_3vaults(
