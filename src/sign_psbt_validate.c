@@ -71,7 +71,8 @@ _Static_assert(VAULT_PAYOUT_SPK_MAX_LEN >= VAULT_PAYOUT_SPK_MIN_LEN,
                "payout scriptPubKey bounds inverted — no length would be accepted");
 
 /* NoPayout council transaction vsize upper bound.
- * Assert:0 WITNESS_UTXO value must not exceed VAULT_DUST_LIMIT + base_fee_rate * this value. */
+ * Assert:0 WITNESS_UTXO value must not exceed VAULT_DUST_LIMIT + base_fee_rate * this value,
+ * and the NoPayout fee must not exceed base_fee_rate * this value. */
 #define MAX_COUNCIL_NOPAYOUT_VSIZE 500u
 
 /* PayoutFinalize (Screen 8) fee bound: 2-in/2-out tapscript spend, no per-participant term. */
@@ -2008,9 +2009,10 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 /* -------------------------------------------------------------------------
  * NoPayout validation (intent-bound, silent)
  *
- * Input 0: Assert:0 UTXO (depositor graph), Assert:0 leaf, value DUST.
- * Inputs 1, 2: ChallengeAssert connectors (not signed by device).
- * Output: pays challenger.
+ * Input 0: Assert:0 UTXO (depositor graph), Assert:0 leaf; carries the transaction fee.
+ * Inputs 1, 2: ChallengeAssert connectors (not signed by device), value <= DUST.
+ * Output 0: pays P2TR(Challenger_j), at least DUST, with the fee bounded by
+ * base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE.
  * ---------------------------------------------------------------------- */
 
 static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
@@ -2116,6 +2118,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     /* Input 0 WITNESS_UTXO: value in [VAULT_DUST_LIMIT,
      * VAULT_DUST_LIMIT + base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE]; verify taproot
      * commitment via G_scratch.tls.control_block (with siblings). */
+    uint64_t input0_value;
     {
         uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
         int wu_len = call_get_merkleized_map_value(dc,
@@ -2128,15 +2131,15 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        uint64_t nopayout_value = read_u64_le(witness_utxo, 0);
-        if (nopayout_value < VAULT_DUST_LIMIT) {
+        input0_value = read_u64_le(witness_utxo, 0);
+        if (input0_value < VAULT_DUST_LIMIT) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         if ((uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE <= UINT64_MAX / intent->base_fee_rate) {
             uint64_t max_nopayout =
                 VAULT_DUST_LIMIT + intent->base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE;
-            if (nopayout_value > max_nopayout) {
+            if (input0_value > max_nopayout) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
             }
@@ -2163,7 +2166,9 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    /* Inputs 1 and 2 (ChallengeAssert connectors): WITNESS_UTXO value must be <= DUST. */
+    /* Inputs 1 and 2 (ChallengeAssert connectors): WITNESS_UTXO value must be <= DUST.
+     * Their values feed the fee bound below, so they are accumulated here. */
+    uint64_t connectors_value = 0;
     for (unsigned int ci = 1; ci <= 2; ci++) {
         merkleized_map_commitment_t conn_map;
         if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, ci, &conn_map) < 0) {
@@ -2177,13 +2182,20 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
                                                    1,
                                                    wu,
                                                    sizeof(wu));
-        if (wu_len < 8 || read_u64_le(wu, 0) > VAULT_DUST_LIMIT) {
+        if (wu_len < 8) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+        uint64_t connector_value = read_u64_le(wu, 0);
+        if (connector_value > VAULT_DUST_LIMIT) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        connectors_value += connector_value;
     }
 
     /* Output 0: must pay P2TR(Challenger_j) — key-path spend with empty script tree. */
+    uint64_t out0_value;
     {
         uint8_t parity;
         uint8_t tweaked[VAULT_XONLY_PUBKEY_LEN];
@@ -2196,12 +2208,31 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         expected_spk[1] = OP_PUSHBYTES_32;
         memcpy(expected_spk + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
         uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        uint64_t out_value;
-        if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out_spk, &out_value) ||
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, 0, out_spk, &out0_value) ||
             memcmp(out_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
+    }
+
+    /* Fee bound: fee <= base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE, mirroring Payout and
+     * PayoutFinalize.  Pinning Output 0's scriptPubKey alone leaves its amount free, and
+     * NoPayout is signed with no user screen, so this is the only thing stopping a host
+     * from burning the whole Assert:0 connector — depositor funds — to miner fees.
+     * Output 0 must also clear the dust floor, as in every other paying flow.
+     * base_fee_rate is capped at intent-load time, so the checks above leave every input
+     * value well under 2^32 and their sum cannot overflow; the subtraction is guarded
+     * because Output 0's value is attacker-controlled. */
+    uint64_t total_in = input0_value + connectors_value;
+    if (out0_value < VAULT_DUST_LIMIT || out0_value > total_in) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint64_t fee = total_in - out0_value;
+    if ((uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE > UINT64_MAX / intent->base_fee_rate ||
+        fee > intent->base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
     }
 
     /* No per-slot dedup is possible here, so nopayout_signed is the only bound.

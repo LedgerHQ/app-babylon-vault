@@ -3034,10 +3034,19 @@ def test_sign_psbt_payout_depositor_wrong_cpfp_anchor_key(
 # NoPayout transaction (NAPPS-1462)
 # ===========================================================================
 
+# NoPayout amounts. Input 0 (Assert:0) carries the fee, Inputs 1-2 are DUST connectors.
+# The firmware bounds the implied fee by base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE and
+# requires Output 0 to be at least DUST, so the default output leaves a fee under the cap.
+_NOPAYOUT_INPUTS_TOTAL = 3 * VAULT_DUST_LIMIT
+_NOPAYOUT_MAX_FEE = _BASE_FEE_RATE * _MAX_COUNCIL_NOPAYOUT_VSIZE
+_NOPAYOUT_OUT_VALUE = _NOPAYOUT_INPUTS_TOTAL - 400
+
+
 def _build_nopayout_psbt(
     depositor_pk: bytes,
     challenger_pk: bytes,
     assert_txid: bytes = _ASSERT_TXID,
+    out_value: int = _NOPAYOUT_OUT_VALUE,
 ) -> PSBT:
     """Build a NoPayout PSBT: 3 custom inputs, 1 output.
 
@@ -3047,7 +3056,8 @@ def _build_nopayout_psbt(
              Assert output 0). Only vout==0 is checked; the txid is unconstrained because
              the device cannot reconstruct the Assert txid.
     Inputs 1, 2: ChallengeAssert connectors — WITNESS_UTXO only (device ignores script).
-    Output 0: P2TR(key-path-tweak(challenger_pk)) — device verifies this exact scriptPubKey.
+    Output 0: P2TR(key-path-tweak(challenger_pk)) — device verifies this exact scriptPubKey,
+             requires out_value >= DUST, and bounds the implied fee.
 
     Needs no intent geometry: the leaf and the output are functions of (depositor,
     challenger) alone, which is exactly why the device cannot tell vault groups apart here.
@@ -3074,7 +3084,7 @@ def _build_nopayout_psbt(
     for i, fill in enumerate([b'\xdd', b'\xee']):
         tx.vin[1 + i].prevout = COutPoint(int.from_bytes(fill * 32, 'little'), 0)
         tx.vin[1 + i].nSequence = 0xFFFFFFFF
-    tx.vout = [CTxOut(1000, out_spk)]
+    tx.vout = [CTxOut(out_value, out_spk)]
     tx.wit = CTxWitness()
 
     psbt = PSBT()
@@ -4176,6 +4186,98 @@ def test_sign_psbt_nopayout_input2_value_too_high(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_nopayout_zero_output_value(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout fails when Output 0 has the right scriptPubKey but a zero amount.
+
+    Pinning the scriptPubKey alone leaves the amount free: a zero-value output would
+    send the challenger nothing and burn every input satoshi to miner fees, silently
+    (NoPayout is signed without a user screen).
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0], out_value=0)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_nopayout_sub_dust_output_value(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout fails when Output 0 is one satoshi below the dust floor."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    psbt = _build_nopayout_psbt(
+        dep_pk, _TEST_KEEPER_PKS[0], out_value=VAULT_DUST_LIMIT - 1
+    )
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_nopayout_fee_above_bound(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout fails when the implied fee exceeds base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE.
+
+    Output 0 still clears the dust floor here, so only the fee bound can reject it.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    over_bound_out = _NOPAYOUT_INPUTS_TOTAL - _NOPAYOUT_MAX_FEE - 1
+    assert over_bound_out >= VAULT_DUST_LIMIT, "test must isolate the fee bound from the dust floor"
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0], out_value=over_bound_out)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_nopayout_fee_at_bound(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+) -> None:
+    """NoPayout accepts a fee exactly equal to base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type)
+
+    at_bound_out = _NOPAYOUT_INPUTS_TOTAL - _NOPAYOUT_MAX_FEE
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0], out_value=at_bound_out)
+
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
 
 
 def test_sign_psbt_nopayout_wrong_depositor_key(
