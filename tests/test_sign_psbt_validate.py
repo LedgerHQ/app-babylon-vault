@@ -1183,7 +1183,7 @@ def test_sign_psbt_prepegin_nested_segwit_wallet_rejected(
     A P2SH-wrapped input spends with a 23-byte redeemScript push in its scriptSig, so the
     broadcast txid can never equal the one the device computed and the intent committed to.
     """
-    psbt, coin_type = _setup_prepegin_ecdsa_case(
+    psbt, coin_type, _ = _setup_prepegin_ecdsa_case(
         client, navigator, device, bitcoin_network, BIP49_NESTED_SEGWIT
     )
     wallet = _standard_nested_segwit_wallet(client, coin_type)
@@ -1204,7 +1204,7 @@ def test_sign_psbt_prepegin_legacy_wallet_rejected(
     A legacy input spends with a ~106-byte signature + pubkey scriptSig, so the broadcast
     txid can never equal the one the device computed and the intent committed to.
     """
-    psbt, coin_type = _setup_prepegin_ecdsa_case(
+    psbt, coin_type, _ = _setup_prepegin_ecdsa_case(
         client, navigator, device, bitcoin_network, BIP44_LEGACY
     )
     wallet = _standard_legacy_wallet(client, coin_type)
