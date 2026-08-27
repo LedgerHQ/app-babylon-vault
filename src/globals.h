@@ -43,6 +43,10 @@ typedef struct {
 #define TX_DISPLAY_AMOUNT_STR_SIZE 28 /* MAX_AMOUNT_LENGTH + 1 */
 #define TX_DISPLAY_ADDR_STR_SIZE   80 /* MAX_ADDRESS_LENGTH_STR + 1 */
 #define TX_DISPLAY_TXID_STR_SIZE   65 /* 32-byte txid as 64 hex chars + NUL */
+/* extra_str is the spare value slot: an amount, a chain ID, or a timelock string.
+ * Sized for the widest of those — format_timelock_blocks() at the full uint32_t
+ * range, "4294967295 blocks (~29826161 days)" (34 chars + NUL). */
+#define TX_DISPLAY_EXTRA_STR_SIZE 40
 
 /*
  * Number of independent key-pair slots in display_vault_intent_scratch_t.
@@ -91,7 +95,7 @@ typedef struct {
     uint8_t pairs_raw[TX_DISPLAY_MAX_PAIRS * VAULT_DISPLAY_PAIR_SIZE];
     char amount_str[TX_DISPLAY_AMOUNT_STR_SIZE];
     char fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
-    char extra_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+    char extra_str[TX_DISPLAY_EXTRA_STR_SIZE];
     char addr_str[TX_DISPLAY_ADDR_STR_SIZE];
     char txid_str[TX_DISPLAY_TXID_STR_SIZE];
 } display_tx_scratch_t;

@@ -39,7 +39,9 @@ bool display_vault_intent(dispatcher_context_t *dc);
  *
  * @param amount_reclaimed   Amount returned to the depositor in satoshis.
  * @param fee                Transaction fee in satoshis.
- * @param timelock_blocks    Refund timelock from the leaf script (block count).
+ * @param timelock_blocks    Refund timelock from the leaf script (block count), rendered in
+ *                           the same form as the intent's timelocks on Screen 2 so the two
+ *                           can be compared by eye.
  * @param prepegin_txid      32-byte Pre-PegIn txid (shown as hex); caller must keep valid.
  * @param refund_address     NUL-terminated bech32m address; caller must keep valid.
  * @return true   User approved.
