@@ -3324,8 +3324,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
 
     /* Input 0 (Vault UTXO) witness_utxo is host-provided and unattested; a fabricated
      * value produces an unusable signature (SIGHASH_DEFAULT commits to all prevout values).
-     * The zero-floor above and the intent-bound fee cap below (when Input 0 txid matches a
-     * vault group) guard the depositor's payout. */
+     * The zero-floor above and the single-vault fee cap below guard the depositor's payout. */
 
     /* Read Input 0's prevout txid — the Vault UTXO the funds leave from — for Screen 8.
      * Input 0 carries no signing request and no attested value, so naming it on screen is
