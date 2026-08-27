@@ -456,7 +456,14 @@ bool sign_custom_inputs(
          * below. */
         memcpy(G_scratch.sign_standalone.leaf_hash, G_leaf_meta.hash, VAULT_HASH256_LEN);
 
-        if (G_scratch.tls.leaf_script_len <= 68 || G_leaf_meta.prefix[0] != OP_PUSHBYTES_32) {
+        /* Re-assert the payout leaf shape the validator accepted.  The group-0 bytes are
+         * what separate a payout leaf from a Vault UTXO leaf, which is otherwise identical
+         * up to its <t> OP_CSV tail; signing must not be reachable for a shape that
+         * validation would have refused. */
+        if (G_scratch.tls.leaf_script_len <= (int) VAULT_NOPAYOUT_LEAF_LEN ||
+            G_leaf_meta.prefix[0] != OP_PUSHBYTES_32 ||
+            G_leaf_meta.prefix[VAULT_LEAF_GROUP0_PUSH_OFF] != OP_PUSHBYTES_32 ||
+            G_leaf_meta.prefix[VAULT_LEAF_GROUP0_OP_OFF] != (uint8_t) OP_CHECKSIG) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
