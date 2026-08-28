@@ -278,9 +278,16 @@ VaultKeepers alone, with the VaultProvider excluded. The general `{VP, VK_1..VK_
 rule is the VP/VK-claimer branch and does not apply here.
 
 Because both groups are enforced by hard-failing opcodes, a leaf whose prefix matches the intent
-cannot be spent without every approved keeper and challenger signature — whatever its body
+cannot be spent without every keeper and challenger signature from that intent — whatever its body
 contains. That is what makes the unverified WOTS body safe to sign over; the taproot commitment
 alone only binds the leaf to the output being spent.
+
+> **The binding is session-scoped.** Keeper and challenger keys arrive as host-supplied TLV and
+> cannot be derived from the seed, so the device cannot recognise the intent the vault was actually
+> funded under — only the one loaded now. An Assert is normally signed after a power cycle, so the
+> host supplies a fresh intent and could substitute the challenger set. The user's review of the key
+> list on Screen 2 is what prevents that, and is therefore load-bearing for Assert safety rather
+> than informational.
 
 Real leaf size is **11,526–13,636 bytes** (11,662 for the 3 local / 3 universal challenger
 configuration in `tests/vectors/depositor-as-claimer/assert.txt`). The body is fixed at compile
