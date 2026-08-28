@@ -183,6 +183,10 @@ typedef struct {
     bool len_known;
     bool len_rejected; /* declared length outside the accepted range */
     bool overflow;     /* stream delivered more bytes than declared */
+    /* Expected length of the Assert signer prefix for the approved intent, or -1 when no
+     * intent is loaded and no Assert leaf can be verified. */
+    int32_t assert_prefix_len;
+    bool assert_prefix_mismatch; /* sticky: a compared byte differed from the intent */
 } leaf_stream_ctx_t;
 
 static void _leaf_stream_len_cb(size_t value_len, void *opaque) {
@@ -233,6 +237,21 @@ static void _leaf_stream_data_cb(buffer_t *buf, void *opaque) {
             memcpy(ctx->tls->leaf_script + ctx->seen, p, n_script);
         }
 
+        /* Compare the Assert signer prefix against the approved intent as the bytes go
+         * past.  This is the only opportunity: the prefix runs to ~2.2 KB at 32/32 keys,
+         * far beyond VAULT_LEAF_PREFIX_LEN, and a real Assert leaf is never buffered. */
+        if (ctx->assert_prefix_len > 0 && !ctx->assert_prefix_mismatch &&
+            ctx->seen < (uint32_t) ctx->assert_prefix_len) {
+            uint32_t n_cmp = (uint32_t) ctx->assert_prefix_len - ctx->seen;
+            if (n_cmp > n_script) n_cmp = (uint32_t) n_script;
+            for (uint32_t i = 0; i < n_cmp; i++) {
+                if (vault_assert_prefix_byte(&G_vault_intent, ctx->seen + i) != (int) p[i]) {
+                    ctx->assert_prefix_mismatch = true;
+                    break;
+                }
+            }
+        }
+
         /* Capture the shape-discriminator prefix. */
         if (ctx->seen < VAULT_LEAF_PREFIX_LEN) {
             size_t n_prefix = VAULT_LEAF_PREFIX_LEN - ctx->seen;
@@ -258,7 +277,13 @@ static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
                                    const merkleized_map_commitment_t *map_commitment,
                                    const uint8_t *full_key,
                                    size_t full_key_len) {
-    leaf_stream_ctx_t ctx = {.tls = state};
+    /* Without a loaded intent there is no approved challenger set to compare against, so
+     * no leaf can qualify as an Assert. */
+    leaf_stream_ctx_t ctx = {
+        .tls = state,
+        .assert_prefix_len = G_vault_context.state == VAULT_STATE_INTENT_LOADED
+                                 ? (int32_t) vault_assert_prefix_len(&G_vault_intent)
+                                 : -1};
 
     int rc = call_stream_merkleized_map_value(dc,
                                               map_commitment,
@@ -276,6 +301,10 @@ static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
 
     vault_taproot_leaf_hash_stream_final(&state->leaf_hash_ctx, G_leaf_meta.hash);
     state->leaf_script_len = (int) ctx.script_len;
+    /* A leaf that stops at the prefix carries no WOTS body and no OP_TRUE, so require the
+     * script to continue past it. */
+    G_leaf_meta.assert_prefix_ok = ctx.assert_prefix_len > 0 && !ctx.assert_prefix_mismatch &&
+                                   ctx.script_len > (uint32_t) ctx.assert_prefix_len;
     return true;
 }
 
@@ -2528,10 +2557,12 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
      *   OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY
      *   <Challenger[32]> OP_CHECKSIG ... <N> OP_NUMEQUALVERIFY  (N-of-N + M-of-M multisig)
      *   OP_DEPTH ... [WOTS verifier body] ... OP_TRUE
-     * Only the captured prefix, the length and the OP_TRUE terminator are validated as
-     * shape; the WOTS chain tips and challenger keys are outside the device's knowledge.
-     * What makes the unvalidated remainder safe to sign over is the taproot commitment
-     * check below, which binds the whole leaf to the spent scriptPubKey.
+     * The dispatcher verified the signer prefix — depositor key and both challenger groups
+     * — against the approved intent, so the depositor key at leaf[1..32] is already known
+     * to be intent->depositor_pk and the leaf cannot be spent without the approved
+     * challenger signatures.  Only the WOTS verifier body remains unverified: its chain
+     * tips are host-chosen and cannot be derived on-device.  The taproot commitment check
+     * below binds that body to the output being spent.
      *
      * Real leaves are 11,526-13,636 bytes depending on the challenger counts, far over
      * VAULT_SCRIPT_MAX_LEN, so this flow must not assume the script was buffered: read
@@ -3626,33 +3657,36 @@ bool validate_and_display_transaction(
         if (leaf[34] == (uint8_t) OP_SIZE) return _validate_display_wc(dc, st);
         /* Assert: variable-length leaf, ~11.6 KB in practice (btc-vault claim_assert.rs).
          *
-         * This is the app's weakest validator — no signing cap, no dedup, no intent
-         * binding, no output enforcement, and the screen shows no destination — so it must
-         * match the Assert pattern only and never act as a catch-all.  HLD "Standalone
-         * transactions": patterns MUST remain mutually exclusive, and a PSBT matching no
-         * pattern MUST be rejected.  What each conjunct guarantees:
-         *   bytes 34 and 67 (VAULT_LEAF_GROUP0_*): the leaf continues into a challenger
-         *     multisig group — a 32-byte key push closed by OP_CHECKSIG — rather than into
-         *     free-form bytes.  generate_assert_script emits that group directly after
-         *     <claimer> OP_CHECKSIGVERIFY, so every real leaf satisfies both.  Byte 34
-         *     alone does not: <D> OP_CHECKSIGVERIFY <32B push> OP_DROP OP_TRUE also has a
-         *     key push at 34, and its no-op middle makes it spendable with nothing but the
-         *     depositor signature this path hands out.
-         *   length > VAULT_NOPAYOUT_LEAF_LEN and terminal OP_TRUE: keep the 68-byte
-         *     NoPayout leaf out — it satisfies both shape bytes and differs only in length
-         *     and its terminal OP_CHECKSIG, and here it would be signed with no cap and no
-         *     per-(group, challenger) dedup.  Terminal OP_TRUE also excludes the Vault UTXO
-         *     and Refund leaves, which end <t> OP_CSV.
-         * This is a shape test, not a reconstruction: the leaf embeds host-chosen WOTS
-         * chain tips the device cannot derive, so a host that persuaded the depositor to
-         * fund a P2TR whose taptree it controls can still craft a leaf matching this
-         * pattern.  The pattern bounds which leaves reach the validator; it does not make
-         * the leaf trustworthy. */
-        if (leaf_len > (int) VAULT_NOPAYOUT_LEAF_LEN &&
-            leaf[VAULT_LEAF_GROUP0_PUSH_OFF] == OP_PUSHBYTES_32 &&
-            leaf[VAULT_LEAF_GROUP0_OP_OFF] == (uint8_t) OP_CHECKSIG &&
-            leaf_last == (uint8_t) OP_TRUE)
+         * Dispatch is two-part, and both parts are load-bearing.
+         *
+         * leaf_has_assert_shape separates the Assert leaf from the app's other leaves, and
+         * that is all it does.  Shape bytes cannot establish that a leaf is trustworthy:
+         * the body is ~11 KB of host-chosen WOTS chain tips the device cannot derive, so
+         * whatever fixed offsets are checked, an attacker pads around them.  A 70-byte
+         * <D> OP_CHECKSIGVERIFY <32B push> OP_CHECKSIG OP_DROP OP_TRUE satisfies every one
+         * of them and is spendable on the depositor signature alone.
+         *
+         * assert_prefix_ok is what closes that.  It reports that the leaf's whole signer
+         * prefix — the depositor key, the keeper N-of-N group and the challenger M-of-M
+         * group — matched the intent the user approved, compared while the leaf streamed.
+         * Those groups are enforced by OP_CHECKSIGVERIFY and OP_NUMEQUALVERIFY, which fail
+         * hard, so a leaf that matches cannot be spent without every approved keeper and
+         * challenger signature no matter what its body does.  The body stays unverified and
+         * does not need to be: it governs whether an assert is challengeable, not who can
+         * spend.
+         *
+         * A shape match with a prefix mismatch is rejected outright rather than allowed to
+         * fall through.  HLD "Standalone transactions": patterns MUST remain mutually
+         * exclusive, and a PSBT matching no pattern MUST be rejected.  This matters more
+         * here than elsewhere because the Assert validator is the app's weakest — no
+         * signing cap, no dedup, no output enforcement, and Screen 5 shows no destination. */
+        if (leaf_has_assert_shape(leaf_len, leaf, leaf_last)) {
+            if (!G_leaf_meta.assert_prefix_ok) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
             return _validate_display_assert(dc, st);
+        }
         /* Refund: <D> OP_CHECKSIGVERIFY <T(1-2 bytes)> OP_CSV */
         if (leaf_last == (uint8_t) OP_CSV) return _validate_display_refund(dc, st);
     }

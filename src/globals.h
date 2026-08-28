@@ -190,6 +190,19 @@ typedef struct {
      *  still check leaf_script_len before trusting a given byte. */
     uint8_t prefix[VAULT_LEAF_PREFIX_LEN];
 
+    /**
+     * True when the leaf's leading bytes matched the Assert signer prefix rebuilt from the
+     * approved intent — <Depositor> OP_CHECKSIGVERIFY, the keeper N-of-N group and the
+     * challenger M-of-M group — and the script continues past it.
+     *
+     * The prefix reaches ~2.2 KB at 32/32 keys, so it is compared while the leaf streams
+     * (see vault_assert_prefix_byte); this flag is the only record of the result once the
+     * bytes are gone.  False whenever no intent is loaded, which is what keeps the Assert
+     * validator — the one flow with no signing cap, dedup or output enforcement — from
+     * accepting a leaf whose challenger set the user never approved.
+     */
+    bool assert_prefix_ok;
+
     /** BIP-341 TapLeaf hash over the whole script, however it was read. */
     uint8_t hash[VAULT_HASH256_LEN];
 } vault_leaf_meta_t;

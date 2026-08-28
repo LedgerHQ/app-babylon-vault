@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Security
+
+- **Assert leaf bound to the approved intent (F-6, follow-up)**: the v0.9.6 fix added `OP_CHECKSIG` at `VAULT_LEAF_GROUP0_OP_OFF` to the Assert predicate, arguing a no-op middle could not satisfy it. It can, two bytes further right: the 70-byte leaf `<D> OP_CHECKSIGVERIFY <32 junk> OP_CHECKSIG OP_DROP OP_TRUE` clears every conjunct — the `OP_DROP` sits at byte 68, one past the captured prefix, so no shape test can see it — and is spendable on the depositor signature alone, since `OP_CHECKSIG` with an empty signature pushes false without failing (BIP-342) and `OP_TRUE` then satisfies CLEANSTACK. No shape test can close this: ~11 KB of the leaf is a WOTS verifier over host-chosen chain tips the device cannot derive, so whatever offsets are checked, an attacker pads around them. A minimum-length floor does not help either — `_realistic_assert_leaf` at 11,662 B is one `OP_NOP`→`OP_DROP` away from the same bypass. Fixed by verifying what actually governs custody: the leaf's signer prefix — `<intent.depositor_pk> OP_CHECKSIGVERIFY`, the VaultKeepers N-of-N group and the UniversalChallengers M-of-M group — is now compared byte for byte against the approved intent. Both groups are enforced by hard-failing `OP_CHECKSIGVERIFY`/`OP_NUMEQUALVERIFY`, so a matching leaf cannot be spent without every approved keeper and challenger signature whatever its body contains; the WOTS body stays unverified and does not need to be, governing challengeability rather than who can spend. The prefix reaches 2,216 B at 32/32 and real leaves are never buffered, so `vault_assert_prefix_byte` yields the expected byte at any offset without materialising it and the stream callback compares each byte as it passes — constant memory, verdict kept in the new `G_leaf_meta.assert_prefix_ok`. Shape testing moved to `leaf_has_assert_shape`, shared with the signing path, which re-asserts the same invariant off an independent re-read. Verified byte-exact against btc-vault (`claim_assert.rs`, `script_utils.rs`, `claim.rs` `derive_full_challengers`) and against the real signet leaf in `tests/vectors/depositor-as-claimer/assert.txt` (`sign_psbt_validate.c`, `sign_psbt_validate_helpers.c`, `sign_custom_inputs.c`, `vault_script.c`, `vault_script.h`, `globals.h`)
+
+### Changed
+
+- **BREAKING — Assert now requires `INTENT_LOADED`**: it was previously accepted from any state, including `IDLE`, and `[0.9.6]`'s F-7 entry cites an HLD requirement that standalone flows stay state-independent. That remedy is unavailable here: F-7's discriminator was present in the leaf itself (a challenger multisig vs. a second lone signer), whereas the Assert leaf's challenger *identities* are not in the leaf and exist nowhere but the intent. So the choice was a state gate or leaving the hole open, and the app fails closed. Because `APPROVE_VAULT_INTENT` requires `HASH_DERIVED`, a host signing an Assert in a fresh session must replay `DERIVE_CONTEXT_HASH` → `APPROVE_VAULT_INTENT`, which also resets the per-type signature counters. **This needs HLD sign-off, not just a spec edit** — see the Assert section of `APP_SPECIFICATION.md` and `docs/integration-guide.md`.
+
+### Fixed
+
+- **Stale Assert documentation**: `APP_SPECIFICATION.md` still described the captured leaf prefix as 35 bytes, though `VAULT_LEAF_PREFIX_LEN` grew to 68 in `[0.9.6]`, and listed the challenger multisig as unverified content. Both corrected, along with the state requirement, the `<D>` pinning, the leaf-script layout (which now names the two groups and their ordering, since the device depends on it), the long-leaf "Kept" table, and the `SW_CAP_EXCEEDED` cap taxonomy.
+
+
 ## [0.9.6] - external security audit remediation (run `feb4b487`, 2026-08-26)
 
 ### Security

@@ -588,6 +588,18 @@ bool sign_custom_inputs(
             return false;
         }
 
+        /* Signing must not silently rely on the validation-phase check: an Assert-shaped
+         * leaf reaching this point must still carry the signer prefix the user approved.
+         * The re-read above recomputed assert_prefix_ok, so this is an independent check,
+         * not a cached verdict.  Same reasoning as the PayoutFinalize re-assert above. */
+        if (leaf_has_assert_shape(G_scratch.tls.leaf_script_len,
+                                  G_leaf_meta.prefix,
+                                  G_leaf_meta.last_byte) &&
+            !G_leaf_meta.assert_prefix_ok) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
         /* leaf_key [32..63]: clobbers tls.control_block[30..62] — dead. */
         memcpy(G_scratch.sign_standalone.leaf_key, G_leaf_meta.prefix + 1, VAULT_XONLY_PUBKEY_LEN);
 

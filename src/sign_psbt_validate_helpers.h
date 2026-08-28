@@ -53,3 +53,18 @@ bool parse_payout_leaf_script(const uint8_t *script,
                               int script_len,
                               uint8_t d_key_out[VAULT_XONLY_PUBKEY_LEN],
                               uint32_t *csv_value_out);
+
+/**
+ * Report whether a leaf has the Assert shape: length past the NoPayout leaf, a 32-byte key
+ * push closed by OP_CHECKSIG where the first challenger group starts, and a terminal
+ * OP_TRUE.
+ *
+ * Shape only.  It separates the Assert leaf from the app's other leaves, but says nothing
+ * about whether the leaf is trustworthy — a hand-crafted leaf can satisfy every byte it
+ * reads.  Callers must also require G_leaf_meta.assert_prefix_ok, which is what binds the
+ * leaf's signer set to the approved intent.
+ *
+ * @param script_len  Full script length; only the prefix and last byte are read.
+ * @param prefix      At least VAULT_LEAF_PREFIX_LEN captured leading bytes.
+ */
+bool leaf_has_assert_shape(int script_len, const uint8_t *prefix, uint8_t last_byte);

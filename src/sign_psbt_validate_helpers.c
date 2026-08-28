@@ -208,3 +208,17 @@ bool parse_payout_leaf_script(const uint8_t *script,
     }
     return false;
 }
+
+bool leaf_has_assert_shape(int script_len, const uint8_t *prefix, uint8_t last_byte) {
+    _Static_assert(VAULT_LEAF_PREFIX_LEN > VAULT_LEAF_GROUP0_OP_OFF,
+                   "captured leaf prefix no longer covers the group-0 shape bytes");
+    /* The length guard keeps the 68-byte NoPayout leaf out: it shares the whole 34-byte
+     * head and both group-0 bytes, differing only in length and its terminal opcode. */
+    if (script_len <= (int) VAULT_NOPAYOUT_LEAF_LEN) return false;
+    if (prefix[0] != OP_PUSHBYTES_32) return false;
+    if (prefix[1 + VAULT_XONLY_PUBKEY_LEN] != (uint8_t) OP_CHECKSIGVERIFY) return false;
+    if (prefix[VAULT_LEAF_GROUP0_PUSH_OFF] != OP_PUSHBYTES_32) return false;
+    if ((uint8_t) prefix[VAULT_LEAF_GROUP0_OP_OFF] != (uint8_t) OP_CHECKSIG) return false;
+    /* Terminal OP_TRUE excludes the Vault UTXO and Refund leaves, which end <t> OP_CSV. */
+    return last_byte == (uint8_t) OP_TRUE;
+}

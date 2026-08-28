@@ -42,6 +42,10 @@ from .instructions import (
 from .test_sign_psbt_validate import (
     _NoWalletPolicy,
     _tapleaf_hash,
+    _multisig_group,
+    _setup_s1_state,
+    _TEST_KEEPER_PKS,
+    _TEST_CHALLENGER_PKS,
     HARDENED,
     VAULT_NUMS_XONLY,
     VAULT_DUST_LIMIT,
@@ -52,8 +56,46 @@ ROOT_SCREENSHOT_PATH = Path(__file__).parent.resolve()
 # Arbitrary 32-byte claim txid used as the prevout of the ClaimAssertConnector input.
 _FAKE_CLAIM_TXID = bytes(range(32))
 
-# A fixed 32-byte xonly key used as the first challenger slot in the synthetic test leaf.
+# A fixed 32-byte xonly key used where a test needs a key the intent does not contain.
 _ASSERT_INNER_KEY = bytes([0x02] * 32)
+
+
+@pytest.fixture(autouse=True)
+def assert_intent(
+    request: pytest.FixtureRequest,
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """Approve the standard single-keeper / single-challenger intent before each test.
+
+    Every Assert flow needs one: the device rebuilds the Assert leaf's signer prefix from
+    the approved intent and compares it against the streamed leaf, so without an intent no
+    leaf dispatches to the Assert validator at all.  Loading it here keeps each error-path
+    test failing for the reason it names rather than at the intent gate.
+
+    Tests marked `no_intent` opt out, to cover the gate itself.
+    """
+    if request.node.get_closest_marker("no_intent"):
+        return
+    _setup_s1_state(client, navigator, device, 0 if bitcoin_network == "main" else 1)
+
+
+def _assert_signer_prefix(depositor_key: bytes) -> bytes:
+    """The Assert leaf's signer prefix for the intent approved by the fixture above.
+
+    Mirrors btc-vault claim_assert.rs: <Claimer> OP_CHECKSIGVERIFY, then the local
+    challenger N-of-N group, then the universal challenger M-of-M group, both intermediate
+    (OP_NUMEQUALVERIFY).  For a depositor claimer the local challengers are exactly the
+    VaultKeepers (claim.rs derive_full_challengers), so the intent's keeper and challenger
+    lists reproduce it.  106 bytes at 1 keeper + 1 challenger.
+    """
+    return (
+        bytes([0x20]) + depositor_key + bytes([0xAD])
+        + _multisig_group(_TEST_KEEPER_PKS, False)
+        + _multisig_group(_TEST_CHALLENGER_PKS, False)
+    )
 
 
 def _build_assert_psbt(
@@ -66,19 +108,17 @@ def _build_assert_psbt(
 ) -> PSBT:
     """Build an Assert PSBTv0 for Screen 5.
 
-    Uses a synthetic leaf that reproduces the real Assert leaf's *shape* at a size that
-    fits the device read buffer:
-        OP_PUSHBYTES_32 <D[32]> OP_CHECKSIGVERIFY
-        OP_PUSHBYTES_32 <key[32]> OP_CHECKSIG OP_1 OP_NUMEQUALVERIFY
-        OP_TRUE
+    Uses a synthetic leaf that reproduces the real Assert leaf's signer prefix exactly and
+    stands in for the WOTS verifier body with nothing at all, so it fits the device read
+    buffer:
+        <D[32]> OP_CHECKSIGVERIFY <VK N-of-N> <UC M-of-M> OP_TRUE
 
-    The router dispatches to Screen 5 on leaf[33] == OP_CHECKSIGVERIFY and
-    leaf[34] == OP_PUSHBYTES_32 (first byte of the challenger multisig), plus a length
-    strictly greater than the 68-byte NoPayout leaf and an OP_TRUE terminator.  Those
-    last two are load-bearing, not cosmetic: the NoPayout leaf shares the whole 35-byte
-    prefix, so without them an Assert:0 UTXO in a 1-in/1-out PSBT would be signed down
-    the Assert path with no cap and no dedup.  D is verified via TAP_BIP32_DERIVATION
-    (BIP-86 path).
+    Dispatch to Screen 5 needs both halves of the router's test.  The shape bytes
+    (leaf[33] == OP_CHECKSIGVERIFY, leaf[34] == OP_PUSHBYTES_32, length past the 68-byte
+    NoPayout leaf, OP_TRUE terminator) separate this leaf from the app's others.  The
+    signer prefix must then match the approved intent byte for byte, which is what stops a
+    hand-crafted leaf of the same shape from reaching the Assert validator.  D is verified
+    separately via TAP_BIP32_DERIVATION (BIP-86 path).
 
     Real Assert leaves are 11,526-13,636 bytes (btc-vault claim_assert.rs) and do NOT
     fit the read buffer, so no real Assert is signable yet (L-11).  This synthetic leaf
@@ -87,15 +127,11 @@ def _build_assert_psbt(
     """
     assert len(claim_txid) == 32
 
-    # Synthetic Assert leaf, real shape: 35-byte prefix, a 1-of-1 challenger "multisig",
-    # and the OP_TRUE terminator the WOTS verifier body ends with.
-    assert_leaf = (
-        bytes([0x20]) + leaf_key + bytes([0xAD])           # OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY
-        + bytes([0x20]) + _ASSERT_INNER_KEY + bytes([0xAC])  # OP_PUSHBYTES_32 <C> OP_CHECKSIG
-        + bytes([0x51, 0x9D])                               # OP_1 OP_NUMEQUALVERIFY
-        + bytes([0x51])                                     # OP_TRUE
-    )
-    assert len(assert_leaf) == 71
+    # 106-byte signer prefix plus the OP_TRUE the WOTS verifier body ends with.  One byte
+    # past the prefix is the minimum the device accepts: a leaf that stops at the prefix
+    # carries no body and no terminator.
+    assert_leaf = _assert_signer_prefix(leaf_key) + bytes([0x51])
+    assert len(assert_leaf) == 107
     assert len(assert_leaf) > 68 and assert_leaf[-1] == 0x51
 
     leaf_hash = _tapleaf_hash(assert_leaf)
@@ -355,15 +391,12 @@ def test_sign_psbt_assert_unrecognized_leaf_shape(
 def _realistic_assert_leaf(depositor_key: bytes, script_len: int) -> bytes:
     """Build an Assert-shaped leaf of exactly script_len bytes.
 
-    Mirrors the btc-vault claim_assert.rs shape: the 35-byte signer prefix, a padding body
-    standing in for the WOTS verifier, and the OP_TRUE terminator.  Only the prefix, the
-    length and the terminator are load-bearing for the device, so the body content is
-    irrelevant — what matters is the total size.
+    Mirrors the btc-vault claim_assert.rs shape: the signer prefix rebuilt from the
+    approved intent, a padding body standing in for the WOTS verifier, and the OP_TRUE
+    terminator.  The device verifies the prefix and the terminator; the body is the part it
+    cannot derive, so its content is irrelevant here — what matters is the total size.
     """
-    prefix = (
-        bytes([0x20]) + depositor_key + bytes([0xAD])   # OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY
-        + bytes([0x20]) + bytes([0x02] * 32) + bytes([0xAC])  # OP_PUSHBYTES_32 <C> OP_CHECKSIG
-    )
+    prefix = _assert_signer_prefix(depositor_key)
     body_len = script_len - len(prefix) - 1
     assert body_len >= 0, f"script_len {script_len} too small for the Assert prefix"
     # OP_NOP (0x61) padding: valid script bytes that carry no consensus meaning here.
@@ -508,7 +541,7 @@ def test_sign_psbt_assert_spendable_catchall_leaf_is_rejected(
     """A `<D> OP_CHECKSIGVERIFY <no-ops> OP_TRUE` leaf must not route to Assert.
 
     _validate_display_assert is the weakest validator in the app — no signing cap, no
-    dedup, no intent binding, no output enforcement, and Screen 5 shows no destination.
+    dedup, no output enforcement, and Screen 5 shows no destination.
     So it must match the Assert pattern only, never act as a catch-all: the HLD requires
     standalone leaf patterns to stay mutually exclusive and a PSBT matching no pattern to
     be rejected.
@@ -538,6 +571,126 @@ def test_sign_psbt_assert_spendable_catchall_leaf_is_rejected(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+def test_sign_psbt_assert_shape_matching_crafted_leaf_is_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A 70-byte leaf that satisfies every Assert *shape* byte must still be rejected.
+
+    `<D> OP_CHECKSIGVERIFY <32B push> OP_CHECKSIG OP_DROP OP_TRUE` clears all four shape
+    conjuncts: length 70 > 68, byte 34 == OP_PUSHBYTES_32, byte 67 == OP_CHECKSIG, terminal
+    OP_TRUE.  The OP_DROP that defeats them sits at byte 68 — one past the captured prefix,
+    so no shape test can ever see it.  Under consensus the leaf is spendable on the
+    depositor signature alone: OP_CHECKSIGVERIFY consumes <sig_D>, OP_CHECKSIG with an empty
+    signature pushes false without failing and without spending sigops budget (BIP-342),
+    OP_DROP clears it, and OP_TRUE leaves the single true element tapscript CLEANSTACK
+    wants.
+
+    What rejects it is the signer-prefix comparison against the approved intent: byte 35
+    begins a key the user never approved.  No length floor can substitute — the same
+    structure works at any size, and `_realistic_assert_leaf` differs from a spendable
+    11.6 KB variant by one OP_NOP.  Reported on PR #9.
+    """
+    fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
+    psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
+    crafted_leaf = (
+        bytes([0x20]) + leaf_key + bytes([0xAD])               # <D> OP_CHECKSIGVERIFY
+        + bytes([0x20]) + bytes([0x03] * 32) + bytes([0xAC])   # <K> OP_CHECKSIG
+        + bytes([0x75])                                        # OP_DROP  (byte 68)
+        + bytes([0x51])                                        # OP_TRUE
+    )
+    assert len(crafted_leaf) == 70, "70 bytes is the shortest shape-matching bypass"
+    assert crafted_leaf[34] == 0x20 and crafted_leaf[67] == 0xAC and crafted_leaf[-1] == 0x51, \
+        "must clear every shape conjunct, or the test proves nothing"
+    _rebuild_assert_commitment(psbt, fingerprint, leaf_key, coin_type, crafted_leaf, 5_000_000)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.no_intent
+def test_sign_psbt_assert_without_approved_intent_is_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A fully valid Assert PSBT is refused when the session holds no approved intent.
+
+    The challenger set the leaf must be checked against exists nowhere but the intent, so
+    outside VAULT_STATE_INTENT_LOADED the device cannot tell an Assert leaf from a
+    hand-crafted one and refuses to sign rather than falling back to a shape-only test.
+    Fail closed, per EMBEDDED "Security and Availability".
+
+    Note this is a deliberate behaviour change: Assert was previously accepted from any
+    state, including IDLE.
+    """
+    fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
+    psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_assert_unapproved_challenger_is_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A real-shaped, real-sized Assert leaf whose challenger set is not the approved one.
+
+    Everything the device can check structurally is correct: the full signer prefix layout,
+    an 11,662-byte body, the OP_TRUE terminator, a self-consistent taproot commitment, and
+    the device's own depositor key as claimer.  Only the keeper key inside the first
+    multisig group differs from the intent the user approved.
+
+    This is the case that carries the security property.  If it were accepted, a host that
+    got the depositor to fund a taptree of its choosing could have the device sign a leaf
+    whose N-of-N and M-of-M groups it controls, and spend without any real challenger.
+    """
+    fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
+    psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
+    unapproved_keeper = bytes([0x07] * 32)
+    assert unapproved_keeper not in _TEST_KEEPER_PKS
+    prefix = (
+        bytes([0x20]) + leaf_key + bytes([0xAD])
+        + _multisig_group([unapproved_keeper], False)
+        + _multisig_group(_TEST_CHALLENGER_PKS, False)
+    )
+    leaf = prefix + bytes([0x61] * (11_662 - len(prefix) - 1)) + bytes([0x51])
+    assert len(leaf) == 11_662 and leaf[34] == 0x20 and leaf[67] == 0xAC and leaf[-1] == 0x51
+    _rebuild_assert_commitment(psbt, fingerprint, leaf_key, coin_type, leaf, 5_000_000)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_assert_leaf_ending_at_signer_prefix_is_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A leaf that is exactly the approved signer prefix and nothing more is rejected.
+
+    Every prefix byte matches, but a leaf stopping there carries no WOTS verifier body and
+    ends in OP_NUMEQUALVERIFY, so the shape test refuses it before the prefix result is
+    consulted.  The two checks overlap here by design: assert_prefix_ok also requires the
+    script to continue past the prefix, so neither check depends on the other to keep this
+    leaf out.
+    """
+    fingerprint, leaf_key, coin_type = _assert_keys(client, bitcoin_network)
+    psbt = _build_assert_psbt(fingerprint, leaf_key, coin_type)
+    prefix_only_leaf = _assert_signer_prefix(leaf_key)
+    assert len(prefix_only_leaf) == 106
+    _rebuild_assert_commitment(psbt, fingerprint, leaf_key, coin_type, prefix_only_leaf, 5_000_000)
+
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
 def test_sign_psbt_assert_nopayout_shaped_leaf_is_rejected(
     client: "RaggerClient",
     bitcoin_network: str,
@@ -545,10 +698,10 @@ def test_sign_psbt_assert_nopayout_shaped_leaf_is_rejected(
     """A NoPayout-shaped leaf presented as a 1-in Assert must be rejected.
 
     The NoPayout leaf (`OP_PUSHBYTES_32 <D> OP_CHECKSIGVERIFY OP_PUSHBYTES_32 <Cj>
-    OP_CHECKSIG`, 68 bytes) shares the Assert leaf's entire 35-byte prefix, and NoPayout
-    is routed only by transaction shape (3 inputs / 1 output).  So the same Assert:0 UTXO
-    re-presented in a 1-in/1-out PSBT must not be accepted down the Assert path, which
-    applies no signing cap, no per-(group, challenger) dedup and no intent binding.
+    OP_CHECKSIG`, 68 bytes) shares the Assert leaf's whole 34-byte head and both group-0
+    shape bytes, and NoPayout is routed only by transaction shape (3 inputs / 1 output).  So
+    the same Assert:0 UTXO re-presented in a 1-in/1-out PSBT must not be accepted down the
+    Assert path, which applies no signing cap and no per-(group, challenger) dedup.
 
     The Assert router therefore requires a leaf longer than the NoPayout leaf and ending
     in OP_TRUE.  HLD "Standalone transactions": leaf patterns MUST remain mutually
