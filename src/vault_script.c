@@ -258,6 +258,67 @@ static int encode_multisig_group(const uint8_t keys[][VAULT_XONLY_PUBKEY_LEN],
     return off;
 }
 
+/* --------------------------------------------------------------------------
+ * Assert leaf prefix description
+ *
+ * The two functions below describe, without materialising, the bytes
+ * encode_multisig_group would emit for the Assert leaf's signer prefix.  Rationale and
+ * the security property they carry are documented at their declarations in
+ * vault_script.h.  Any change to encode_multisig_group's encoding must be mirrored here.
+ * ----------------------------------------------------------------------- */
+
+/** One multisig entry: OP_PUSHBYTES_32 <key[32]> <terminating opcode>. */
+#define MULTISIG_ENTRY_LEN (1u + VAULT_XONLY_PUBKEY_LEN + 1u)
+
+/** Length of the fragment encode_multisig_group emits for @p key_count keys. */
+static int _multisig_group_len(uint32_t key_count) {
+    uint8_t num[5];
+    return (int) (MULTISIG_ENTRY_LEN * key_count) + _push_number(key_count, num) + 1;
+}
+
+int vault_assert_prefix_len(const vault_intent_t *intent) {
+    if (intent->keeper_count == 0u || intent->challenger_count == 0u) return -1;
+    return (int) MULTISIG_ENTRY_LEN + _multisig_group_len(intent->keeper_count) +
+           _multisig_group_len(intent->challenger_count);
+}
+
+int vault_assert_prefix_byte(const vault_intent_t *intent, uint32_t off) {
+    if (intent->keeper_count == 0u || intent->challenger_count == 0u) return -1;
+
+    /* <Claimer> OP_CHECKSIGVERIFY.  The only Assert claimer this device holds a key for
+     * is the approved depositor, so the intent fixes the key outright. */
+    if (off == 0u) return OP_PUSHBYTES_32;
+    if (off < 1u + VAULT_XONLY_PUBKEY_LEN) return intent->depositor_pk[off - 1u];
+    if (off == 1u + VAULT_XONLY_PUBKEY_LEN) return OP_CHECKSIGVERIFY;
+
+    uint32_t base = MULTISIG_ENTRY_LEN;
+    for (int g = 0; g < 2; g++) {
+        const uint32_t count = (g == 0) ? intent->keeper_count : intent->challenger_count;
+        const uint8_t (*keys)[VAULT_XONLY_PUBKEY_LEN] =
+            (g == 0) ? intent->keeper_pks : intent->challenger_pks;
+
+        if (off < base + MULTISIG_ENTRY_LEN * count) {
+            const uint32_t i = (off - base) / MULTISIG_ENTRY_LEN;
+            const uint32_t k = (off - base) % MULTISIG_ENTRY_LEN;
+            if (k == 0u) return OP_PUSHBYTES_32;
+            if (k < 1u + VAULT_XONLY_PUBKEY_LEN) return keys[i][k - 1u];
+            /* Only the group's first key closes with OP_CHECKSIG; the rest accumulate. */
+            return (i == 0u) ? OP_CHECKSIG : OP_CHECKSIGADD;
+        }
+        base += MULTISIG_ENTRY_LEN * count;
+
+        uint8_t num[5];
+        const uint32_t num_len = (uint32_t) _push_number(count, num);
+        if (off < base + num_len) return num[off - base];
+        base += num_len;
+
+        /* Intermediate group: the count check consumes its result. */
+        if (off == base) return OP_NUMEQUALVERIFY;
+        base += 1u;
+    }
+    return -1;
+}
+
 /* ==========================================================================
  * Leaf script builders
  * ========================================================================== */

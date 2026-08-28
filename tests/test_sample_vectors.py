@@ -266,30 +266,16 @@ def test_device_ingests_sample_psbt(
 #   }
 # ===========================================================================
 
+# One vector set per network — see generated-speculos/README.md for why they cannot be
+# shared: the depositor key is baked into every leaf script the device reconstructs.
 _SPECULOS_VECTORS_DIR = VECTORS_DIR / "generated-speculos"
-_SPECULOS_PEGIN_FILE = _SPECULOS_VECTORS_DIR / "deposit-flow" / "pegin.json"
-_SPECULOS_METADATA_FILE = _SPECULOS_VECTORS_DIR / "metadata.json"
-
-_speculos_vectors_available = _SPECULOS_PEGIN_FILE.exists() and _SPECULOS_METADATA_FILE.exists()
 
 
-def _load_speculos_metadata() -> dict:
-    """Return the parsed metadata.json for the speculos vector set."""
-    import json as _json
-    return _json.loads(_SPECULOS_METADATA_FILE.read_text())
-
-
-@pytest.mark.skipif(
-    not _speculos_vectors_available,
-    reason=(
-        "tests/vectors/generated-speculos/ not populated — "
-        "see tests/vectors/generated-speculos/README.md to generate"
-    ),
-)
 def test_device_signs_speculos_pegin(
     client: "RaggerClient",
     navigator: "Navigator",
     device: "Device",
+    bitcoin_network: str,
 ) -> None:
     """The device signs the Speculos-mnemonic PegIn vector and returns SW_OK.
 
@@ -317,10 +303,28 @@ def test_device_signs_speculos_pegin(
         VAULT_APP_NAME,
         depositor_path,
         HARDENED,
+        TEST_DEPOSITOR_XONLY_MAINNET,
+        TEST_DEPOSITOR_XONLY_TESTNET,
     )
 
-    meta = _load_speculos_metadata()
+    vector_set = _SPECULOS_VECTORS_DIR / bitcoin_network
+    if not (vector_set / "metadata.json").exists():
+        pytest.skip(
+            f"tests/vectors/generated-speculos/{bitcoin_network}/ not populated — "
+            "regenerate with ledger-vector-gen for this network, see "
+            "tests/vectors/generated-speculos/README.md"
+        )
+
+    meta = json.loads((vector_set / "metadata.json").read_text())
     coin_type = meta["coin_type"]
+    # A set generated into the wrong directory is a misconfiguration, not a missing
+    # prerequisite: fail loudly rather than skip, since the device would otherwise reject
+    # every vector in a way that looks like a firmware bug.
+    expected_coin_type = 0 if bitcoin_network == "main" else 1
+    assert coin_type == expected_coin_type, (
+        f"{vector_set} holds coin_type {coin_type}, but network '{bitcoin_network}' "
+        f"needs {expected_coin_type} — regenerated with the wrong --network?"
+    )
     keeper_pks = [bytes.fromhex(k) for k in meta["keeper_pks_hex"]]
     challenger_pks = [bytes.fromhex(k) for k in meta["challenger_pks_hex"]]
     prepegin_txid = bytes.fromhex(meta["prepegin_txid_hex"])
@@ -361,17 +365,28 @@ def test_device_signs_speculos_pegin(
         client, navigator, device, scalars_tlv, keeper_pks, challenger_pks, groups=groups_tlv,
     )
 
-    # Load and sign each PegIn PSBT — expect SW_OK and a 64-byte signature.
-    psbt_hexes = _load_hexes("generated-speculos/deposit-flow/pegin.json")
+    # Load and sign each PegIn PSBT — expect SW_OK and a usable signature.
+    psbt_hexes = [h.strip() for h in
+                  json.loads((vector_set / "deposit-flow" / "pegin.json").read_text())]
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    depositor_xonly = (TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main"
+                       else TEST_DEPOSITOR_XONLY_TESTNET)
 
     for idx, psbt_hex in enumerate(psbt_hexes):
         psbt = _psbt_from_hex(psbt_hex)
         result = client.sign_psbt(psbt, dummy_wallet, None)
+        # PegIn signs Input 0 (the HTLC leaf-0 spend) under the depositor key.  Checking
+        # the input index and the signing key — not just the length — is what makes this
+        # the positive counterpart to the rejection tests: a signature over the wrong
+        # input, or under a key that is not the depositor's, would otherwise pass.
         assert len(result) == 1, (
             f"pegin[{idx}]: expected exactly 1 signature, got {len(result)}"
         )
-        _input_index, partial_sig = result[0]
+        input_index, partial_sig = result[0]
+        assert input_index == 0, f"pegin[{idx}]: signed unexpected input {input_index}"
+        assert partial_sig.pubkey[-32:] == depositor_xonly, (
+            f"pegin[{idx}]: signed with an unexpected key"
+        )
         assert len(partial_sig.signature) == 64, (
             f"pegin[{idx}]: expected 64-byte SIGHASH_DEFAULT Schnorr sig, "
             f"got {len(partial_sig.signature)}"

@@ -37,10 +37,36 @@ _Static_assert(VAULT_KEY_PAIR_SLOTS >= 4,
                "VAULT_KEY_PAIR_SLOTS too small; verify NBGL per-page pair limit before reducing");
 _Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= BIP322_ETH_ADDR_STR_LEN,
                "TX_DISPLAY_ADDR_STR_SIZE too small for Ethereum address");
-_Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= BIP322_CHAIN_ID_STR_LEN,
-               "TX_DISPLAY_AMOUNT_STR_SIZE too small for chain ID");
+_Static_assert(TX_DISPLAY_EXTRA_STR_SIZE >= BIP322_CHAIN_ID_STR_LEN,
+               "TX_DISPLAY_EXTRA_STR_SIZE too small for chain ID");
+_Static_assert(TX_DISPLAY_EXTRA_STR_SIZE >= TX_DISPLAY_AMOUNT_STR_SIZE,
+               "TX_DISPLAY_EXTRA_STR_SIZE must also hold a format_sats_amount result");
 _Static_assert(TX_DISPLAY_TXID_STR_SIZE >= BIP322_ETH_ADDR_STR_LEN,
                "TX_DISPLAY_TXID_STR_SIZE too small for registry address");
+
+// ---------------------------------------------------------------------------
+// Shared value formatting
+// ---------------------------------------------------------------------------
+
+// "4294967295 blocks (~29826161 days)\0" is the widest output; see
+// TX_DISPLAY_EXTRA_STR_SIZE in globals.h.
+#define VAULT_TIMELOCK_STR_SIZE TX_DISPLAY_EXTRA_STR_SIZE
+
+// 1 block ≈ 10 minutes. Examples: "100 blocks (~17 h)", "1008 blocks (~7 days)".
+// Shared by the vault intent review (Screen 2) and the Refund review (Screen 3) so the
+// user can match a transaction's timelock against the one they approved in the intent.
+// minutes is 64-bit: blocks spans the full CScriptNum-positive range, and blocks * 10
+// overflows uint32_t above 429496729.
+static void format_timelock_blocks(uint32_t blocks, char *buf, size_t len) {
+    uint64_t minutes = (uint64_t) blocks * 10u;
+    if (minutes < 60u) {
+        snprintf(buf, len, "%u blocks (~%u min)", (unsigned) blocks, (unsigned) minutes);
+    } else if (minutes < 1440u) {
+        snprintf(buf, len, "%u blocks (~%u h)", (unsigned) blocks, (unsigned) (minutes / 60u));
+    } else {
+        snprintf(buf, len, "%u blocks (~%u days)", (unsigned) blocks, (unsigned) (minutes / 1440u));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Screen 1 — DERIVE_CONTEXT_HASH approval
@@ -105,10 +131,9 @@ bool display_refund_transaction(dispatcher_context_t *dc,
 
     format_hex(prepegin_txid, 32, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
-    snprintf(G_scratch.display_tx.extra_str,
-             TX_DISPLAY_AMOUNT_STR_SIZE,
-             "%lu blocks",
-             (unsigned long) timelock_blocks);
+    format_timelock_blocks(timelock_blocks,
+                           G_scratch.display_tx.extra_str,
+                           TX_DISPLAY_EXTRA_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
     int n = 0;
@@ -309,8 +334,8 @@ bool display_pop_transaction(dispatcher_context_t *dc,
 
     // addr_str (80 B): ETH address (42 chars + NUL fits within 80 B)
     strlcpy(G_scratch.display_tx.addr_str, eth_addr, TX_DISPLAY_ADDR_STR_SIZE);
-    // extra_str (TX_DISPLAY_AMOUNT_STR_SIZE B): chain ID (≤20 decimal digits + NUL)
-    strlcpy(G_scratch.display_tx.extra_str, chain_id, TX_DISPLAY_AMOUNT_STR_SIZE);
+    // extra_str (TX_DISPLAY_EXTRA_STR_SIZE B): chain ID (≤20 decimal digits + NUL)
+    strlcpy(G_scratch.display_tx.extra_str, chain_id, TX_DISPLAY_EXTRA_STR_SIZE);
     // txid_str (65 B): registry address (42 chars + NUL fits within 65 B)
     strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
     /* btc_addr_buf lives on this function's stack frame, which remains active while
@@ -364,7 +389,10 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
+    // The fee pair is unconditional: a suppressed row is indistinguishable from a
+    // zero fee, and the user must never approve a payout with no fee shown.
     int n = 0;
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Vault UTXO txid", .value = vault_prevout_txid};
@@ -372,11 +400,8 @@ bool display_payout_finalize(dispatcher_context_t *dc,
                                              .value = G_scratch.display_tx.amount_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
-    if (fee > 0) {
-        format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
-        tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Transaction fee",
-                                                 .value = G_scratch.display_tx.fee_str};
-    }
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
     LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
 
@@ -411,20 +436,6 @@ _Static_assert(sizeof(nbgl_layoutTagValue_t) == VAULT_DISPLAY_PAIR_SIZE,
 
 // "4294967295 sat/vB\0" — TLV parser rejects base_fee_rate > UINT32_MAX, so cast is safe
 #define VAULT_FEE_RATE_STR_SIZE 20
-// "1008 blocks (~7 days)\0" + headroom
-#define VAULT_TIMELOCK_STR_SIZE 32
-
-// 1 block ≈ 10 minutes. Examples: "100 blocks (~17 h)", "1008 blocks (~7 days)"
-static void format_timelock_blocks(uint16_t blocks, char *buf, size_t len) {
-    uint32_t minutes = (uint32_t) blocks * 10u;
-    if (minutes < 60u) {
-        snprintf(buf, len, "%u blocks (~%u min)", blocks, (unsigned) minutes);
-    } else if (minutes < 1440u) {
-        snprintf(buf, len, "%u blocks (~%u h)", blocks, (unsigned) (minutes / 60u));
-    } else {
-        snprintf(buf, len, "%u blocks (~%u days)", blocks, (unsigned) (minutes / 1440u));
-    }
-}
 
 #ifdef SCREEN_SIZE_WALLET
 #define VAULT_INTENT_REVIEW_TITLE "Review vault intent\nto approve vault\nparameters"

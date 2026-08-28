@@ -43,6 +43,10 @@ typedef struct {
 #define TX_DISPLAY_AMOUNT_STR_SIZE 28 /* MAX_AMOUNT_LENGTH + 1 */
 #define TX_DISPLAY_ADDR_STR_SIZE   80 /* MAX_ADDRESS_LENGTH_STR + 1 */
 #define TX_DISPLAY_TXID_STR_SIZE   65 /* 32-byte txid as 64 hex chars + NUL */
+/* extra_str is the spare value slot: an amount, a chain ID, or a timelock string.
+ * Sized for the widest of those — format_timelock_blocks() at the full uint32_t
+ * range, "4294967295 blocks (~29826161 days)" (34 chars + NUL). */
+#define TX_DISPLAY_EXTRA_STR_SIZE 40
 
 /*
  * Number of independent key-pair slots in display_vault_intent_scratch_t.
@@ -91,7 +95,7 @@ typedef struct {
     uint8_t pairs_raw[TX_DISPLAY_MAX_PAIRS * VAULT_DISPLAY_PAIR_SIZE];
     char amount_str[TX_DISPLAY_AMOUNT_STR_SIZE];
     char fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
-    char extra_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+    char extra_str[TX_DISPLAY_EXTRA_STR_SIZE];
     char addr_str[TX_DISPLAY_ADDR_STR_SIZE];
     char txid_str[TX_DISPLAY_TXID_STR_SIZE];
 } display_tx_scratch_t;
@@ -155,15 +159,26 @@ typedef struct {
  *
  * Zeroed by vault_read_refund_leaf_script / vault_read_payout_leaf_script before each
  * scan, alongside the G_scratch.tls memset.
+ *
+ * What survives union reuse, and what does not:
+ *   - Every member of THIS struct (buffered, last_byte, prefix, hash) stays valid across
+ *     a leaf_check reconstruction — that is the whole reason it sits outside the union.
+ *   - Nothing in G_scratch.tls does.  leaf_script, leaf_script_len and leaf_version are
+ *     members of tap_leaf_script_state_t, which aliases leaf_check.actual_buf; note that
+ *     leaf_script_len lands *inside* actual_buf, so rebuilding an expected script there
+ *     destroys it.  The layout assertions in sign_custom_inputs.c and globals.c pin the
+ *     offsets this depends on.
+ * Read leaf_script / leaf_script_len / leaf_version only between a vault_read_* return
+ * and the next write to leaf_check.
  */
 typedef struct {
     /**
      * True when G_scratch.tls.leaf_script holds the complete script.  False when the
      * script was too large to buffer (real Assert leaves are 11.5-13.6 KB) and was
-     * hashed by streaming instead — in that case leaf_script holds nothing usable and
-     * only the fields below, plus leaf_script_len, are meaningful.  Any consumer that
-     * compares the leaf byte-for-byte against a reconstructed script MUST reject when
-     * this is false.
+     * hashed by streaming instead — in that case leaf_script holds nothing usable, and
+     * the fields below are the only description of the leaf that outlives a leaf_check
+     * reconstruction.  Any consumer that compares the leaf byte-for-byte against a
+     * reconstructed script MUST reject when this is false.
      */
     bool buffered;
 
@@ -171,9 +186,22 @@ typedef struct {
     uint8_t last_byte;
 
     /** Leading script bytes, zero-padded, for the standalone shape discriminator (which
-     *  reads up to byte 34) and the <D> key at [1..32].  Callers must still check
-     *  leaf_script_len before trusting a given byte. */
+     *  reads up to VAULT_LEAF_GROUP0_OP_OFF) and the <D> key at [1..32].  Callers must
+     *  still check leaf_script_len before trusting a given byte. */
     uint8_t prefix[VAULT_LEAF_PREFIX_LEN];
+
+    /**
+     * True when the leaf's leading bytes matched the Assert signer prefix rebuilt from the
+     * approved intent — <Depositor> OP_CHECKSIGVERIFY, the keeper N-of-N group and the
+     * challenger M-of-M group — and the script continues past it.
+     *
+     * The prefix reaches ~2.2 KB at 32/32 keys, so it is compared while the leaf streams
+     * (see vault_assert_prefix_byte); this flag is the only record of the result once the
+     * bytes are gone.  False whenever no intent is loaded, which is what keeps the Assert
+     * validator — the one flow with no signing cap, dedup or output enforcement — from
+     * accepting a leaf whose challenger set the user never approved.
+     */
+    bool assert_prefix_ok;
 
     /** BIP-341 TapLeaf hash over the whole script, however it was read. */
     uint8_t hash[VAULT_HASH256_LEN];

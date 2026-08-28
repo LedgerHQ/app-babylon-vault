@@ -418,15 +418,24 @@ def sign_psbt_payout_finalize_approve_instructions(device: Device) -> Instructio
 def sign_psbt_payout_finalize_approve_nav(device: Device) -> List[NavInsID]:
     """Flat approve-path navigation for Screen 8 (PayoutFinalize) — touch devices.
 
-    Screen 8 shows 3 fields: "Amount received", "Destination", and "CPFP address".
-    All touch devices fit across 3 pages (intro + 2 content pages).
+    Screen 8 shows 5 fields: "Vault UTXO txid", "Amount received", "Destination",
+    "CPFP address" and "Transaction fee".  The txid spans four lines and the fee row is
+    unconditional, so flex and apex_p need one more content page than stax does.
     """
     assert not device.is_nano, "Nano uses sign_psbt_payout_finalize_approve_instructions"
-    taps = [
-        NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
-        NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
-        NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
-    ]
+    if device.name == "stax":
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
+        ]
+    else:
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 3 (fee)
+        ]
     return taps + [
         NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
         NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status

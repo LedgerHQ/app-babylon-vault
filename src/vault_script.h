@@ -50,6 +50,23 @@
 #define VAULT_NOPAYOUT_LEAF_LEN \
     (1u + VAULT_XONLY_PUBKEY_LEN + 1u + 1u + VAULT_XONLY_PUBKEY_LEN + 1u)
 
+/* Offsets of the first signer group that follows the leading OP_PUSHBYTES_32 <key[32]>
+ * OP_CHECKSIGVERIFY in every depositor-signed leaf.  Together the two bytes they name
+ * separate the leaves whose leading 34 bytes are otherwise identical:
+ *
+ *   Assert:0 payout / Assert   <Claimer> OP_CHECKSIGVERIFY <challenger multisig> ...
+ *   Vault UTXO                 <D> OP_CHECKSIGVERIFY <VaultProvider> OP_CHECKSIGVERIFY ...
+ *
+ * A multisig group always opens with a 32-byte key push terminated by OP_CHECKSIG, so
+ * OP_CHECKSIG at VAULT_LEAF_GROUP0_OP_OFF means "a signer group starts here" and
+ * OP_CHECKSIGVERIFY means "another single required signer follows".  Reading these
+ * offsets requires a script strictly longer than VAULT_LEAF_GROUP0_OP_OFF. */
+
+/** Offset of the first signer group's key-push opcode. */
+#define VAULT_LEAF_GROUP0_PUSH_OFF (1u + VAULT_XONLY_PUBKEY_LEN + 1u)
+/** Offset of the opcode that terminates that group's first key. */
+#define VAULT_LEAF_GROUP0_OP_OFF (VAULT_LEAF_GROUP0_PUSH_OFF + 1u + VAULT_XONLY_PUBKEY_LEN)
+
 /* --------------------------------------------------------------------------
  * Low-level taproot crypto primitives (implemented in vault_script.c)
  * ----------------------------------------------------------------------- */
@@ -158,6 +175,40 @@ int vault_build_nopayout_leaf(const vault_intent_t *intent,
                               int challenger_idx,
                               uint8_t *buf,
                               int buf_max);
+
+/* --------------------------------------------------------------------------
+ * Assert leaf prefix (intent-bound)
+ *
+ * The Assert leaf's spending conditions live entirely in its prefix:
+ *
+ *   <Depositor> OP_CHECKSIGVERIFY
+ *   <VaultKeepers N-of-N>          (intermediate, OP_NUMEQUALVERIFY)
+ *   <UniversalChallengers M-of-M>  (intermediate, OP_NUMEQUALVERIFY)
+ *
+ * Everything after it is the WOTS verifier body, whose ~11 KB of host-chosen chain tips
+ * the device cannot derive.  It does not need to: OP_CHECKSIGVERIFY and
+ * OP_NUMEQUALVERIFY fail hard, so a leaf whose prefix matches the approved intent cannot
+ * be spent without every keeper and challenger signature, whatever the body contains.
+ * Verifying the prefix is therefore what makes the unverifiable remainder safe to sign
+ * over; the taproot commitment alone only binds the leaf to the output being spent.
+ *
+ * The first group is the VaultKeepers because of btc-vault's dedicated depositor branch in
+ * transactions/claim.rs derive_full_challengers: a depositor claimer takes the VaultKeepers
+ * alone, with the VaultProvider excluded.  Not by set subtraction — the depositor is never a
+ * VaultKeeper, so {VP, VK_1..VK_N} \ {Claimer} would retain VP.  That subtraction is the
+ * VP/VK-claimer branch, which this device never signs: it holds only the depositor key.
+ *
+ * Real leaves are far past VAULT_SCRIPT_MAX_LEN and are never buffered, so the prefix is
+ * compared while the leaf streams.  These two functions describe the expected bytes
+ * without materialising them — at the 32/32 maximum the prefix is ~2.2 KB, which no
+ * buffer available during a streaming read can hold.
+ * ----------------------------------------------------------------------- */
+
+/** Byte length of the expected Assert prefix, or -1 if the intent's key counts are unset. */
+int vault_assert_prefix_len(const vault_intent_t *intent);
+
+/** Expected Assert prefix byte at @p off, or -1 when @p off is at or past its end. */
+int vault_assert_prefix_byte(const vault_intent_t *intent, uint32_t off);
 
 /* --------------------------------------------------------------------------
  * Derived outputs

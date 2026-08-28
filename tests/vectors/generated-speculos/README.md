@@ -28,10 +28,37 @@ vectors can be signed by the test device. Signable vectors require running
 # From the btc-vault repository root:
 SPECULOS_MNEMONIC="glory promote mansion idle axis finger extra february uncover one trip resource lawn turtle enact monster seven myth punch hobby comfort wild raise skin"
 
+# signet / testnet build (coin_type 1)
 cargo run -p ledger-vector-gen -- \
   --mnemonic "${SPECULOS_MNEMONIC}" \
-  --output /path/to/app-babylon-vault/tests/vectors/generated-speculos/
+  --network signet \
+  --out /path/to/app-babylon-vault/tests/vectors/generated-speculos/test/
+
+# mainnet build (coin_type 0)
+cargo run -p ledger-vector-gen -- \
+  --mnemonic "${SPECULOS_MNEMONIC}" \
+  --network mainnet \
+  --out /path/to/app-babylon-vault/tests/vectors/generated-speculos/main/
 ```
+
+## Layout: one set per network
+
+A vector set is bound to a single coin type. The depositor key is derived at
+`m/86'/<coin_type>'/0'/0/0` and baked into every leaf script the device reconstructs, and
+the canonical network name (`bitcoin-mainnet` / `bitcoin-signet`) is hashed into the
+`DERIVE_CONTEXT_HASH` root — so a set generated for one network can never validate on a
+build of the other. The mainnet binary's BIP-32 path allowlist also refuses the `1'` path
+outright, which surfaces as `SW_BIP32_FAIL` (0x6F00) before any vault logic runs.
+
+`_speculos_set_for()` in `tests/test_sample_vectors.py` picks the directory named after the
+network the app under test was built for (`conftest.py` auto-detects it from the binary):
+
+- `generated-speculos/main/` — mainnet set (`coin_type: 0`)
+- `generated-speculos/test/` — signet / testnet set (`coin_type: 1`)
+
+A missing set skips the test. A set whose `metadata.json` declares the wrong `coin_type`
+— generated with the wrong `--network` — fails loudly instead, because the device would
+otherwise reject every vector in ways that look like a firmware bug.
 
 The Speculos mnemonic above is the standard Ledger test seed used by every
 `pytest --device` run; it is not a secret.

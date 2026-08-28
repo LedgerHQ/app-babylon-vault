@@ -39,7 +39,9 @@ bool display_vault_intent(dispatcher_context_t *dc);
  *
  * @param amount_reclaimed   Amount returned to the depositor in satoshis.
  * @param fee                Transaction fee in satoshis.
- * @param timelock_blocks    Refund timelock from the leaf script (block count).
+ * @param timelock_blocks    Refund timelock from the leaf script (block count), rendered in
+ *                           the same form as the intent's timelocks on Screen 2 so the two
+ *                           can be compared by eye.
  * @param prepegin_txid      32-byte Pre-PegIn txid (shown as hex); caller must keep valid.
  * @param refund_address     NUL-terminated bech32m address; caller must keep valid.
  * @return true   User approved.
@@ -124,17 +126,20 @@ bool display_pop_transaction(dispatcher_context_t *dc,
  * @brief Screen 8 — Payout finalize review.
  *
  * Shown when the depositor self-claims after a successful Claim + Assert chain.
- * Displays the vault UTXO txid (Input 0), the amount received, transaction fee,
+ * Displays the vault UTXO txid (Input 0), the amount received, the transaction fee,
  * and both output addresses so the user can verify both outputs pay their own
- * BIP-86 address.
+ * BIP-86 address.  Every field is always rendered; there is no "unknown" encoding.
  *
  * @param amount_received     Output 0 value in satoshis (funds going to depositor).
  * @param address             NUL-terminated bech32m address for Output 0; caller keeps valid.
  * @param cpfp_address        NUL-terminated bech32m address for Output 1 (CPFP anchor);
  *                            caller keeps valid.
- * @param fee                 Transaction fee in satoshis (total inputs − outputs).
- * @param vault_prevout_txid  NUL-terminated 64-char hex string of the Vault UTXO prevout txid;
- *                            caller must keep valid across the blocking io_ui_process call.
+ * @param fee                 Transaction fee in satoshis, as stated by the PSBT: the sum of
+ *                            all input prevout values minus the sum of all output values.
+ *                            Always displayed, including when it is zero.
+ * @param vault_prevout_txid  NUL-terminated 64-char hex string of Input 0's prevout txid —
+ *                            the Vault UTXO the funds leave from.  Caller must keep it valid
+ *                            across the blocking io_ui_process call.
  * @return true   User approved.
  * @return false  User rejected (SW_DENY already sent).
  */

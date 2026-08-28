@@ -153,11 +153,26 @@ bool parse_payout_leaf_script(const uint8_t *script,
     /* Payout leaf: <OP_PUSHBYTES_32>(1) <D>(32) <OP_CHECKSIGVERIFY>(1)
      *              [multisig groups] <t2-push> <OP_CSV>(1).
      * Minimum length is well above 68 bytes for any valid leaf configuration;
-     * > 68 distinguishes this from the 68-byte Assert leaf. */
-    if (script_len <= 68) return false;
+     * > 68 distinguishes this from the 68-byte NoPayout leaf. */
+    if (script_len <= (int) VAULT_NOPAYOUT_LEAF_LEN) return false;
     if (script[0] != OP_PUSHBYTES_32) return false;
     if (script[1 + VAULT_XONLY_PUBKEY_LEN] != (uint8_t) OP_CHECKSIGVERIFY) return false;
     if ((uint8_t) script[script_len - 1] != (uint8_t) OP_CHECKSEQUENCEVERIFY) return false;
+
+    /* Separate the payout leaf from the Vault UTXO leaf, which shares this function's
+     * whole remaining shape: the same <D> at [1..32], the same <t> OP_CSV tail, and a
+     * pegin_csv_timelock range ([VAULT_TIMELOCK_MIN, VAULT_TIMELOCK_MAX]) that overlaps
+     * the payout t2 range accepted below.  The two differ at the first signer group: a
+     * payout leaf continues into the challenger multisig, which opens with a 32-byte key
+     * push terminated by OP_CHECKSIG, whereas a Vault UTXO leaf continues with a second
+     * lone required signer, <VaultProvider> OP_CHECKSIGVERIFY.  Without this check the
+     * device parses a live Vault UTXO leaf as a payout leaf and signs it under the
+     * PayoutFinalize policy, which binds neither the timelock nor the fee when no intent
+     * is loaded. */
+    _Static_assert(VAULT_NOPAYOUT_LEAF_LEN > VAULT_LEAF_GROUP0_OP_OFF,
+                   "length guard above no longer keeps the group-0 opcode byte in range");
+    if (script[VAULT_LEAF_GROUP0_PUSH_OFF] != OP_PUSHBYTES_32) return false;
+    if ((uint8_t) script[VAULT_LEAF_GROUP0_OP_OFF] != (uint8_t) OP_CHECKSIG) return false;
 
     memcpy(d_key_out, script + 1, VAULT_XONLY_PUBKEY_LEN);
 
@@ -192,4 +207,18 @@ bool parse_payout_leaf_script(const uint8_t *script,
         }
     }
     return false;
+}
+
+bool leaf_has_assert_shape(int script_len, const uint8_t *prefix, uint8_t last_byte) {
+    _Static_assert(VAULT_LEAF_PREFIX_LEN > VAULT_LEAF_GROUP0_OP_OFF,
+                   "captured leaf prefix no longer covers the group-0 shape bytes");
+    /* The length guard keeps the 68-byte NoPayout leaf out: it shares the whole 34-byte
+     * head and both group-0 bytes, differing only in length and its terminal opcode. */
+    if (script_len <= (int) VAULT_NOPAYOUT_LEAF_LEN) return false;
+    if (prefix[0] != OP_PUSHBYTES_32) return false;
+    if (prefix[1 + VAULT_XONLY_PUBKEY_LEN] != (uint8_t) OP_CHECKSIGVERIFY) return false;
+    if (prefix[VAULT_LEAF_GROUP0_PUSH_OFF] != OP_PUSHBYTES_32) return false;
+    if ((uint8_t) prefix[VAULT_LEAF_GROUP0_OP_OFF] != (uint8_t) OP_CHECKSIG) return false;
+    /* Terminal OP_TRUE excludes the Vault UTXO and Refund leaves, which end <t> OP_CSV. */
+    return last_byte == (uint8_t) OP_TRUE;
 }

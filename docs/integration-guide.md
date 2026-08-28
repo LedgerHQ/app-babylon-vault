@@ -67,10 +67,11 @@ INTENT_LOADED
   ├─ 0x04 SIGN_PSBT (Pre-PegIn) ──────────────────────────► INTENT_LOADED  (silent, cap 1)
   ├─ 0x04 SIGN_PSBT (PegIn ×vault_count) ─────────────────► INTENT_LOADED  (silent)
   ├─ 0x04 SIGN_PSBT (Payout ×vault_count×(N+2)) ──────────► INTENT_LOADED  (silent)
-  └─ 0x04 SIGN_PSBT (NoPayout ×vault_count×(N+M)) ────────► INTENT_LOADED  (silent)
+  ├─ 0x04 SIGN_PSBT (NoPayout ×vault_count×(N+M)) ────────► INTENT_LOADED  (silent)
+  └─ 0x04 SIGN_PSBT (Assert) ─────────────────────────────► INTENT_LOADED  (user review, uncapped)
 
 IDLE / HASH_DERIVED / INTENT_LOADED
-  └─ 0x04 SIGN_PSBT (Refund / Claim / Assert / WronglyChallenged / PoP) → (state unchanged)
+  └─ 0x04 SIGN_PSBT (Refund / Claim / WronglyChallenged / PoP) → (state unchanged)
 ```
 
 `DERIVE_CONTEXT_HASH` is accepted from any state and resets the session before deriving. There
@@ -82,8 +83,15 @@ command (P1=`0x00` scalars → P1=`0x01` per-vault groups → P1=`0x02` public k
 to `INTENT_LOADED` on user approval. There is no session-1/session-2 distinction: all
 intent-bound signing flows are accepted from `INTENT_LOADED` in any order.
 
-**Standalone flows** (Refund, Claim, Assert, WronglyChallenged, PoP) are accepted from any
+**Standalone flows** (Refund, Claim, WronglyChallenged, PoP) are accepted from any
 state. They do not change state.
+
+**Assert is the exception.** It is dispatched like a standalone flow — by leaf shape, with no
+wallet policy — but it requires `INTENT_LOADED`, because the device verifies the leaf's signer
+prefix against the approved keeper and challenger keys and those exist nowhere else. Since
+`APPROVE_VAULT_INTENT` itself requires `HASH_DERIVED`, a host signing an Assert in a fresh session
+must replay `DERIVE_CONTEXT_HASH` → `APPROVE_VAULT_INTENT` first. Note this resets all per-type
+signature counters. See [APP_SPECIFICATION.md](../APP_SPECIFICATION.md) §7.
 
 **Invalidation** — any signing failure after a signature is produced wipes the `root` via
 `explicit_bzero` and resets to `IDLE`. PSBT **validation** failures (before signing) leave
@@ -172,15 +180,18 @@ txid before calling `APPROVE_VAULT_INTENT`). All intent-bound signing flows are 
 ### Step 3 — Sign Pre-PegIn: `0x04 SIGN_PSBT`
 
 Required state: `INTENT_LOADED`.  
-Required wallet policy: **BIP-86 wallet policy provided** (host passes the policy;
-`has_no_wallet_policy == false`).
+Required wallet policy: **a native SegWit wallet policy provided** (host passes the policy;
+`has_no_wallet_policy == false`). Accepted templates: `wpkh(@0/**)` / `wsh(...)` (SegWit v0)
+and `tr(...)` (SegWit v1). `sh(wpkh(@0/**))` (BIP-49) and `pkh(@0/**)` (BIP-44) are rejected
+with `SW_INCORRECT_DATA`: their inputs spend through a scriptSig the device never sees, so
+the reconstructed Pre-PegIn txid could not match the broadcast one.
 
 #### PSBT requirements
 
 | Field | Requirement |
 |-------|-------------|
 | `nVersion` | ≥ 2 |
-| Inputs | All inputs must be wallet-policy (BIP-86) owned — device rejects any non-internal input |
+| Inputs | All inputs must be wallet-policy owned — device rejects any non-internal input, and any policy that is not native SegWit |
 | Sighash | `SIGHASH_DEFAULT` (absent) or `SIGHASH_ALL` (1) per input |
 | Output at `htlc_vout` | P2TR scriptPubKey matching `vault_build_htlc_scriptpubkey(intent, htlc_hashlock)` |
 | Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value, vault_amount + depositor_claim_value + pegin_max_fee]` |
