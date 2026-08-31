@@ -971,8 +971,11 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        /* Canonical: sequence must encode exactly the CSV timelock, not just satisfy it. */
-        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
+        /* Canonical: sequence must encode exactly the CSV timelock, not just satisfy it.
+         * Compared unmasked — parse_refund_leaf_script bounds csv_value to the BIP-68
+         * block-count field, so any bit set above it in nsequence is a value the device
+         * never displayed and must not sign. */
+        if (nsequence != csv_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3330,7 +3333,11 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
+        /* Unmasked, for the same reason as the Refund path: parse_payout_leaf_script
+         * bounds t2 to [VAULT_PAYOUT_TIMELOCK_MIN, VAULT_PAYOUT_TIMELOCK_MAX], well
+         * inside the BIP-68 block-count field, so a masked compare would accept an
+         * nsequence carrying reserved bits the device never validated. */
+        if (nsequence != csv_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }

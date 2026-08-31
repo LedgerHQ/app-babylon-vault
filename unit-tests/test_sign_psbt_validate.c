@@ -479,6 +479,75 @@ static void test_refund_reject_missing_csv_opcode(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
+ * parse_refund_leaf_script — BIP-68 operand domain
+ *
+ * OP_CHECKSEQUENCEVERIFY acts only on the low 16 bits of its operand (plus the
+ * type flag).  An operand carrying bits above that field is satisfiable by a far
+ * smaller nSequence than the value the device would display, so the parser must
+ * reject anything outside the block-count domain.
+ * ------------------------------------------------------------------------- */
+
+/* Only these tests need a 3-byte push; vault_script.h carries just the opcodes the
+ * firmware itself emits. */
+#define OP_PUSHBYTES_3 0x03u
+
+static void test_refund_reject_csv_high_bits_set(void **state) {
+    (void) state;
+    /* 0x00010001 = 65537.  Consensus reads only the low 16 bits, so this script is
+     * satisfied by nSequence = 1 while the operand claims 65537 blocks. */
+    uint8_t key[32];
+    memset(key, 0x04, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0x01, 0x00, 0x01};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_csv_just_above_mask(void **state) {
+    (void) state;
+    /* 0x00010000 = 65536 — the first value outside the 16-bit block-count field. */
+    uint8_t key[32];
+    memset(key, 0x05, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0x00, 0x00, 0x01};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_csv_time_based_bit_in_operand(void **state) {
+    (void) state;
+    /* 0x00400048 = 72 with the BIP-68 time-based flag set in the operand.  Would
+     * otherwise pass the protocol minimum while nSequence = 72 satisfies the script. */
+    uint8_t key[32];
+    memset(key, 0x06, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0x48, 0x00, 0x40};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_accept_csv_at_mask_boundary(void **state) {
+    (void) state;
+    /* 0xFFFF = 65535 is the largest block count OP_CSV can enforce; it must still
+     * parse.  Encoded with a zero sign pad, so the sign bit stays clear. */
+    uint8_t key[32];
+    memset(key, 0x07, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0xFF, 0xFF, 0x00};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
+    assert_int_equal((int) csv_value, 0xFFFF);
+}
+
+/* ---------------------------------------------------------------------------
  * parse_payout_leaf_script — helpers
  * ------------------------------------------------------------------------- */
 
@@ -848,6 +917,12 @@ int main(void) {
         cmocka_unit_test(test_refund_reject_wrong_first_byte),
         cmocka_unit_test(test_refund_reject_wrong_checksigverify),
         cmocka_unit_test(test_refund_reject_csv_op0),
+
+        /* parse_refund_leaf_script — BIP-68 operand domain */
+        cmocka_unit_test(test_refund_reject_csv_high_bits_set),
+        cmocka_unit_test(test_refund_reject_csv_just_above_mask),
+        cmocka_unit_test(test_refund_reject_csv_time_based_bit_in_operand),
+        cmocka_unit_test(test_refund_accept_csv_at_mask_boundary),
         cmocka_unit_test(test_refund_reject_csv_op1negate),
         cmocka_unit_test(test_refund_reject_csv_unknown_opcode),
         cmocka_unit_test(test_refund_reject_extra_bytes_after_csv),

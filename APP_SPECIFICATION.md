@@ -172,10 +172,12 @@ The depositor reclaims BTC from the HTLC before the vault is finalised (timelock
 **PSBT requirements:**
 - Single input spending the HTLC; leaf script read from `TAP_LEAF_SCRIPT` in the PSBT
 - Leaf script shape: `<key> OP_CHECKSIGVERIFY <n> OP_CHECKSEQUENCEVERIFY`; `<key>` must be owned by this device at the BIP-32 path in `TAP_BIP32_DERIVATION`; control block must produce a valid Taproot commitment
+- CSV operand `<n>`: a positive CScriptNum push (`OP_1`–`OP_16`, `OP_PUSHBYTES_1`–`OP_PUSHBYTES_4`, or `OP_PUSHDATA1`; minimal encoding is not enforced), at most `0xFFFF` — the BIP-68 block-count field is the only part of the operand `OP_CHECKSEQUENCEVERIFY` acts on, so a larger value would display a delay the transaction does not enforce. `INTENT_LOADED` additionally requires `<n> == htlc_refund_timelock`; outside it, `<n> ≥ 72` (the protocol minimum)
+- `PSBT_IN_SEQUENCE`: must equal `<n>` **exactly** (compared unmasked), with the BIP-68 disable (bit 31) and time-based (bit 22) flags clear. Bits consensus ignores are rejected rather than masked away, so the displayed timelock is always the one that will be enforced
 - Single output: BIP-86 P2TR (`account_index ≤ 100`, `address_index ≤ 10000`)
 - Sighash: `SIGHASH_DEFAULT`; version ≥ 2; locktime = 0
 
-**User display:** amount reclaimed, fee.
+**User display:** Pre-PegIn txid, reclaimed amount, refund timelock (blocks), transaction fee, reclaim address.
 
 ---
 

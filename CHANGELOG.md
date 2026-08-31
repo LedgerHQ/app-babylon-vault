@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased] - Cerberus scan remediation (scan `64679654`, 2026-08-26)
+
+Triage of all 36 findings is in `tmp/cerberus-triage-2026-08-31.md`. The scan was run
+against `04688011` (2026-08-10) rather than the then-current `develop`, so 10 of its 13
+HIGH/MEDIUM findings were already fixed or mitigated before it reported; only V-005 and
+V-013 were genuinely open in embedded code.
+
+### Security
+
+- **Refund CSV operand constrained to the BIP-68 block-count field (V-005)**: `parse_refund_leaf_script` decoded the `OP_CHECKSEQUENCEVERIFY` operand into a full `uint32_t` — up to `0x7FFFFFFF` — while the nSequence comparison masked *both* sides to `BIP68_SEQUENCE_MASK`, despite a comment claiming the sequence "must encode exactly the CSV timelock". Consensus ignores the same high bits, so operand `0x00010001` read as 65,537 blocks (~15 months), cleared the `≥ 72` protocol minimum on the standalone route, and was satisfied by `nSequence = 1`: the device displayed a 15-month delay on Screen 3 and signed a refund spendable after one block. Verified on Speculos — before the fix the exploit PSBT is accepted and reaches the review screen; after it, `SW_INCORRECT_DATA`. Fixed in the parser, so both leaf parsers inherit the domain: the operand must now be at most `0xFFFF`, which also makes the BIP-68 disable and time-based flags unsettable, and the callers therefore compare nSequence to it **unmasked**. Applied to the Payout path too — not currently exploitable there, since `parse_payout_leaf_script` already bounds `t2` to `[90, 4032]` and `INTENT_LOADED` requires equality with `payout_timelock`, but it removes the pattern rather than leaving it to regress. Intent-loaded refunds were never affected (exact equality with the bounded approved value), and the output stays pinned to a device-owned BIP-86 address, so this was a protocol timing bypass rather than fund redirection (`sign_psbt_validate_helpers.c`, `sign_psbt_validate.c`)
+- **Non-canonical BIP-340 participant keys rejected (V-013)**: `crypto_tr_lift_x` was the only mathematical check on host-supplied VaultProvider, keeper and challenger keys. It evaluates the curve equation *modulo p* and then copies the caller's bytes verbatim, so it never enforces BIP-340's `x < p`: `x = p + 1` reduces to the residue `x = 1`, which is on secp256k1 (`1³ + 7 = 8` is a quadratic residue mod p), and the unreduced bytes were stored in the intent and embedded verbatim into tapscript `OP_CHECKSIG`/`OP_CHECKSIGADD` branches — which every BIP-340 parser then refuses, leaving the branch unspendable and the funds it guards recoverable only by waiting out the refund timelock. Confirmed on Speculos: before the fix the group APDU carrying `p + 1` returns `9000`. New `vault_xonly_key_is_canonical` bounds the encoding against the base app's `secp256k1_p` before the lift, at both intake points; the lift is retained, since the bound does not replace the curve check. Unit and fuzz targets now link the real `bitcoin_app_base/src/secp256k1.c` so the check is tested against the same prime the firmware uses rather than a copy that could drift. The durable fix is a `crypto_tr_validate_xonly_pubkey` helper upstream in `app-bitcoin`, so no caller can mistake modular liftability for canonical encoding; not done here (`approve_vault_intent_core.h`, `approve_vault_intent.c`)
+
+### Fixed
+
+- **Refund specification omitted the timelock rules and three Screen 3 fields**: `APP_SPECIFICATION.md` documented the Refund leaf shape but neither the CSV operand domain nor the nSequence relationship — the two rules V-005 turned out to hinge on — and listed the user display as "amount reclaimed, fee" while Screen 3 renders five rows, among them the "Refund timelock" that V-005 made untrustworthy. Both corrected.
+- **Misleading test-vector comments**: three tests described `TEST_INVALID_XONLY_KEY` as `0xFF * 32` and/or `>= secp256k1 prime p`. It is neither — it is `p - 2`, a *canonical* encoding that is simply off-curve, so those tests exercised curve membership and no test covered the field bound at all. Comments corrected and `TEST_NONCANONICAL_XONLY_KEY` (`p + 1`) added alongside (`tests/vault_client.py`, `tests/test_approve_vault_intent.py`)
+
+
 ## [0.10.0] - Assert leaf bound to the approved intent (F-6 second pass)
 
 ### Security

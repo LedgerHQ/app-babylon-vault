@@ -135,6 +135,15 @@ bool parse_refund_leaf_script(const uint8_t *script,
 
     if (csv == 0) return false; /* zero timelock makes no sense */
 
+    /* Constrain the operand to the only domain OP_CHECKSEQUENCEVERIFY can act on: a
+     * block count in the BIP-68 low 16 bits.  Consensus ignores every bit above that
+     * field, so without this bound an operand like 0x00010001 reads as 65537 blocks
+     * while the script is satisfied by nSequence = 1 — the device would display a
+     * timelock the transaction does not enforce.  Bounding here also makes the
+     * disable and time-based flags unsettable, so callers need only compare the
+     * operand to nSequence exactly. */
+    if (csv > BIP68_SEQUENCE_MASK) return false;
+
     /* OP_CHECKSEQUENCEVERIFY (0xB2) */
     if (pos >= script_len) return false;
     if (script[pos++] != OP_CHECKSEQUENCEVERIFY) return false;
