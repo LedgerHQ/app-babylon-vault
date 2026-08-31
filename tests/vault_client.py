@@ -118,7 +118,17 @@ TEST_VALID_KEYS = [
 # Guaranteed-invalid x-coordinate: x = p-2 gives (p-2)³+7 ≡ (-2)³+7 ≡ -1 (mod p).
 # -1 is never a quadratic residue when p ≡ 3 (mod 4), which secp256k1's prime satisfies,
 # so no point with this x exists. crypto_tr_lift_x must reject it.
+# Note this value is a *canonical* encoding (p-2 < p); it exercises curve membership,
+# not the BIP-340 field bound — see TEST_NONCANONICAL_XONLY_KEY for that.
 TEST_INVALID_XONLY_KEY = bytes.fromhex('FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D')
+
+# Non-canonical x-coordinate: x = p+1, which BIP-340 forbids (x must be < p) but which a
+# modular curve check accepts as its residue x = 1 — and x = 1 *is* on secp256k1, since
+# 1³+7 = 8 is a quadratic residue mod p. So this value passes a lift that reduces mod p
+# and is caught only by an explicit field-bound check. Distinct from
+# TEST_INVALID_XONLY_KEY, which is in range and simply off-curve.
+TEST_NONCANONICAL_XONLY_KEY = bytes.fromhex(
+    'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC30')
 
 # Pre-computed x-only depositor pubkeys for the test mnemonic (see conftest.py) at
 # BIP-86 path m/86'/coin_type'/0'/0/0.  The firmware derives this key at the end of

@@ -3,6 +3,7 @@
  *   - vault_tlv_parse          (src/vault_tlv.c)
  *   - vault_tlv_parse_group    (src/vault_tlv.c)
  *   - vault_validate_and_store_key   (src/handler/approve_vault_intent_core.h)
+ *   - vault_xonly_key_is_canonical   (src/handler/approve_vault_intent_core.h)
  *   - vault_check_depositor_uniqueness (src/handler/approve_vault_intent_core.h)
  *
  * No SDK calls, no mock_cx needed — vault_tlv.c uses only os_utils.h (mocked)
@@ -700,6 +701,72 @@ static void test_key_duplicate_across_groups(void **state) {
 }
 
 /* =========================================================================
+ * Group 2b: vault_xonly_key_is_canonical
+ *
+ * The helper bounds the BIP-340 encoding only (x < p).  Curve membership is
+ * crypto_tr_lift_x's job, so values that are in range but not on the curve are
+ * expected to pass here — see test_xonly_zero_is_in_range.
+ * ====================================================================== */
+
+/** secp256k1 field prime p, big-endian — the exclusive upper bound for a BIP-340 x. */
+static const uint8_t SECP256K1_P_BE[32] = {
+    0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFF, 0xFF,0xFF,0xFF,0xFE, 0xFF,0xFF,0xFC,0x2F,
+};
+
+static void test_xonly_matches_base_app_prime(void **state) {
+    (void) state;
+    /* Guards against the base app's constant drifting away from the value these
+     * boundary cases are built on. */
+    assert_memory_equal(secp256k1_p, SECP256K1_P_BE, 32);
+}
+
+static void test_xonly_p_itself_rejected(void **state) {
+    (void) state;
+    assert_false(vault_xonly_key_is_canonical(SECP256K1_P_BE));
+}
+
+static void test_xonly_p_plus_one_rejected(void **state) {
+    (void) state;
+    /* The V-013 exploit value: lifts as the valid residue x = 1 under a modular
+     * curve check, but no BIP-340 parser will accept it on-chain. */
+    uint8_t x[32];
+    memcpy(x, SECP256K1_P_BE, 32);
+    x[31] = 0x30; /* ...FFFC2F + 1 */
+    assert_false(vault_xonly_key_is_canonical(x));
+}
+
+static void test_xonly_p_minus_one_accepted(void **state) {
+    (void) state;
+    uint8_t x[32];
+    memcpy(x, SECP256K1_P_BE, 32);
+    x[31] = 0x2E; /* ...FFFC2F - 1 */
+    assert_true(vault_xonly_key_is_canonical(x));
+}
+
+static void test_xonly_all_ones_rejected(void **state) {
+    (void) state;
+    uint8_t x[32];
+    memset(x, 0xFF, sizeof(x));
+    assert_false(vault_xonly_key_is_canonical(x));
+}
+
+static void test_xonly_zero_is_in_range(void **state) {
+    (void) state;
+    /* 0 < p, so the encoding check passes; rejecting it is crypto_tr_lift_x's
+     * responsibility, not this helper's. */
+    uint8_t x[32];
+    memset(x, 0x00, sizeof(x));
+    assert_true(vault_xonly_key_is_canonical(x));
+}
+
+static void test_xonly_ordinary_key_accepted(void **state) {
+    (void) state;
+    assert_true(vault_xonly_key_is_canonical(KEY_A));
+    assert_true(vault_xonly_key_is_canonical(VALID_VP_PK));
+}
+
+/* =========================================================================
  * Group 3: vault_check_depositor_uniqueness
  * ====================================================================== */
 
@@ -810,6 +877,15 @@ int main(void) {
         cmocka_unit_test(test_key_equals_vp),
         cmocka_unit_test(test_key_within_group_repeat_caught_by_order),
         cmocka_unit_test(test_key_duplicate_across_groups),
+
+        /* vault_xonly_key_is_canonical — BIP-340 field bound */
+        cmocka_unit_test(test_xonly_matches_base_app_prime),
+        cmocka_unit_test(test_xonly_p_itself_rejected),
+        cmocka_unit_test(test_xonly_p_plus_one_rejected),
+        cmocka_unit_test(test_xonly_p_minus_one_accepted),
+        cmocka_unit_test(test_xonly_all_ones_rejected),
+        cmocka_unit_test(test_xonly_zero_is_in_range),
+        cmocka_unit_test(test_xonly_ordinary_key_accepted),
 
         /* vault_check_depositor_uniqueness */
         cmocka_unit_test(test_depositor_unique),

@@ -129,7 +129,14 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
             return;
         }
 
-        /* Reject vault_provider_pk that is not a valid secp256k1 x-only point. */
+        /* Reject vault_provider_pk that is not a canonically encoded, valid secp256k1
+         * x-only point.  The field-bound check must precede the lift, which is modular
+         * and would accept x >= p as its residue. */
+        if (!vault_xonly_key_is_canonical(G_vault_intent.groups[idx].vault_provider_pk)) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
         uint8_t tmp_point[65];
         int lift_rc = crypto_tr_lift_x(G_vault_intent.groups[idx].vault_provider_pk, tmp_point);
         explicit_bzero(tmp_point, sizeof(tmp_point));
@@ -227,7 +234,14 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
 
         const uint8_t *key = cmd->data + pos;
 
-        /* Reject keys that are not valid secp256k1 x-only points. */
+        /* Reject keys that are not canonically encoded, valid secp256k1 x-only points.
+         * The field-bound check must precede the lift, which is modular and would accept
+         * x >= p as its residue. */
+        if (!vault_xonly_key_is_canonical(key)) {
+            vault_context_invalidate(&G_vault_context);
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return;
+        }
         uint8_t tmp_point[65];
         int lift_rc = crypto_tr_lift_x(key, tmp_point);
         explicit_bzero(tmp_point, sizeof(tmp_point));

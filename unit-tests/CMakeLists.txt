@@ -27,8 +27,9 @@ endif()
 # -----------------------------------------------------------------------
 # Paths
 # -----------------------------------------------------------------------
-set(SRC_DIR   ${CMAKE_SOURCE_DIR}/../src)
-set(MOCKS_DIR ${CMAKE_SOURCE_DIR}/mocks)
+set(SRC_DIR      ${CMAKE_SOURCE_DIR}/../src)
+set(BASE_SRC_DIR ${CMAKE_SOURCE_DIR}/../bitcoin_app_base/src)
+set(MOCKS_DIR    ${CMAKE_SOURCE_DIR}/mocks)
 
 # Mock headers override Ledger SDK headers for all test targets.
 # MOCKS_DIR must come first so mock cx.h / crypto_helpers.h are found
@@ -88,9 +89,13 @@ add_test(NAME test_derive_vault_secrets COMMAND test_derive_vault_secrets)
 # No mock_cx needed — vault_tlv.c only uses os_utils.h (mocked in mocks/).
 # BIP44_COIN_TYPE must match VALID_PATH[1] in the test fixture (coin type 1).
 # -----------------------------------------------------------------------
+# secp256k1.c is a 23-line constant table with no SDK dependency; linking the real
+# one keeps vault_xonly_key_is_canonical tested against the same field prime the
+# firmware uses, rather than a copy that could drift.
 add_executable(test_vault_tlv
   test_vault_tlv.c
   ${SRC_DIR}/vault_tlv.c
+  ${BASE_SRC_DIR}/secp256k1.c
 )
 
 target_compile_definitions(test_vault_tlv PRIVATE
