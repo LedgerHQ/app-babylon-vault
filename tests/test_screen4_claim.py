@@ -315,14 +315,23 @@ def test_sign_psbt_claim_cpfp_wrong_spk(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+@pytest.mark.parametrize("nsequence", [0, 1, 144, 0x0040_0090, 0xFFFF_FFFC,
+                                       0xFFFF_FFFD, 0xFFFF_FFFE])
 def test_sign_psbt_claim_wrong_nsequence(
     client: "RaggerClient",
     bitcoin_network: str,
+    nsequence: int,
 ) -> None:
-    """Claim fails when Input 0 nSequence is not 0xFFFFFFFF."""
+    """Claim requires Input 0 nSequence == 0xFFFFFFFF and rejects everything else.
+
+    Covers CSV-encoding values (block- and time-based), the nLockTime-enabling 0xFFFFFFFE,
+    and 0xFFFFFFFD. That last one is the BIP-125 RBF signal an earlier btc-vault built the
+    depositor-as-claimer Claim with; the protocol requires SEQUENCE_FINAL and btc-vault has
+    since been fixed, so the device must keep refusing it.
+    """
     fingerprint, leaf_key, coin_type = _claim_keys(client, bitcoin_network)
     psbt = _build_claim_psbt(fingerprint, leaf_key, coin_type)
-    psbt.tx.vin[0].nSequence = 0
+    psbt.tx.vin[0].nSequence = nsequence
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)

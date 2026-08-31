@@ -5,6 +5,24 @@
 
 #include "vault_intent.h"
 
+/** Bytes needed to hold @p n bits. */
+#define VAULT_BITMASK_BYTES(n) (((n) + 7u) / 8u)
+
+/**
+ * Dedup-bitmask slot counts.
+ *
+ * These single-source the slot arithmetic: each count is the upper bound of the slot
+ * formula used at the corresponding check site, so a change to a stride has to be made
+ * here and is reflected in the mask size automatically.  Do not open-code the strides.
+ *
+ *   payout   slot = gi * (keeper_count + 2) + payout_index,
+ *                   payout_index in [0, keeper_count + 1]   (0 = VP, 1..N = VK, N+1 = depositor)
+ *
+ * NoPayout has no slot formula: its vault group cannot be identified from the PSBT, so it
+ * is bounded by the nopayout_signed counter alone (see _validate_nopayout).
+ */
+#define VAULT_PAYOUT_SLOT_COUNT (VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + 2u))
+
 /**
  * @brief Session state machine states.
  *
@@ -73,9 +91,14 @@ typedef struct {
     /**
      * Per-type signature counters (sampling countermeasure, v22).
      *
-     * Each counter is incremented once a signature is produced and capped at the
-     * expected count for the approved intent.  Exceeding any cap nullifies the intent
-     * and returns SW_CAP_EXCEEDED; all counters reset to zero on each intent approval.
+     * Each counter reserves a slot for one signature and is capped at the expected count
+     * for the approved intent.  Exceeding any cap nullifies the intent and returns
+     * SW_CAP_EXCEEDED; all counters reset to zero on each intent approval.
+     *
+     * A counter is incremented *before* the signature it accounts for is released, not
+     * after: pre_pegin_signed at the end of _validate_prepegin (after the txid binding),
+     * and the PegIn/Payout/NoPayout counters and dedup bits before their signing yield.
+     * A host that aborts mid-yield therefore cannot replay the slot.
      *
      * Caps (vault_count=V, keeper_count=N, challenger_count=M):
      *   pre_pegin_signed : 1
@@ -95,7 +118,7 @@ typedef struct {
      * PSBT is signed, preventing a malicious host from exhausting the flat
      * payout_signed cap by replaying the same PSBT.  Cleared by vault_context_invalidate.
      */
-    uint8_t payout_claimer_mask[(VAULT_MAX_VAULTS * (VAULT_MAX_KEEPERS + 2u) + 7u) / 8u];
+    uint8_t payout_claimer_mask[VAULT_BITMASK_BYTES(VAULT_PAYOUT_SLOT_COUNT)];
 
     /**
      * Per-group PegIn deduplication bitmask.
@@ -105,6 +128,17 @@ typedef struct {
      * pegin_signed cap.  Cleared by vault_context_invalidate.
      */
     uint8_t pegin_group_mask[(VAULT_MAX_VAULTS + 7u) / 8u];
+
+    /**
+     * Challenger index for the NoPayout currently being validated/signed.
+     * Ranges 0..keeper_count+challenger_count-1.
+     * Set by _validate_nopayout; read by sign_custom_inputs to re-check the leaf's
+     * challenger key against the intent before signing.
+     *
+     * NoPayout has no per-slot dedup mask: its vault group is unidentifiable from the
+     * PSBT (see _validate_nopayout), so nopayout_signed is the only bound.
+     */
+    uint8_t nopayout_challenger_index;
 
     /**
      * Dual-use field:
@@ -154,7 +188,9 @@ typedef struct {
 /**
  * @brief Zero-initialise the context and set state to VAULT_STATE_IDLE.
  *
- * Must be called once at application start-up.
+ * In production the global G_vault_context is BSS-zero-initialized at device
+ * boot (VAULT_STATE_IDLE == 0), so this function has no production caller.
+ * Call it from unit tests to reset context to a known state between cases.
  */
 void vault_context_init(vault_context_t *ctx);
 

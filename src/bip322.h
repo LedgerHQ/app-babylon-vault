@@ -62,7 +62,7 @@ bool bip322_parse_pop_message(const uint8_t *msg,
  * Reconstructs the virtual transaction from the validated message and the
  * depositor's BIP-86 tweaked output key (32-byte x-only, as it appears in the
  * P2TR scriptPubKey "OP_1 PUSHBYTES_32 <key>").  The txid is the double-SHA256
- * of the legacy serialization, reversed to Bitcoin wire format.
+ * of the legacy serialization in PSBT/wire byte order (not byte-reversed).
  *
  * Returns true and writes 32 bytes to txid_out on success; returns false if
  * the hash computation fails.

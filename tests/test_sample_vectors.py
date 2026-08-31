@@ -1,7 +1,7 @@
 """
 Parser / size-robustness tests over Babylon Vault vectors in tests/vectors/.
 
-Two vector sets are covered:
+Two vector sets are covered by the foreign-seed tests:
 
   signet/    Captured from the real signet `sample_tx` run (4 VK / 4 UC).
              See tests/vectors/README.txt for the full description.
@@ -21,11 +21,16 @@ the signet capture uses a real signet seed; the generated vectors use
 We therefore assert a clean, defined rejection (a known vault status word), NOT
 a successful signature.
 
+A third vector set — generated-speculos/ — contains vectors produced by
+`crates/ledger-vector-gen` under the Speculos test mnemonic.  Those vectors CAN
+be signed by the test device, so the tests for them assert SW_OK.
+See tests/vectors/generated-speculos/README.md for how to generate them.
+
 The finalized raw transactions (refund / claim / assert / wrongly_challenged)
 are not PSBTs and cannot be fed to sign_psbt — they are covered as host-side
 format-reference parses only.
 
-NOTE: this is a round-trip / clean-rejection check, NOT a memory-ceiling test.
+NOTE: this is a round-trip / clean-rejection check for the foreign-seed sets.
 These captures use a foreign seed/context, so the device rejects at the vault
 state guard before reaching the large-leaf reconstruction path. The buffer
 ceiling (VAULT_SCRIPT_MAX_LEN) is exercised by
@@ -46,6 +51,8 @@ from typing import List, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
+    from ragger.navigator import Navigator
+    from ledgered.devices import Device
 
 import pytest
 
@@ -222,3 +229,165 @@ def test_device_ingests_sample_psbt(
     assert exc.value.status in KNOWN_REJECT_SWS, (
         f"{rel}#{idx}: unexpected status word {exc.value.status:#06x}"
     )
+
+
+# ===========================================================================
+# Speculos-signable vector tests (generated-speculos/)
+#
+# This section is ready for when tests/vectors/generated-speculos/ is
+# populated by running `crates/ledger-vector-gen` under the Speculos test
+# mnemonic.  See tests/vectors/generated-speculos/README.md for instructions.
+#
+# Contract: when the directory contains deposit-flow/pegin.json AND a
+# companion metadata.json with the vault intent parameters, the test below
+# asserts SW_OK (the device can sign these vectors).  Until the directory is
+# populated the test is skipped automatically.
+#
+# metadata.json schema (flat object, all fields required):
+#   {
+#     "coin_type": 1,
+#     "base_fee_rate": 1,
+#     "pegin_csv_timelock": 144,
+#     "payout_timelock": 200,
+#     "htlc_refund_timelock": 144,
+#     "prepegin_txid_hex": "<64 hex chars>",
+#     "keeper_pks_hex": ["<64 hex>", ...],
+#     "challenger_pks_hex": ["<64 hex>", ...],
+#     "groups": [
+#       {
+#         "htlc_vout": 0,
+#         "vault_provider_pk_hex": "<64 hex>",
+#         "vault_amount": 9876543,
+#         "commission_fee": 54321,
+#         "depositor_claim_value": 12345,
+#         "pegin_max_fee": 567891
+#       }
+#     ]
+#   }
+# ===========================================================================
+
+# One vector set per network — see generated-speculos/README.md for why they cannot be
+# shared: the depositor key is baked into every leaf script the device reconstructs.
+_SPECULOS_VECTORS_DIR = VECTORS_DIR / "generated-speculos"
+
+
+def test_device_signs_speculos_pegin(
+    client: "RaggerClient",
+    navigator: "Navigator",
+    device: "Device",
+    bitcoin_network: str,
+) -> None:
+    """The device signs the Speculos-mnemonic PegIn vector and returns SW_OK.
+
+    Asserts a valid 64-byte SIGHASH_DEFAULT Schnorr signature — NOT a rejection.
+    This is the positive counterpart to test_device_ingests_sample_psbt: it proves
+    that when the depositor key matches the test device's derived key, the firmware
+    validates and signs the transaction rather than rejecting it.
+
+    APPROVE_VAULT_INTENT's final key-batch APDU blocks on the on-device review
+    screen, so — unlike the foreign-seed vectors above, which are rejected before
+    ever reaching it — this must drive the navigator through to confirmation
+    (mirrors _setup_s2_state's approve_vault_intent_with_nav call in
+    test_sign_psbt_validate.py for the same 1-keeper/1-challenger shape).
+
+    Prerequisite: populate tests/vectors/generated-speculos/ by running
+    crates/ledger-vector-gen with the Speculos test mnemonic (see README.md).
+    The companion metadata.json must be present to provide vault intent parameters.
+    """
+    from .vault_client import (
+        approve_vault_intent_with_nav,
+        build_intent_tlv,
+        build_group_tlv,
+        derive_context_hash,
+        vault_hashlock,
+        VAULT_APP_NAME,
+        depositor_path,
+        HARDENED,
+        TEST_DEPOSITOR_XONLY_MAINNET,
+        TEST_DEPOSITOR_XONLY_TESTNET,
+    )
+
+    vector_set = _SPECULOS_VECTORS_DIR / bitcoin_network
+    if not (vector_set / "metadata.json").exists():
+        pytest.skip(
+            f"tests/vectors/generated-speculos/{bitcoin_network}/ not populated — "
+            "regenerate with ledger-vector-gen for this network, see "
+            "tests/vectors/generated-speculos/README.md"
+        )
+
+    meta = json.loads((vector_set / "metadata.json").read_text())
+    coin_type = meta["coin_type"]
+    # A set generated into the wrong directory is a misconfiguration, not a missing
+    # prerequisite: fail loudly rather than skip, since the device would otherwise reject
+    # every vector in a way that looks like a firmware bug.
+    expected_coin_type = 0 if bitcoin_network == "main" else 1
+    assert coin_type == expected_coin_type, (
+        f"{vector_set} holds coin_type {coin_type}, but network '{bitcoin_network}' "
+        f"needs {expected_coin_type} — regenerated with the wrong --network?"
+    )
+    keeper_pks = [bytes.fromhex(k) for k in meta["keeper_pks_hex"]]
+    challenger_pks = [bytes.fromhex(k) for k in meta["challenger_pks_hex"]]
+    prepegin_txid = bytes.fromhex(meta["prepegin_txid_hex"])
+
+    # Derive the vault root (silent re-derivation — no screen shown).
+    from .vault_client import P2_SILENT
+    root = derive_context_hash(
+        client, VAULT_APP_NAME, depositor_path(coin_type),
+        b"speculos-vector-gen",  # fixed context matching the generator's input
+        navigator=None, device=None, p2=P2_SILENT,
+    )
+
+    # Build and send the intent.
+    scalars_tlv = build_intent_tlv(
+        coin_type=coin_type,
+        base_fee_rate=meta["base_fee_rate"],
+        pegin_csv_timelock=meta["pegin_csv_timelock"],
+        payout_timelock=meta["payout_timelock"],
+        prepegin_txid=prepegin_txid,
+        htlc_refund_timelock=meta["htlc_refund_timelock"],
+        depositor_path=depositor_path(coin_type),
+        keeper_count=len(keeper_pks),
+        challenger_count=len(challenger_pks),
+        vault_count=len(meta["groups"]),
+    )
+    groups_tlv = [
+        build_group_tlv(
+            htlc_vout=g["htlc_vout"],
+            vault_provider_pk=bytes.fromhex(g["vault_provider_pk_hex"]),
+            vault_amount=g["vault_amount"],
+            commission_fee=g["commission_fee"],
+            depositor_claim_value=g["depositor_claim_value"],
+            pegin_max_fee=g["pegin_max_fee"],
+        )
+        for g in meta["groups"]
+    ]
+    approve_vault_intent_with_nav(
+        client, navigator, device, scalars_tlv, keeper_pks, challenger_pks, groups=groups_tlv,
+    )
+
+    # Load and sign each PegIn PSBT — expect SW_OK and a usable signature.
+    psbt_hexes = [h.strip() for h in
+                  json.loads((vector_set / "deposit-flow" / "pegin.json").read_text())]
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    depositor_xonly = (TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main"
+                       else TEST_DEPOSITOR_XONLY_TESTNET)
+
+    for idx, psbt_hex in enumerate(psbt_hexes):
+        psbt = _psbt_from_hex(psbt_hex)
+        result = client.sign_psbt(psbt, dummy_wallet, None)
+        # PegIn signs Input 0 (the HTLC leaf-0 spend) under the depositor key.  Checking
+        # the input index and the signing key — not just the length — is what makes this
+        # the positive counterpart to the rejection tests: a signature over the wrong
+        # input, or under a key that is not the depositor's, would otherwise pass.
+        assert len(result) == 1, (
+            f"pegin[{idx}]: expected exactly 1 signature, got {len(result)}"
+        )
+        input_index, partial_sig = result[0]
+        assert input_index == 0, f"pegin[{idx}]: signed unexpected input {input_index}"
+        assert partial_sig.pubkey[-32:] == depositor_xonly, (
+            f"pegin[{idx}]: signed with an unexpected key"
+        )
+        assert len(partial_sig.signature) == 64, (
+            f"pegin[{idx}]: expected 64-byte SIGHASH_DEFAULT Schnorr sig, "
+            f"got {len(partial_sig.signature)}"
+        )

@@ -158,6 +158,34 @@ void vault_taproot_leaf_hash(const uint8_t *script,
 }
 
 /* --------------------------------------------------------------------------
+ * vault_taproot_leaf_hash_stream_{init,update,final}
+ *
+ * Incremental form of vault_taproot_leaf_hash, for scripts too large to buffer
+ * (real Assert leaves are 11.5-13.6 KB against a 2560-byte read buffer).
+ *
+ * The BIP-341 preimage is 0xC0 || varint(script_len) || script, so the length must
+ * be known before the first script byte is hashed — which it is: the PSBT value
+ * stream reports its length up front, before any chunk.  script_len is therefore
+ * taken at init, and update() is called with successive script slices.
+ * ----------------------------------------------------------------------- */
+
+void vault_taproot_leaf_hash_stream_init(cx_sha256_t *ctx, uint32_t script_len) {
+    crypto_tr_tapleaf_hash_init(ctx);
+    _hash_update_u8(&ctx->header, TAPSCRIPT_LEAF_VERSION);
+    uint8_t vbuf[5];
+    int vlen = _varint_write(vbuf, (uint64_t) script_len);
+    _hash_update(&ctx->header, vbuf, (size_t) vlen);
+}
+
+void vault_taproot_leaf_hash_stream_update(cx_sha256_t *ctx, const uint8_t *data, size_t len) {
+    if (len > 0) _hash_update(&ctx->header, data, len);
+}
+
+void vault_taproot_leaf_hash_stream_final(cx_sha256_t *ctx, uint8_t out[VAULT_HASH256_LEN]) {
+    _hash_final(&ctx->header, out);
+}
+
+/* --------------------------------------------------------------------------
  * vault_taproot_tweak_scriptpubkey  (static)
  *
  * Computes the P2TR scriptPubKey (34 bytes: OP_1 OP_PUSHBYTES_32 <key>)
@@ -192,12 +220,10 @@ static bool vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[VAULT_HAS
  * Emits a tapscript N-of-N multisig fragment for the given key array.
  *
  *   is_final == 0 (intermediate): result is consumed by the next opcode.
- *     N=1 → <key> OP_CHECKSIGVERIFY
- *     N>1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUALVERIFY
+ *     N≥1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUALVERIFY
  *
  *   is_final != 0 (final): the boolean result stays on the stack.
- *     N=1 → <key> OP_CHECKSIG
- *     N>1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUAL
+ *     N≥1 → <key[0]> OP_CHECKSIG  <key[i]>… OP_CHECKSIGADD  N OP_NUMEQUAL
  *
  * Each x-only key is pushed as 0x20 <32-byte key> (OP_PUSHBYTES_32).
  * Returns bytes written, or -1 if buf_max is too small.
@@ -213,30 +239,84 @@ static int encode_multisig_group(const uint8_t keys[][VAULT_XONLY_PUBKEY_LEN],
 
     int off = 0;
 
-    if (key_count == 1) {
-        buf[off++] = OP_PUSHBYTES_32;
-        memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
-        off += 32;
-        buf[off++] = is_final ? OP_CHECKSIG : OP_CHECKSIGVERIFY;
-    } else {
-        buf[off++] = OP_PUSHBYTES_32;
-        memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
-        off += 32;
-        buf[off++] = OP_CHECKSIG;
+    buf[off++] = OP_PUSHBYTES_32;
+    memcpy(buf + off, keys[0], VAULT_XONLY_PUBKEY_LEN);
+    off += 32;
+    buf[off++] = OP_CHECKSIG;
 
-        for (int i = 1; i < key_count; i++) {
-            buf[off++] = OP_PUSHBYTES_32;
-            memcpy(buf + off, keys[i], VAULT_XONLY_PUBKEY_LEN);
-            off += 32;
-            buf[off++] = OP_CHECKSIGADD;
-        }
-
-        int n_len = _push_number((uint32_t) key_count, buf + off);
-        off += n_len;
-        buf[off++] = is_final ? OP_NUMEQUAL : OP_NUMEQUALVERIFY;
+    for (int i = 1; i < key_count; i++) {
+        buf[off++] = OP_PUSHBYTES_32;
+        memcpy(buf + off, keys[i], VAULT_XONLY_PUBKEY_LEN);
+        off += 32;
+        buf[off++] = OP_CHECKSIGADD;
     }
 
+    int n_len = _push_number((uint32_t) key_count, buf + off);
+    off += n_len;
+    buf[off++] = is_final ? OP_NUMEQUAL : OP_NUMEQUALVERIFY;
+
     return off;
+}
+
+/* --------------------------------------------------------------------------
+ * Assert leaf prefix description
+ *
+ * The two functions below describe, without materialising, the bytes
+ * encode_multisig_group would emit for the Assert leaf's signer prefix.  Rationale and
+ * the security property they carry are documented at their declarations in
+ * vault_script.h.  Any change to encode_multisig_group's encoding must be mirrored here.
+ * ----------------------------------------------------------------------- */
+
+/** One multisig entry: OP_PUSHBYTES_32 <key[32]> <terminating opcode>. */
+#define MULTISIG_ENTRY_LEN (1u + VAULT_XONLY_PUBKEY_LEN + 1u)
+
+/** Length of the fragment encode_multisig_group emits for @p key_count keys. */
+static int _multisig_group_len(uint32_t key_count) {
+    uint8_t num[5];
+    return (int) (MULTISIG_ENTRY_LEN * key_count) + _push_number(key_count, num) + 1;
+}
+
+int vault_assert_prefix_len(const vault_intent_t *intent) {
+    if (intent->keeper_count == 0u || intent->challenger_count == 0u) return -1;
+    return (int) MULTISIG_ENTRY_LEN + _multisig_group_len(intent->keeper_count) +
+           _multisig_group_len(intent->challenger_count);
+}
+
+int vault_assert_prefix_byte(const vault_intent_t *intent, uint32_t off) {
+    if (intent->keeper_count == 0u || intent->challenger_count == 0u) return -1;
+
+    /* <Claimer> OP_CHECKSIGVERIFY.  The only Assert claimer this device holds a key for
+     * is the approved depositor, so the intent fixes the key outright. */
+    if (off == 0u) return OP_PUSHBYTES_32;
+    if (off < 1u + VAULT_XONLY_PUBKEY_LEN) return intent->depositor_pk[off - 1u];
+    if (off == 1u + VAULT_XONLY_PUBKEY_LEN) return OP_CHECKSIGVERIFY;
+
+    uint32_t base = MULTISIG_ENTRY_LEN;
+    for (int g = 0; g < 2; g++) {
+        const uint32_t count = (g == 0) ? intent->keeper_count : intent->challenger_count;
+        const uint8_t (*keys)[VAULT_XONLY_PUBKEY_LEN] =
+            (g == 0) ? intent->keeper_pks : intent->challenger_pks;
+
+        if (off < base + MULTISIG_ENTRY_LEN * count) {
+            const uint32_t i = (off - base) / MULTISIG_ENTRY_LEN;
+            const uint32_t k = (off - base) % MULTISIG_ENTRY_LEN;
+            if (k == 0u) return OP_PUSHBYTES_32;
+            if (k < 1u + VAULT_XONLY_PUBKEY_LEN) return keys[i][k - 1u];
+            /* Only the group's first key closes with OP_CHECKSIG; the rest accumulate. */
+            return (i == 0u) ? OP_CHECKSIG : OP_CHECKSIGADD;
+        }
+        base += MULTISIG_ENTRY_LEN * count;
+
+        uint8_t num[5];
+        const uint32_t num_len = (uint32_t) _push_number(count, num);
+        if (off < base + num_len) return num[off - base];
+        base += num_len;
+
+        /* Intermediate group: the count check consumes its result. */
+        if (off == base) return OP_NUMEQUALVERIFY;
+        base += 1u;
+    }
+    return -1;
 }
 
 /* ==========================================================================
@@ -463,7 +543,8 @@ int vault_build_assert0_payout_leaf(const vault_intent_t *intent,
 
     /* Stack cost: VAULT_MAX_KEEPERS × VAULT_XONLY_PUBKEY_LEN = 1024 B.
      * Cannot use G_scratch here — buf already points into it (callers pass
-     * G_scratch.leaf_check.expected_script or G_scratch.script_scratch).
+     * G_scratch.leaf_check.expected_script, G_scratch.leaf_check.actual_buf,
+     * or G_scratch.script_scratch).
      * This is called from the PSBT signing path after io_ui_process() returns,
      * so NBGL's call stack is fully unwound and peak stack headroom is available. */
     _Static_assert(VAULT_MAX_KEEPERS * VAULT_XONLY_PUBKEY_LEN <= 1024u,
@@ -643,32 +724,6 @@ bool vault_build_depositor_claim_scriptpubkey(const vault_intent_t *intent,
         return false;
     }
     vault_taproot_leaf_hash(script, len, leaf_hash);
-    return vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
-}
-
-/* --------------------------------------------------------------------------
- * vault_build_assert0_payout_scriptpubkey
- *
- * P2TR scriptPubKey (34 bytes) for the Assert:0 Payout output
- * (single-leaf taptree; one variant per claimer_idx).
- * ----------------------------------------------------------------------- */
-
-bool vault_build_assert0_payout_scriptpubkey(const vault_intent_t *intent,
-                                             int group_idx,
-                                             int claimer_idx,
-                                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {
-    uint8_t leaf_hash[VAULT_HASH256_LEN];
-
-    int len = vault_build_assert0_payout_leaf(intent,
-                                              group_idx,
-                                              claimer_idx,
-                                              G_scratch.script_scratch,
-                                              VAULT_SCRIPT_MAX_LEN);
-    if (len < 0) {
-        memset(out, 0, VAULT_P2TR_SCRIPTPUBKEY_LEN);
-        return false;
-    }
-    vault_taproot_leaf_hash(G_scratch.script_scratch, len, leaf_hash);
     return vault_taproot_tweak_scriptpubkey(leaf_hash, NULL, out);
 }
 

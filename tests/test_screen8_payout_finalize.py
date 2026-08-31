@@ -345,7 +345,7 @@ def test_payout_finalize_wrong_leaf_shape(
     psbt.outputs = [PartiallySignedOutput(0), PartiallySignedOutput(0)]
 
     psbt.inputs[0].witness_utxo = CTxOut(2_100_000, bytes([0x51, 0x20]) + bytes(32))
-    psbt.inputs[1].witness_utxo = CTxOut(2_000_000, input1_spk)
+    psbt.inputs[1].witness_utxo = CTxOut(_VAULT_DUST_LIMIT, input1_spk)
     psbt.inputs[1].tap_scripts[(short_leaf, 0xC0)] = {control_block}
     psbt.inputs[1].tap_bip32_paths[d_key] = (
         {leaf_hash},
@@ -442,10 +442,13 @@ def test_payout_finalize_input0_marked_internal(
 ) -> None:
     """PayoutFinalize fails when Input 0 carries the payout leaf (inputs swapped).
 
-    The firmware guards against Input 0 being signed via bitvector_get(internal_inputs, 0).
-    Swapping the two inputs produces a PSBT where Input 0 has the payout leaf and
-    TAP_BIP32_DERIVATION (so the sign_psbt framework marks it internal), while Input 1
-    is external.  The guard fires before any further validation.
+    PayoutFinalize signs Input 1 (the Assert:0 connector); Input 0 is the Vault UTXO and
+    carries no signing request.  Swapping the two inputs therefore leaves Input 1 without
+    a TAP_LEAF_SCRIPT, and validation rejects it when it tries to read the payout leaf.
+
+    Note this does NOT exercise a bitvector_get(internal_inputs, 0) guard: preprocess_inputs
+    only sets bits for wallet-policy inputs, so that bit is structurally always 0 in a
+    no-wallet-policy flow, and the guard was removed as dead.
     """
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
     psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
@@ -494,24 +497,56 @@ def test_payout_finalize_sequence_time_based(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_payout_finalize_input1_value_too_small(
+def test_payout_finalize_input1_wrong_value(
     client: "RaggerClient", bitcoin_network: str,
 ) -> None:
-    """PayoutFinalize fails when Input 1 witness_utxo value < amount_received + VAULT_DUST_LIMIT.
-
-    The firmware verifies that amount_received + VAULT_DUST_LIMIT <= input1_value to
-    prevent a fabricated witness_utxo from hiding an over-spend.  Here input1_value ==
-    amount_received, leaving no room for the CPFP anchor, so the check must reject it.
-    """
+    """PayoutFinalize fails when Input 1 witness_utxo value < VAULT_DUST_LIMIT."""
+    from ledger_bitcoin.tx import CTxOut
     fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
-    amount = 1_999_000
-    # input1_value == amount_received → amount_received + VAULT_DUST_LIMIT > input1_value
-    psbt = _build_payout_finalize_psbt(
-        fingerprint, d_key, coin_type,
-        amount_received=amount,
-        input1_value=amount,
+    psbt = _build_payout_finalize_psbt(fingerprint, d_key, coin_type)
+    psbt.inputs[1].witness_utxo = CTxOut(
+        _VAULT_DUST_LIMIT - 1,
+        psbt.inputs[1].witness_utxo.scriptPubKey,
     )
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_payout_finalize_vault_amount_too_small(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """PayoutFinalize accepts a PSBT with Input 0 value = amount_received + 1 sat (minimal fee).
+
+    No intent is loaded, so only the amount_received > 0 floor applies.  Input 0's
+    witness_utxo is unattested and the device does not validate it.
+    """
+    fingerprint, d_key, coin_type = _payout_keys(client, bitcoin_network)
+    amount = 1_999_000
+    psbt = _build_payout_finalize_psbt(
+        fingerprint, d_key, coin_type,
+        amount_received=amount,
+        vault_amount=amount + 1,   # 1 sat fee; no intent loaded, so single-vault cap skipped
+    )
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    tname = "screen8_payout_finalize/vault_amount_too_small_" + bitcoin_network
+    if device.is_nano:
+        result = client.sign_psbt(
+            psbt, dummy_wallet, None, navigator,
+            testname=tname,
+            instructions=sign_psbt_payout_finalize_approve_instructions(device),
+        )
+    else:
+        sign_psbt_with_nav_and_compare(
+            client, psbt, dummy_wallet, None, navigator,
+            testname=tname,
+            nav_instructions=sign_psbt_payout_finalize_approve_nav(device),
+        )
+        return
+
+    _assert_single_schnorr_sig(result, d_key, expected_input=1)

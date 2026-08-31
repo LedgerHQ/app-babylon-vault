@@ -1,4 +1,5 @@
 #include "globals.h"
+#include <stddef.h>
 
 // ---------------------------------------------------------------------------
 // Compile-time RAM budget assertions (Nano S+ target)
@@ -19,17 +20,18 @@
 //   sig cap counters       8 B  (pre_pegin/pegin/payout/nopayout _signed, 2 B each)
 //   payout_claimer_mask   43 B  (VAULT_MAX_VAULTS × (VAULT_MAX_KEEPERS+2) bits, per-slot dedup)
 //   pegin_group_mask       2 B  (VAULT_MAX_VAULTS=10 bits, per-group dedup)
-//   vault_group_index      1 B  + padding
+//   nopayout_challenger_index 1 B
+//   vault_group_index      1 B
 //   is_payout_signing      1 B  + padding
 //   derivation_path       40 B  (VAULT_MAX_PATH_DEPTH=10 × uint32_t)
 //   derivation_path_len    1 B  + padding
 //   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
 //   app_name_len           1 B  + padding
-//   total               ~552 B  (sizeof verified at compile time)
+//   total               ~557 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B
-//   vault_context_t             ≤  576 B
+//   vault_context_t             ≤  640 B
 //   G_scratch (union)             5120 B  (largest member: refund_leaf_check_t =
 //                                          2 × VAULT_SCRIPT_MAX_LEN; was 6224 B when
 //                                          display_vault_intent_scratch_t dominated)
@@ -37,16 +39,34 @@
 //                                         with VAULT_MAX_TAPTREE_DEPTH display: ~524 B — keys via
 //                                         4-slot callback ring buffer
 //   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
-//                                       ≤ 9128 B  (well within remaining SRAM after min stack)
+//   G_derive_streaming          ≤    8 B  (N-05 / G#1: outside union to prevent aliasing)
+//   G_leaf_meta                 ≤  104 B  (L-11: outside union — leaf hash/prefix must
+//                                         survive a leaf_check reconstruction)
+//                                       ≤ 9169 B  (well within remaining SRAM after min stack)
 // display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
 // ---------------------------------------------------------------------------
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
-_Static_assert(sizeof(vault_context_t) <= 576, "vault_context_t exceeds expected size");
+_Static_assert(sizeof(vault_context_t) <= 700, "vault_context_t exceeds expected size");
 _Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
+/* The standalone leaf dispatcher reads the captured prefix up to VAULT_LEAF_GROUP0_OP_OFF
+ * for leaves too large to buffer; a shorter capture would silently hand it a zero byte. */
+_Static_assert(VAULT_LEAF_PREFIX_LEN > VAULT_LEAF_GROUP0_OP_OFF,
+               "captured leaf prefix no longer covers the group-0 shape discriminator");
+_Static_assert(sizeof(vault_leaf_meta_t) <= 104, "vault_leaf_meta_t exceeds its RAM budget");
 _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
                "vault_scratch_t size != refund_leaf_check_t; check union definition");
+/* The dedup slot count must cover the worst case the slot formula can produce, given the
+ * parse-time ranges (vault_count <= VAULT_MAX_VAULTS, keeper_count <= VAULT_MAX_KEEPERS).
+ * The mask is sized from these same counts, so this is what actually ties the formula to
+ * the allocation:
+ *   payout worst slot = (V-1)*(N+2) + (N+1) = V*(N+2) - 1
+ * Widening the stride without updating the SLOT_COUNT macro breaks the build here rather
+ * than overflowing the bitmask at runtime. */
+_Static_assert((VAULT_MAX_VAULTS - 1u) * (VAULT_MAX_KEEPERS + 2u) + (VAULT_MAX_KEEPERS + 1u) <
+                   VAULT_PAYOUT_SLOT_COUNT,
+               "payout slot formula can exceed VAULT_PAYOUT_SLOT_COUNT");
 
 /* refund_leaf_check.actual_buf must hold the largest possible leaf0 script + 1 version byte.
  * encode_multisig_group upper bound: key_count * 34 + 6 bytes per group.
@@ -56,7 +76,35 @@ _Static_assert(sizeof(vault_scratch_t) == sizeof(refund_leaf_check_t),
 _Static_assert(sizeof(refund_leaf_check_t) - VAULT_SCRIPT_MAX_LEN >= _VAULT_MAX_LEAF0_WITH_VERSION,
                "refund_leaf_check.actual_buf too small for max leaf0 script + version byte");
 
+/* tls.leaf_script and leaf_check.actual_buf alias inside vault_scratch_t.
+ * The overlap threshold used in _tap_leaf_script_callback (2298 bytes) is derived from
+ * these two offsets; a layout change would silently break the memmove guard. */
+_Static_assert(
+    offsetof(vault_scratch_t, leaf_check.actual_buf) - offsetof(vault_scratch_t, tls.leaf_script) ==
+        2298,
+    "G_scratch union overlap threshold changed; update comment in _tap_leaf_script_callback");
+
+/* _detect_payout_claimer rebuilds the expected payout leaf into leaf_check.actual_buf and
+ * compares it byte-for-byte against tls.leaf_script.  Because the two alias, a
+ * reconstruction longer than the overlap threshold would overwrite the very bytes being
+ * compared, and the memcmp would compare the rebuild against itself.
+ * vault_build_assert0_payout_leaf upper bound:
+ *   34 (claimer push + OP_CHECKSIGVERIFY) + AppChallengers group + UC group
+ *   + 6 (timelock push + OP_CSV), each group bounded by key_count * 34 + 6
+ *   = 34 + (32K * 34 + 6) + (32C * 34 + 6) + 6 = 2228 B against a 2298 B threshold.
+ * Raising VAULT_MAX_KEEPERS / VAULT_MAX_CHALLENGERS therefore breaks the build here
+ * rather than silently invalidating the comparison. */
+#define _VAULT_MAX_ASSERT0_PAYOUT_LEAF \
+    (34 + (VAULT_MAX_KEEPERS * 34 + 6) + (VAULT_MAX_CHALLENGERS * 34 + 6) + 6)
+_Static_assert(_VAULT_MAX_ASSERT0_PAYOUT_LEAF <= offsetof(vault_scratch_t, leaf_check.actual_buf) -
+                                                     offsetof(vault_scratch_t, tls.leaf_script),
+               "max assert0 payout leaf exceeds the tls.leaf_script/actual_buf overlap "
+               "threshold; the byte-for-byte compare in _detect_payout_claimer would "
+               "read bytes the reconstruction just overwrote");
+
 vault_intent_t G_vault_intent;
 vault_context_t G_vault_context;
 vault_scratch_t G_scratch;
+derive_streaming_state_t G_derive_streaming;
+vault_leaf_meta_t G_leaf_meta;
 approve_intent_state_t G_approve_intent_state;

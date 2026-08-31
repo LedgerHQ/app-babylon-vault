@@ -486,7 +486,14 @@ static void test_refund_reject_missing_csv_opcode(void **state) {
  * Build a syntactically valid payout leaf:
  *   OP_PUSHBYTES_32 <key[32]> OP_CHECKSIGVERIFY <filler[filler_len]> <csv_push> OP_CSV
  * Total length must be > 68.  The filler bytes stand in for the multisig groups.
+ *
+ * When filler_len leaves room for it, the filler opens with the challenger multisig's
+ * first key push — OP_PUSHBYTES_32 <key[32]> OP_CHECKSIG — because the parser reads
+ * those two opcodes to tell a payout leaf from a Vault UTXO leaf.  Shorter fillers get
+ * filler_byte throughout; they only exercise the length guard.
  */
+#define PAYOUT_GROUP0_LEN (1 + 32 + 1)
+
 static int build_payout_script(uint8_t *buf, size_t buf_len,
                                 const uint8_t key[32],
                                 int filler_len,
@@ -498,7 +505,14 @@ static int build_payout_script(uint8_t *buf, size_t buf_len,
     buf[pos++] = OP_PUSHBYTES_32;
     memcpy(buf + pos, key, 32); pos += 32;
     buf[pos++] = OP_CHECKSIGVERIFY;
-    memset(buf + pos, filler_byte, (size_t) filler_len); pos += filler_len;
+    int rest = filler_len;
+    if (filler_len >= PAYOUT_GROUP0_LEN) {
+        buf[pos++] = OP_PUSHBYTES_32;
+        memset(buf + pos, filler_byte, 32); pos += 32;
+        buf[pos++] = OP_CHECKSIG;
+        rest = filler_len - PAYOUT_GROUP0_LEN;
+    }
+    memset(buf + pos, filler_byte, (size_t) rest); pos += rest;
     memcpy(buf + pos, csv_push, (size_t) csv_push_len); pos += csv_push_len;
     buf[pos++] = OP_CHECKSEQUENCEVERIFY;
     return total;
@@ -614,6 +628,43 @@ static void test_payout_reject_wrong_last_opcode(void **state) {
     uint8_t script[128];
     int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
     script[len - 1] = OP_CHECKSIG; /* corrupt: replace OP_CSV with OP_CHECKSIG */
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_group0_push_not_key(void **state) {
+    /* Byte 34 must open the challenger multisig with a 32-byte key push. */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 40, 0x00, csv_push, 2);
+    script[VAULT_LEAF_GROUP0_PUSH_OFF] = OP_PUSHBYTES_33;
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_vault_utxo_leaf(void **state) {
+    /* The Vault UTXO leaf — <D> OP_CHECKSIGVERIFY <VP> OP_CHECKSIGVERIFY <VK…> <UC…>
+     * <P> OP_CSV — matches every other conjunct this parser tests: same OP_PUSHBYTES_32
+     * <D> prefix, same OP_CSV terminator, and a pegin_csv_timelock range that overlaps
+     * the accepted payout t2 range.  It must be rejected on byte 67, where a second lone
+     * required signer ends in OP_CHECKSIGVERIFY instead of a multisig group's OP_CHECKSIG.
+     * Accepting it would let a host obtain a Vault UTXO signature via PayoutFinalize. */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    /* t = 90: inside both VAULT_TIMELOCK and VAULT_PAYOUT_TIMELOCK ranges. */
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 40, 0x00, csv_push, 2);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
+    /* Turn the group-0 key push into <VaultProvider> OP_CHECKSIGVERIFY. */
+    script[VAULT_LEAF_GROUP0_OP_OFF] = OP_CHECKSIGVERIFY;
 
     uint8_t d_key[32];
     uint32_t csv = 0;
@@ -810,6 +861,8 @@ int main(void) {
         cmocka_unit_test(test_payout_reject_wrong_first_byte),
         cmocka_unit_test(test_payout_reject_wrong_opcode_at_33),
         cmocka_unit_test(test_payout_reject_wrong_last_opcode),
+        cmocka_unit_test(test_payout_reject_group0_push_not_key),
+        cmocka_unit_test(test_payout_reject_vault_utxo_leaf),
         cmocka_unit_test(test_payout_reject_csv_below_min),
         cmocka_unit_test(test_payout_reject_csv_above_max),
     };

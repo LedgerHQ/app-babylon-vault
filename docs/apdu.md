@@ -15,8 +15,9 @@
 
 ## INS 0x80 — APPROVE_VAULT_INTENT — Wire Format
 
-Three-phase command (v21). **P1=0x00** must be sent exactly once (13 scalar fields);
-**P1=0x01** must be sent `vault_count` times (one per-vault group each); **P1=0x02** is
+Three-phase command (v22). **P1=0x00** must be sent exactly once (13 scalar fields);
+**P1=0x01** is sent in one or more APDUs, each carrying one or more complete group records
+(in ascending `htlc_vout` order), until all `vault_count` groups have been received; **P1=0x02** is
 sent one or more times until all `keeper_count + challenger_count` public keys are delivered.
 Any error from any phase resets the in-flight state; a fresh P1=0x00 is required to retry.
 
@@ -57,10 +58,13 @@ Duplicate tags, unknown tags, and wrong-length fields are rejected.
 
 ### P1=0x01 — Per-vault group TLV payload
 
-One APDU per vault group; must be sent exactly `vault_count` times in order (group 0, 1, …).
-Each group payload uses the same TLV encoding as P1=0x00 (2-byte tag + 1-byte length + value)
-but in an **independent tag namespace** (`TAG_GRP_*`). All 6 group tags are mandatory per group.
-Tags must arrive in strictly ascending tag-index order (htlc_vout first).
+Must be sent until exactly `vault_count` groups have been received, in order (group 0, 1, …).
+Multiple complete group records may be batched into a single APDU: the device loops through the
+payload consuming one group at a time until all `vault_count` groups are received.
+Each group uses the same TLV encoding as P1=0x00 (2-byte tag + 1-byte length + value) but in an
+**independent tag namespace** (`TAG_GRP_*`). All 6 group tags are mandatory per group; the device
+stops parsing each record as soon as all 6 fields are present, leaving the remainder of the
+payload for the next group. Tags must arrive in strictly ascending tag-index order (htlc_vout first).
 
 | Tag      | Field                    | Length | Type     | Validation rule |
 |----------|--------------------------|--------|----------|-----------------|
@@ -86,10 +90,10 @@ This command is accepted from any session state. The meaningful distinction is:
   and all keys (P1=0x02) are delivered, the device recomputes the on-chain commitments from
   the root — `htlc_hashlock[i] = SHA256(Expand(root, "hashlock" ‖ I2OSP(htlc_vout_i,4)))`
   and `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` — and binds them during
-  Pre-PegIn / PegIn validation. The root stays held through `INTENT_LOADED` →
-  `SESSION2_PEGIN_EXPECTED` → `SESSION2_PAYOUT_EXPECTED` → `SESSION2_COMPLETE`, which is
-  terminal. The host already holds the root (returned by `DERIVE_CONTEXT_HASH`) and expands
-  the per-vault secrets itself, so there is **no on-device secret-release step**.
+  Pre-PegIn / PegIn validation. The root is zeroed immediately after the on-chain commitments
+  are derived (at the end of P1=0x02); it is not retained in `INTENT_LOADED`. The host already
+  holds the root (returned by `DERIVE_CONTEXT_HASH`) and expands the per-vault secrets itself,
+  so there is **no on-device secret-release step**.
 - **Called from any other state** — intent replacement / no-derive path.
   The session is reset normally; no root is preserved, so `htlc_hashlock`/`auth_anchor_hash`
   stay zero and Pre-PegIn/PegIn signing is rejected until a `DERIVE_CONTEXT_HASH` runs first.
@@ -136,7 +140,7 @@ transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
 | SW       | Condition |
 |----------|-----------|
 | `0x6A80` | Duplicate tag, unknown tag, field validation failure, wrong field length, malformed TLV entry, key ordering/uniqueness violation, tag phase mismatch (keeper tag where challenger expected or vice versa), extra keys beyond declared count, extra vault groups beyond `vault_count`, `htlc_vout` not strictly ascending across groups, depositor path in intent does not match path used in `DERIVE_CONTEXT_HASH` |
-| `0x6A86` | P1 is not `0x00`, `0x01`, or `0x02` |
+| `0x6A86` | P2 is not `0x00` (checked before P1); or P1 is not `0x00`, `0x01`, or `0x02` |
 | `0x6985` | User rejected the approval screen |
 | `0xB007` | P1=0x01 (groups) received before P1=0x00 scalars, or P1=0x02 (key batch) received before all P1=0x01 groups are delivered, or P1=0x02 received before `DERIVE_CONTEXT_HASH` completes |
 | `0x6F00` | BIP-32 derivation of depositor key failed |
