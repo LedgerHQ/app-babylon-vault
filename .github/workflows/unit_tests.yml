@@ -8,6 +8,11 @@ on:
       - develop
   pull_request:
 
+# Least privilege in source rather than inherited from mutable repo/org defaults: this job
+# compiles and runs PR-controlled test code, so its token must not be write-capable.
+permissions:
+  contents: read
+
 jobs:
   unit_tests:
     name: Build and run unit tests
@@ -15,9 +20,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
+          # Do not leave the job token in .git/config: the steps below build and execute
+          # PR-controlled sources, which could otherwise read it back out.
+          persist-credentials: false
 
       - name: Install dependencies
         run: sudo apt-get install -y libcmocka-dev cmake lcov
@@ -35,9 +43,11 @@ jobs:
         run: cd unit-tests && bash gen_coverage.sh
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-report
+          # A missing report means coverage generation failed; do not pass silently.
+          if-no-files-found: error
           path: |
             unit-tests/coverage.info
             unit-tests/coverage/
