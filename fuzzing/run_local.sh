@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Local fuzzer runner for Babylon Vault fuzz targets.
 # Builds if needed, then runs all targets in parallel for a configurable
-# duration, saving corpus to fuzzing/corpus/ and crashes to fuzzing/crashes/.
+# duration, seeding from fuzzing/seeds/, saving the working corpus to
+# fuzzing/corpus/ (gitignored) and crashes to fuzzing/crashes/.
 #
 # Usage:
 #   ./fuzzing/run_local.sh                     # 60 s per target (default)
@@ -13,7 +14,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
-CORPUS_DIR="$SCRIPT_DIR/corpus"
+CORPUS_DIR="$SCRIPT_DIR/corpus"   # libFuzzer working output (gitignored)
+SEEDS_DIR="$SCRIPT_DIR/seeds"     # committed hand-authored inputs
 CRASH_DIR="$SCRIPT_DIR/crashes"
 
 FUZZ_SECONDS=60
@@ -39,11 +41,17 @@ while getopts "t:j:f:h" opt; do
 done
 
 # ── Build if needed ───────────────────────────────────────────────────────────
-if [[ ! -d "$BUILD_DIR" ]] || [[ "$SCRIPT_DIR/CMakeLists.txt" -nt "$BUILD_DIR/Makefile" ]]; then
-    echo "[build] Configuring and building fuzzers with clang..."
+# Configure only when there is no cache, but ALWAYS build.  Gating `make` on
+# "CMakeLists.txt is newer than Makefile" meant edits to src/vault_tlv.c, a harness, or any
+# included header never triggered a rebuild: CMake's dependency tracking was never given
+# the chance to run, and the script then executed whatever stale fuzz_* binaries were
+# already there, reporting clean results for code that had changed (V-025).
+if [[ ! -d "$BUILD_DIR" ]]; then
+    echo "[build] Configuring fuzzers with clang..."
     cmake -DCMAKE_C_COMPILER=clang -B"$BUILD_DIR" -H"$SCRIPT_DIR"
-    make -C "$BUILD_DIR" -j"$(nproc)"
 fi
+echo "[build] Building fuzzers..."
+cmake --build "$BUILD_DIR" --parallel "$(nproc)"
 
 # ── Collect targets ───────────────────────────────────────────────────────────
 if [[ -n "$FILTER" ]]; then
@@ -59,12 +67,24 @@ echo
 
 mkdir -p "$CRASH_DIR"
 
+# Seeds are generated, not committed — see seeds/README.md.
+if [[ -f "$SEEDS_DIR/generate_seeds.py" ]]; then
+    python3 "$SEEDS_DIR/generate_seeds.py"
+fi
+
 run_one() {
     local bin="$1"
     local name; name="$(basename "$bin")"
     local corpus="$CORPUS_DIR/$name"
     local logfile="$CRASH_DIR/${name}.log"
     mkdir -p "$corpus"
+
+    # Prime the working corpus from the committed seeds. Without this a fresh checkout
+    # starts cold, and both TLV targets have a structural floor mutation rarely clears
+    # (see seeds/README.md). -n keeps any input the fuzzer already discovered.
+    if [[ -d "$SEEDS_DIR/$name" ]]; then
+        cp -n "$SEEDS_DIR/$name"/* "$corpus/" 2>/dev/null || true
+    fi
 
     "$bin" \
         -max_total_time="$FUZZ_SECONDS" \
@@ -84,7 +104,7 @@ run_one() {
 }
 
 export -f run_one
-export CRASH_DIR CORPUS_DIR FUZZ_SECONDS
+export CRASH_DIR CORPUS_DIR SEEDS_DIR FUZZ_SECONDS
 
 running=0; pids=()
 for bin in "${TARGETS[@]}"; do

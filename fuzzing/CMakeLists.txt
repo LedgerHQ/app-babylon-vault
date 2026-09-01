@@ -74,3 +74,9 @@ add_fuzz_target(fuzz_vault_tlv
 add_fuzz_target(fuzz_key_batch
     ${BASE_SRC_DIR}/secp256k1.c
 )
+
+# P1=0x01 group TLV parser — an independent parser in the same translation unit as
+# vault_tlv_parse, with its own framing and consumed-length contract (V-024)
+add_fuzz_target(fuzz_vault_group_tlv
+    ${SRC_DIR}/vault_tlv.c
+)

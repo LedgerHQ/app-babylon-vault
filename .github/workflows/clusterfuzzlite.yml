@@ -17,13 +17,17 @@ jobs:
     outputs:
       matrix_json: ${{ steps.set_matrix.outputs.matrix }}
     steps:
+      # 'undefined' is included alongside address and memory, not instead of them: they catch
+      # disjoint classes.  The local fallback in fuzzing/CMakeLists.txt adds -fsanitize=undefined
+      # only when LIB_FUZZING_ENGINE is absent, which it never is here, so UBSan-only defects
+      # (invalid shifts, signed overflow, enum misuse) were outside the CI matrix entirely (V-027).
       - name: Set sanitizer matrix
         id: set_matrix
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            MATRIX='[{"sanitizer":"address","mode":"code-change"},{"sanitizer":"memory","mode":"code-change"}]'
+            MATRIX='[{"sanitizer":"address","mode":"code-change"},{"sanitizer":"memory","mode":"code-change"},{"sanitizer":"undefined","mode":"code-change"}]'
           else
-            MATRIX='[{"sanitizer":"address","mode":"batch"},{"sanitizer":"memory","mode":"batch"},{"sanitizer":"address","mode":"prune"},{"sanitizer":"coverage","mode":"coverage"}]'
+            MATRIX='[{"sanitizer":"address","mode":"batch"},{"sanitizer":"memory","mode":"batch"},{"sanitizer":"undefined","mode":"batch"},{"sanitizer":"address","mode":"prune"},{"sanitizer":"coverage","mode":"coverage"}]'
           fi
           echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
 

@@ -45,7 +45,11 @@ jobs:
       - name: Upload coverage report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: coverage-report
+          # Named "subset" deliberately: LCOV only reports translation units the build
+          # instrumented, and the signing/APDU/display sources are not host-compiled, so
+          # this percentage is not project-wide coverage. gen_coverage.sh carries the
+          # scope lists (V-031).
+          name: unit-subset-coverage
           # A missing report means coverage generation failed; do not pass silently.
           if-no-files-found: error
           path: |
