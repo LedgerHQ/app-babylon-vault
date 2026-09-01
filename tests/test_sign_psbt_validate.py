@@ -30,6 +30,12 @@ from ledger_bitcoin.psbt import PSBT, PartiallySignedInput, PartiallySignedOutpu
 from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
 from test_utils.taproot import tagged_hash, taproot_tweak_pubkey, ser_script, pubkey_gen
+# Independent BIP-341 sighash and BIP-340 verifier, used to check returned signatures
+# against the PSBT rather than trusting the device's own output (V-035).
+from test_utils.taproot_sighash import TaprootSignatureHash
+from test_utils.bip0340 import schnorr_verify
+
+SIGHASH_DEFAULT = 0
 
 from .vault_client import (
     SW_BAD_STATE,
@@ -591,13 +597,47 @@ def _depositor_pk(bitcoin_network: str) -> bytes:
     return TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main" else TEST_DEPOSITOR_XONLY_TESTNET
 
 
-def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: int = 0) -> None:
+def _assert_schnorr_sig_verifies(psbt: PSBT, result, expected_xonly: bytes,
+                                 expected_input: int = 0) -> None:
+    """Independently verify a returned signature against the sighash it must commit to.
+
+    Closes Cerberus V-035: the count/index/pubkey/length checks in
+    _assert_single_schnorr_sig are shape checks, not verification — a regression that
+    returned arbitrary 64-byte data, or signed a *different* digest than the PSBT the
+    user reviewed, would satisfy every one of them.  This recomputes the BIP-341
+    script-path sighash from the original PSBT and checks the BIP-340 signature under the
+    expected key, using the base app's independent implementations rather than anything
+    the device produced.
+
+    The leaf script and version are taken from the PSBT's own PSBT_IN_TAP_LEAF_SCRIPT, so
+    this works for any custom-input flow without the caller restating them.
+    """
+    input_index, partial_sig = result[0]
+    leaf_script, leaf_ver = next(iter(psbt.inputs[input_index].tap_scripts))
+    sighash = TaprootSignatureHash(
+        psbt.tx,
+        [inp.witness_utxo for inp in psbt.inputs],
+        SIGHASH_DEFAULT,
+        input_index=input_index,
+        scriptpath=True,
+        script=leaf_script,
+        leaf_ver=leaf_ver,
+    )
+    assert schnorr_verify(sighash, expected_xonly, partial_sig.signature[:64]), (
+        "returned signature does not verify against the sighash of the reviewed PSBT")
+
+
+def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: int = 0,
+                               psbt: Optional[PSBT] = None) -> None:
     """Assert a custom-input sign yielded exactly one usable signature.
 
     A successful vault custom-input sign (PegIn / Payout / Refund) returns a single
     BIP-340 Schnorr signature — 64 bytes, since the device signs SIGHASH_DEFAULT — for
     `expected_input`, produced by `expected_xonly`.  Checking the yielded value (not just
     the SW_OK) guards against a regression that returns success without a valid signature.
+
+    Pass `psbt` to additionally verify the signature cryptographically against the sighash
+    that PSBT implies (V-035).  Prefer doing so: without it these are shape checks only.
     """
     assert len(result) == 1, f"expected exactly one signature, got {len(result)}: {result}"
     input_index, partial_sig = result[0]
@@ -605,6 +645,8 @@ def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: in
     assert partial_sig.pubkey[-32:] == expected_xonly, "signed with an unexpected key"
     assert len(partial_sig.signature) == 64, (
         f"expected 64-byte SIGHASH_DEFAULT Schnorr sig, got {len(partial_sig.signature)}")
+    if psbt is not None:
+        _assert_schnorr_sig_verifies(psbt, result, expected_xonly, expected_input)
 
 
 def _build_intent_tlv_for_test(
@@ -1637,7 +1679,7 @@ def test_sign_psbt_pegin(
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     result = client.sign_psbt(psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)  # HTLC Leaf 0 signed by the depositor key
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)  # HTLC Leaf 0 signed by the depositor key
 
 
 def test_sign_psbt_pegin_wrong_txid(
@@ -2329,7 +2371,7 @@ def test_sign_psbt_payout_vp(
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     result = client.sign_psbt(psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)  # Vault UTXO signed by the depositor key
 
 
 def test_sign_psbt_payout_multileaf_assert0(
@@ -3457,7 +3499,7 @@ def test_sign_psbt_nopayout(
 
     # NoPayout is silent — no display, no navigator interaction required.
     result = client.sign_psbt(psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)
 
 
 def test_sign_psbt_nopayout_assert_txid_unconstrained(
@@ -4619,7 +4661,7 @@ def test_sign_psbt_nopayout_real_funding(
 
     psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0], base_fee_rate=base_fee_rate)
     result = client.sign_psbt(psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)
 
 
 def test_sign_psbt_nopayout_fee_above_bound(

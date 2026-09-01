@@ -525,7 +525,8 @@ def sign_psbt_with_nav_and_compare(
     navigator: "Navigator",
     testname: str,
     nav_instructions: "List[NavInsID]",
-) -> None:
+    require_review: bool = True,
+):
     """Call sign_psbt while capturing all review screens into a single snapshot folder.
 
     The standard client.sign_psbt + Instructions approach stores one screenshot per
@@ -538,12 +539,25 @@ def sign_psbt_with_nav_and_compare(
 
     Use for touch devices (Flex, Stax, Apex).  For Nano, pass an Instructions object
     to client.sign_psbt directly.
+
+    Returns client.sign_psbt's result — the list of (input_index, PartialSignature) pairs —
+    so callers can verify the signatures rather than only the screens.  Discarding it made
+    cryptographic verification impossible at every call site (Cerberus V-035).
+
+    require_review: assert that at least one APDU actually blocked for review.  This helper
+    exists to prove review-required flows display and await approval, but every exchange
+    completing synchronously (done=True) silently skips navigate_and_compare, so firmware
+    that returned signatures with no confirmation screen would satisfy it (V-026).  Pass
+    False only for a flow that is legitimately silent — in which case prefer
+    client.sign_psbt directly.
     """
     from ragger.utils import pack_APDU
 
     screenshot_dir = client.screenshot_dir
+    review_count = 0
 
     def _flat_navigate(self, _nav, apdu, _instructions, _testname, index):
+        nonlocal review_count
         cla, ins, p1, p2, data = apdu.values()
         self.transport_client.apdu_timeout = 1.0
         with self.transport_client.exchange_async_raw(pack_APDU(cla, ins, p1, p2, data)) as done:
@@ -554,13 +568,21 @@ def sign_psbt_with_nav_and_compare(
                     instructions=nav_instructions,
                     screen_change_before_first_instruction=True,
                 )
+                review_count += 1
                 index += 1
         sw, response = self.last_async_response()
         return sw, response, index
 
     client.ragger_navigate = types.MethodType(_flat_navigate, client)
     try:
-        client.sign_psbt(psbt, wallet, wallet_hmac, navigator, testname=testname)
+        result = client.sign_psbt(psbt, wallet, wallet_hmac, navigator, testname=testname)
     finally:
         del client.ragger_navigate
+
+    if require_review:
+        assert review_count > 0, (
+            "SIGN_PSBT completed without ever blocking for a review screen — "
+            "signatures were returned with no user confirmation"
+        )
+    return result
 

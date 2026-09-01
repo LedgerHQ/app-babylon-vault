@@ -59,38 +59,57 @@ def pytest_sessionstart(session):
 
 
 def pytest_addoption(parser):
-    parser.addoption("--network", default="test")
+    # "auto" is a distinct value, not an alias for "test".  Overloading "test" as the
+    # auto sentinel made an omitted option and an explicit --network test
+    # indistinguishable, so either could be silently switched to "main" by detection —
+    # and no CLI value could force testnet (Cerberus V-032).
+    parser.addoption("--network", default="auto", choices=("auto", "main", "test"))
 
 
-def _detect_network_from_binary() -> str:
-    """Infer mainnet/testnet from the most recently built app binary.
+def _detect_network_from_binary() -> Optional[str]:
+    """Infer mainnet/testnet from the built app binaries.
 
-    The mainnet binary embeds APPNAME='Babylon Vault'; the testnet binary
-    embeds APPNAME='Babylon Vault Testnet'.  Searching for b'Testnet' in
-    the raw ELF is sufficient — it lives in the ledger.app_name section.
-    Falls back to 'test' if no binary is found or the file is unreadable.
+    The mainnet binary embeds APPNAME='Babylon Vault'; the testnet binary embeds
+    APPNAME='Babylon Vault Testnet'.  Searching for b'Testnet' in the raw ELF is
+    sufficient — it lives in the ledger.app_name section.
+
+    Every device variant is built from the same COIN, so they must agree.  Returns None
+    when there is no binary to inspect or the variants disagree: a stale build directory
+    left over from the other network is exactly how a run silently tests the wrong
+    artifact, so ambiguity must not resolve to a guess.
     """
-    for elf in REPO_ROOT_DIR.glob("build/*/bin/app.elf"):
+    detected = set()
+    for elf in sorted(REPO_ROOT_DIR.glob("build/*/bin/app.elf")):
         try:
-            if b"Testnet" not in elf.read_bytes():
-                return "main"
+            detected.add("test" if b"Testnet" in elf.read_bytes() else "main")
         except OSError:
-            pass
-        break  # all device variants are built from the same COIN — one check is enough
-    return "test"
+            continue
+    if len(detected) != 1:
+        return None  # nothing readable, or variants disagree
+    return detected.pop()
 
 
 @pytest.fixture
 def bitcoin_network(pytestconfig) -> Union[Literal['main'], Literal['test']]:
-    network = pytestconfig.getoption("--network")
-    # The VS Code plugin never passes --network, so the default "test" is always
-    # used even when testing the mainnet binary.  Auto-detect from the binary
-    # when the default hasn't been overridden explicitly.
-    if network == "test":
-        network = _detect_network_from_binary()
-    if network not in ["main", "test"]:
-        raise ValueError(f'Invalid value for BITCOIN_NETWORK: {network}')
-    return network
+    requested = pytestconfig.getoption("--network")
+    detected = _detect_network_from_binary()
+
+    if requested == "auto":
+        if detected is None:
+            raise pytest.UsageError(
+                "Cannot detect the app network: no readable build/*/bin/app.elf, or the "
+                "device variants disagree (a stale build dir from the other network?). "
+                "Pass --network main or --network test explicitly."
+            )
+        return detected
+
+    # Explicit request: fail closed on a mismatch rather than adapting to the artifact.
+    if detected is not None and detected != requested:
+        raise pytest.UsageError(
+            f"--network {requested} was requested, but the built binary is {detected}. "
+            f"Rebuild for {requested}, or remove the stale build directory."
+        )
+    return requested
 
 
 def _iter_leaf_snapshot_dirs(base: Path):
@@ -120,14 +139,28 @@ def check_no_extra_snapshots(request, device):
 
     Normal run: fail if snapshots/ has more PNGs than snapshots-tmp/.
     --golden_run: delete the extra files so goldens stay in sync automatically.
-    """
-    yield
 
-    golden_run = request.config.getoption("--golden_run", default=False)
+    Only directories this test actually wrote are checked.  snapshots-tmp accumulates for
+    the whole session, so scanning all of it made every subsequent test fail on the first
+    bad directory — one flaky capture produced hundreds of teardown errors naming a
+    directory the failing test never touched, burying the real signal.
+    """
     tmp_base = TESTS_ROOT_DIR / "snapshots-tmp" / device.name
     golden_base = TESTS_ROOT_DIR / "snapshots" / device.name
 
+    before = {d: len(list(d.glob("*.png"))) for d in _iter_leaf_snapshot_dirs(tmp_base)}
+
+    yield
+
+    golden_run = request.config.getoption("--golden_run", default=False)
+
     for tmp_dir in _iter_leaf_snapshot_dirs(tmp_base):
+        # Untouched by this test: present beforehand with the same number of PNGs.  A test
+        # that rewrites a pre-existing directory with an identical count is therefore not
+        # re-checked — accepted, because whichever test first produced that count already
+        # reported it, and the alternative is the session-wide cascade described above.
+        if before.get(tmp_dir) == len(list(tmp_dir.glob("*.png"))):
+            continue
         rel = tmp_dir.relative_to(tmp_base)
         golden_dir = golden_base / rel
         if not golden_dir.exists():
