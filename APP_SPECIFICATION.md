@@ -198,9 +198,11 @@ The depositor pre-signs a NoPayout leaf for a specific challenger, authorising t
 | `<D>` key | Must match `intent.depositor_pk` |
 | `<Cj>` key | Must be one of the keeper or challenger keys from the loaded intent |
 | Full leaf | Reconstructed from intent and compared byte-for-byte (prevents parameter substitution) |
-| WITNESS_UTXO value | Must be ≤ `VAULT_DUST_LIMIT` (546 sat) |
+| Input 0 WITNESS_UTXO value | In `[VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + base_fee_rate × MAX_COUNCIL_NOPAYOUT_VSIZE]` — Assert:0 is funded to cover the CouncilNoPayout that may spend it instead, so its value scales with the fee rate. Defence-in-depth only; the fee bound below is the operative control |
+| Inputs 1, 2 WITNESS_UTXO value | **Not constrained individually.** Read from the PSBT and used only to compute `actual_fee`. Committed by Input 0's `SIGHASH_DEFAULT`, so no trust is placed in them: a misstated value produces an unusable signature (DoS only). These connectors are funded to cover the WronglyChallenged transaction that may spend them, so their value scales with `base_fee_rate` and exceeds `VAULT_DUST_LIMIT` above 1 sat/vB — the device deliberately does not re-derive that funding formula |
+| Fee bound | `actual_fee = Σ inputs − Σ outputs`; must be non-negative and `≤ base_fee_rate × MAX_NOPAYOUT_VSIZE` (450, checked arithmetic). This is the control that prevents the Assert:0 connector being burned to miner fees, and it must not be replaced by tightening the input ranges |
 | Sighash | `SIGHASH_DEFAULT` only |
-| Output 0 | P2TR of `Cj` (key-path tweak, no scripts); verified by device |
+| Output 0 | P2TR of `Cj` (key-path tweak, no scripts); verified by device; value ≥ `VAULT_DUST_LIMIT` |
 | Counter | At most `vault_count × (keeper_count + challenger_count)` NoPayout signings allowed per session |
 
 **NoPayout leaf script:**
