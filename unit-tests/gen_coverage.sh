@@ -39,11 +39,15 @@ test -s coverage.info
 #      base-app dispatcher); their compensating coverage is the Ragger suite, which
 #      exercises them on-device via Speculos.
 # ---------------------------------------------------------------------------
+# Sources that appear in coverage.info, i.e. compiled into a unit target AND containing
+# executable lines. src/globals.c is deliberately absent: it is compiled into three
+# targets, but holds only global definitions and _Static_asserts, so gcov emits no data
+# ("GCOV did not produce any data") and lcov writes no SF: record for it. Requiring it
+# here would fail every run.
 instrumented_sources=(
   src/vault_tlv.c
   src/vault_context.c
   src/vault_script.c
-  src/globals.c
   src/bip322.c
   src/sign_psbt_validate_helpers.c
 )

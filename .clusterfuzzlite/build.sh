@@ -1,5 +1,10 @@
 #!/bin/bash -eu
 
+# Restated explicitly: shebang flags are silently dropped when a script is invoked as
+# `bash build.sh` rather than executed, which would let a failing compile fall through to
+# the seed-zip step and exit 0 — the same failure-masking class as the coverage script.
+set -euo pipefail
+
 pushd "$SRC/app-babylon-vault/fuzzing"
 
 cmake \
