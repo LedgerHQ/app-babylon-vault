@@ -288,7 +288,7 @@ have been issued via `payout_claimer_mask`.
 | PSBT field | Requirement |
 |------------|-------------|
 | `PSBT_IN_SEQUENCE` | Must equal `intent.payout_timelock` |
-| `PSBT_IN_WITNESS_UTXO` value | Must equal `VAULT_DUST_LIMIT` (546 sat) |
+| `PSBT_IN_WITNESS_UTXO` value | In `[VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + base_fee_rate × MAX_COUNCIL_NOPAYOUT_VSIZE]` — Assert:0 is funded to cover the CouncilNoPayout that may spend it instead, so its value scales with the fee rate rather than being fixed at dust |
 | `PSBT_IN_WITNESS_UTXO` scriptPubKey | Must match Assert:0 Payout spk for `claimer_idx` |
 | `PSBT_IN_TAP_LEAF_SCRIPT` | Must contain the Assert:0 Payout leaf for `claimer_idx` |
 
@@ -340,9 +340,10 @@ set is all VaultKeepers plus all UniversalChallengers (the VaultProvider is excl
 | `nLockTime` | 0 |
 | Input count | Exactly 3 |
 | Output count | Exactly 1 |
-| Input 0 (signed) | P2TR script-path spend of Assert:0 (depositor graph); leaf: `<Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG`; `SIGHASH_DEFAULT` |
-| Input 1, 2 (not signed) | ChallengeAssertX_j:0 / ChallengeAssertY_j:0; committed via Input 0 `SIGHASH_DEFAULT` |
-| Output 0 | Any standard address (Challenger_j's registered address) |
+| Input 0 (signed) | P2TR script-path spend of Assert:0 (depositor graph); leaf: `<Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG`; `SIGHASH_DEFAULT`. `PSBT_IN_OUTPUT_INDEX` must be 0; value in `[VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + base_fee_rate × MAX_COUNCIL_NOPAYOUT_VSIZE]` |
+| Input 1, 2 (not signed) | ChallengeAssertX_j:0 / ChallengeAssertY_j:0; committed via Input 0 `SIGHASH_DEFAULT`. Values are **not** constrained individually — they are read untrusted and used only to compute the fee, so fund them as the protocol requires (they exceed `VAULT_DUST_LIMIT` above 1 sat/vB) |
+| Output 0 | BIP-86 P2TR of `Challenger_j` (key-path tweak, no script tree) — reconstructed and compared byte-for-byte by the device, **not** an arbitrary registered address; value must be ≥ `VAULT_DUST_LIMIT` |
+| Fee | `Σ inputs − Σ outputs` must be non-negative and `≤ base_fee_rate × MAX_NOPAYOUT_VSIZE` (450) |
 
 The device reconstructs the 2-key NoPayout leaf from `Depositor` and `Challenger_j` (keepers
 first, then challengers, by index). Per-type cap: at most
