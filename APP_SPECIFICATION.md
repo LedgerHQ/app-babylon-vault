@@ -228,14 +228,14 @@ The depositor spends the Depositor Claim UTXO created by the PegIn transaction.
 | `<D>` key | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path (`m/86'/coin_type'/acct'/chg/idx`, `account_index ≤ 100`, `address_index ≤ 10000`); derived key must match leaf key |
 | Taproot commitment | Control block must produce a valid commitment to the leaf |
 | Sighash | `SIGHASH_DEFAULT` only |
-| Output 0 | ClaimAssertConnector; not verified by device (host-provided) |
+| Output 0 | ClaimAssertConnector. Its script is **not reconstructed** by the device — the WOTS connector tree is outside the device's model — but it is not unconstrained either: the read requires exactly `VAULT_P2TR_SCRIPTPUBKEY_LEN` (34 B), so Output 0 must be a witness-v1 P2TR (a P2WPKH or legacy substitution is rejected), and the script is rendered as a bech32m address on the review screen for the user to check. Substitution by another P2TR remains possible and is visible, not silent |
 | Output 1 | BIP-86 P2TR(`<D>`); value = `VAULT_DUST_LIMIT` (CPFP anchor) |
 | Fee | `input_value − total_outputs > 0` (positive fee required) |
 
 **Depositor Claim leaf script:**
 `<D> OP_CHECKSIG`
 
-**User display:** amount spent (input UTXO value), connector amount (Output 0 value), fee, PegIn txid (from `PSBT_IN_PREVIOUS_TXID`).
+**User display:** amount spent (input UTXO value), connector amount (Output 0 value), fee, PegIn txid (from `PSBT_IN_PREVIOUS_TXID`), Output 0 address (bech32m).
 
 ---
 

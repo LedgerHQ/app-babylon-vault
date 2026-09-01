@@ -403,8 +403,8 @@ Required wallet policy: **none** (`has_no_wallet_policy == true`).
 | Input 0 `PSBT_IN_WITNESS_UTXO` | P2TR HTLC scriptPubKey (34 bytes, `OP_1 OP_PUSHBYTES_32 ...`) |
 | Input 0 `PSBT_IN_TAP_LEAF_SCRIPT` | Exactly one entry; leaf version must be `0xC0` |
 | Leaf script shape | Standard refund script: `<leaf_key> OP_CHECKSIGVERIFY <csv_value> OP_CHECKSEQUENCEVERIFY` |
-| CSV value in leaf | When intent is loaded: must equal `intent.htlc_refund_timelock` |
-| Input 0 `PSBT_IN_SEQUENCE` | Must satisfy BIP-68: `sequence ≥ csv_value`, bits 31 and 22 clear (block-based) |
+| CSV value in leaf | At most `0xFFFF` — the BIP-68 block-count field is all `OP_CHECKSEQUENCEVERIFY` acts on, so a larger operand would claim a delay the transaction does not enforce. When intent is loaded: must equal `intent.htlc_refund_timelock`; otherwise must be `≥ 72` (protocol minimum) |
+| Input 0 `PSBT_IN_SEQUENCE` | Must equal `csv_value` **exactly** (compared unmasked), with bits 31 (disable) and 22 (time-based) clear. Note this is stricter than BIP-68 itself, which would allow any `sequence ≥ csv_value`: the device signs only the timelock it displayed, so bits consensus ignores are rejected rather than masked away |
 | Input 0 `PSBT_IN_TAP_BIP32_DERIVATION` for `leaf_key` | Must be present; fingerprint must match this device's master key; path must be BIP-86 |
 | Taproot commitment | Control block internal key must be `VAULT_NUMS_XONLY`; Merkle root must verify against HTLC spk |
 | Output 0 | P2TR BIP-86 change output; must include valid `PSBT_OUT_TAP_BIP32_DERIVATION` pointing to this device |
@@ -412,7 +412,8 @@ Required wallet policy: **none** (`has_no_wallet_policy == true`).
 The device derives the signing key from the BIP-86 path in `PSBT_IN_TAP_BIP32_DERIVATION`,
 verifies the derived x-only key matches `leaf_key`, then signs.
 
-The device **displays** amount reclaimed, fee, and destination address. User must approve.
+The device **displays** the Pre-PegIn txid, amount reclaimed, refund timelock (blocks), fee, and
+reclaim address. User must approve.
 
 **State after:** unchanged.
 
