@@ -123,7 +123,13 @@ loads the intent again for user approval).
 [ context_total_len: 2B BE ][ first context chunk: remaining bytes ]
 ```
 
-- `app_name` — host sends `"babylon-btc-vault"`.
+- `app_name` — host sends `"babylon-btc-vault"`. Validated for length and character set
+  (`[a-z0-9\-]`) only: it is **not** an authentication signal, and any caller can claim this
+  string. Screen 1 shows it and nothing else, so the user cannot distinguish two callers
+  using the same name, and approving releases a deterministic secret root. See
+  "DERIVE_CONTEXT_HASH — caller identity is not authenticated" in `APP_SPECIFICATION.md`
+  for the accepted deviation from the protocol spec's requirement to display a requesting
+  origin.
 - `path` — BIP-32 path of the **connectedPubkey**; the device derives the 33-byte compressed
   key and mixes it into `info`.
 - `context_total_len` — total `vaultContext` byte count (1–1024), **2 bytes big-endian**.

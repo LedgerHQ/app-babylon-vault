@@ -27,6 +27,39 @@ All custom APDUs use **CLA `0xE1`**.
 | `0x80` | `APPROVE_VAULT_INTENT`  | Three-phase APDU. **P1=`0x00`**: parse and validate 13 scalar TLV fields. **P1=`0x01`**: receive per-vault group TLV (6 fields per vault group, repeated `vault_count` times). **P1=`0x02`**: stream keeper then challenger x-only public keys (TLV-wrapped; tag `2B` + length `1B` + 32-byte key). After all keys are received the device displays the vault parameters for user approval and, on confirmation, transitions the session to `INTENT_LOADED`. |
 | `0x81` | `DERIVE_CONTEXT_HASH`   | Chunked streaming APDU (**P1=`0x00`** initial chunk, **P1=`0x01`** continuation). Derives a 32-byte context root from the device's BIP-32 key at `m/73681862'` via HKDF-SHA-256 and stores it in the session context. **P2=`0x00`**: shows a user approval screen ("Allow derivation?") and, on confirmation, returns the raw 32-byte root to the host. **P2=`0x01`**: silent re-derivation; returns `SW_OK` with no data. |
 
+#### DERIVE_CONTEXT_HASH — caller identity is not authenticated
+
+Screen 1 (P2=`0x00`) shows the host-supplied `appName` and nothing else. This is a
+**known, accepted deviation** from the bundled protocol specification, which requires more:
+
+> `docs/specs/derive-context-hash.md` §2.1 — "The dialog MUST display the `appName` **and
+> the requesting origin**. The dialog SHOULD also display the context bytes."
+
+The device cannot satisfy that MUST. It speaks raw APDU over USB/BLE/NFC, a transport that
+carries no browser or application origin, and the same spec states plainly that `appName`
+"is not, by itself, an authenticated identity signal; a malicious application can choose
+any allowed string". Validation here restricts only length and character set
+(`[a-z0-9\-]`), so any caller may claim `babylon-btc-vault`.
+
+Consequences a reviewer and an integrator should both be aware of (Cerberus V-012):
+
+- A phishing application that reconstructs a known vault's public context and derivation
+  path can produce a Screen 1 indistinguishable from the legitimate one, and on approval
+  receives the same deterministic 32-byte root — from which every Babylon sub-secret
+  (hashlock, auth anchor, WOTS seed) expands.
+- The screen says "Allow derivation?", which understates what is released: a deterministic
+  **secret root**, not a hash of public data.
+- The physical approval gesture is the only remaining control, and it is being made on
+  incomplete information.
+
+Closing this needs identity established outside the raw APDU — an origin assertion from a
+wallet or transport layer that the device can verify — which is an ecosystem change, not an
+app one. The available in-app mitigation is to give the user something cross-checkable:
+display the connected public key (or a short fingerprint of it) and a digest of the
+context, and reword the prompt to state that a secret root will be exported. That changes
+Screen 1, so it requires HLD sign-off and golden-snapshot regeneration across all five
+devices and both networks; it is not implemented.
+
 ### APPROVE_VAULT_INTENT — intent fields
 
 #### P1=`0x00` — scalar fields (13)
