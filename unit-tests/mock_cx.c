@@ -4,13 +4,16 @@
  * SHA-256: public domain, FIPS 180-4 (Brad Conte / multiple contributors).
  * HMAC-SHA256: RFC 2104 construction on top of the software SHA-256.
  * Tagged hashes (BIP-340/341): software construction using sha256_sw.
- * Taproot key tweak: secp256k1_xonly_pubkey_tweak_add from libsecp256k1.
+ * Taproot key tweak: secp256k1_xonly_pubkey_tweak_add from libsecp256k1 (real EC).
  * BIP-32 mock: returns a fixed 0x42-filled private key for reproducible test vectors.
  */
 
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
+
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
 
 #include "mocks/cx.h"
 #include "mocks/crypto_helpers.h"
@@ -318,20 +321,20 @@ void crypto_tr_combine_taptree_hashes(const uint8_t left[32],
 }
 
 // ---------------------------------------------------------------------------
-// crypto_tr_tweak_pubkey — stub for unit tests (no libsecp256k1 needed)
+// crypto_tr_tweak_pubkey — real BIP-341 output-key tweak, via libsecp256k1
 //
-// Real EC tweak replaced by SHA-256(pubkey || h): deterministic, input-sensitive,
-// and sufficient for tests that only check P2TR format and cross-intent uniqueness.
+// This was a SHA-256 stub that replaced the EC scalar multiplication entirely and
+// hardcoded y_parity to 0 (Cerberus V-030). It was deterministic and input-sensitive,
+// so tests checking P2TR format and cross-intent uniqueness passed, but the target
+// could not serve as an oracle for the actual output key or the control-block parity
+// bit: an incorrect vault address or parity would have gone unnoticed, and the parity
+// branch was only ever exercised with 0.
 //
-// WARNING — taproot parity is non-EC in this stub:
-//   The real secp256k1 tweak computes Q = P + t*G and derives y_parity from
-//   Q.y mod 2.  Here SHA-256 replaces the EC scalar multiplication, and y_parity
-//   is hardcoded to 0.  Unit tests that check control-block parity bits (e.g.
-//   vault_script_build_control_block) are therefore exercising the branch logic
-//   against deterministic but non-EC output — the parity bit is always 0, never 1.
-//   Real EC parity validation requires running on-device (Speculos) or linking a
-//   genuine secp256k1 library.  Do not interpret a passing unit-test parity check
-//   as proof that the real-device parity path is correct.
+// Now Q = P + int(TapTweak(P || h)) * G, computed with libsecp256k1 and matching
+// bitcoin_app_base/src/crypto.c: x-only parse, tagged hash, tweak add, parity
+// extraction, serialise, with failure propagated rather than swallowed. Requires
+// libsecp256k1-dev (see unit-tests/CMakeLists.txt); secp256k1_context_static is
+// sufficient because no secret-key operations are involved.
 // ---------------------------------------------------------------------------
 
 int crypto_tr_tweak_pubkey(const uint8_t  pubkey[32],
@@ -339,11 +342,42 @@ int crypto_tr_tweak_pubkey(const uint8_t  pubkey[32],
                             size_t         h_len,
                             uint8_t       *y_parity,
                             uint8_t        out[32]) {
+    if (pubkey == NULL || out == NULL || (h == NULL && h_len != 0)) return -1;
+
+    // BIP-341 TapTweak tagged hash: SHA256(SHA256(tag) || SHA256(tag) || P || h)
+    static const char TAG[] = "TapTweak";
+    uint8_t tag_hash[32];
+    sha256_sw_oneshot((const uint8_t *) TAG, sizeof(TAG) - 1u, tag_hash);
+
+    uint8_t tweak[32];
     sha256_sw_t ctx;
     sha256_sw_init(&ctx);
+    sha256_sw_update(&ctx, tag_hash, sizeof(tag_hash));
+    sha256_sw_update(&ctx, tag_hash, sizeof(tag_hash));
     sha256_sw_update(&ctx, pubkey, 32u);
-    if (h != NULL && h_len > 0) sha256_sw_update(&ctx, h, h_len);
-    sha256_sw_final(&ctx, out);
-    if (y_parity != NULL) *y_parity = 0;  /* always 0 — non-EC stub, see comment above */
+    if (h_len != 0) sha256_sw_update(&ctx, h, h_len);
+    sha256_sw_final(&ctx, tweak);
+
+    secp256k1_xonly_pubkey internal;
+    if (!secp256k1_xonly_pubkey_parse(secp256k1_context_static, &internal, pubkey)) return -1;
+
+    secp256k1_pubkey tweaked;
+    if (!secp256k1_xonly_pubkey_tweak_add(secp256k1_context_static, &tweaked, &internal, tweak)) {
+        return -1;
+    }
+
+    secp256k1_xonly_pubkey tweaked_xonly;
+    int parity = 0;
+    if (!secp256k1_xonly_pubkey_from_pubkey(secp256k1_context_static,
+                                            &tweaked_xonly,
+                                            &parity,
+                                            &tweaked)) {
+        return -1;
+    }
+    if (!secp256k1_xonly_pubkey_serialize(secp256k1_context_static, out, &tweaked_xonly)) {
+        return -1;
+    }
+
+    if (y_parity != NULL) *y_parity = (uint8_t) parity;
     return 0;
 }

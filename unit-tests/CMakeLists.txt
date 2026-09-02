@@ -31,12 +31,22 @@ set(SRC_DIR      ${CMAKE_SOURCE_DIR}/../src)
 set(BASE_SRC_DIR ${CMAKE_SOURCE_DIR}/../bitcoin_app_base/src)
 set(MOCKS_DIR    ${CMAKE_SOURCE_DIR}/mocks)
 
+# libsecp256k1 backs the real BIP-341 output-key tweak in mock_cx.c (V-030). REQUIRED
+# rather than optional on purpose: falling back to a hash stub is what made the taproot
+# targets unable to serve as an oracle for the output key or the control-block parity bit,
+# and an optional dependency would silently restore that. Install with
+# `apt-get install libsecp256k1-dev`.
+find_library(SECP256K1_LIBRARY NAMES secp256k1 REQUIRED)
+find_path(SECP256K1_INCLUDE_DIR NAMES secp256k1.h REQUIRED)
+
 # Mock headers override Ledger SDK headers for all test targets.
 # MOCKS_DIR must come first so mock cx.h / crypto_helpers.h are found
 # before any SDK include path.
-include_directories(${MOCKS_DIR} ${SRC_DIR})
+include_directories(${MOCKS_DIR} ${SRC_DIR} ${SECP256K1_INCLUDE_DIR})
 
 find_package(cmocka REQUIRED)
+
+
 
 # -----------------------------------------------------------------------
 # test_vault_context
@@ -49,7 +59,7 @@ add_executable(test_vault_context
 )
 
 target_compile_definitions(test_vault_context PRIVATE TEST BIP44_COIN_TYPE=1 VAULT_TARGET_SIGNET)
-target_link_libraries(test_vault_context cmocka)
+target_link_libraries(test_vault_context cmocka ${SECP256K1_LIBRARY})
 
 add_test(NAME test_vault_context COMMAND test_vault_context)
 
@@ -64,7 +74,7 @@ add_executable(test_derive_context_hash
 
 # BIP44_COIN_TYPE=0 → canonicalNetworkName "bitcoin-mainnet" (matches the §4.2 vector).
 target_compile_definitions(test_derive_context_hash PRIVATE TEST BIP44_COIN_TYPE=0)
-target_link_libraries(test_derive_context_hash cmocka)
+target_link_libraries(test_derive_context_hash cmocka ${SECP256K1_LIBRARY})
 
 add_test(NAME test_derive_context_hash COMMAND test_derive_context_hash)
 
@@ -77,7 +87,7 @@ add_executable(test_derive_vault_secrets
 )
 
 target_compile_definitions(test_derive_vault_secrets PRIVATE TEST BIP44_COIN_TYPE=0)
-target_link_libraries(test_derive_vault_secrets cmocka)
+target_link_libraries(test_derive_vault_secrets cmocka ${SECP256K1_LIBRARY})
 
 add_test(NAME test_derive_vault_secrets COMMAND test_derive_vault_secrets)
 
@@ -112,7 +122,8 @@ add_test(NAME test_vault_tlv COMMAND test_vault_tlv)
 #
 # Tests vault_script.c leaf builders, taproot primitives, scriptpubkey
 # derivation, and PegIn txid computation.
-# mock_cx.c provides SHA-256 + taproot tagged-hash + secp256k1 tweak.
+# mock_cx.c provides SHA-256 + taproot tagged-hash, and the real libsecp256k1 output-key
+# tweak (so this target is a genuine oracle for P2TR keys and control-block parity).
 # -----------------------------------------------------------------------
 add_executable(test_vault_script
   test_vault_script.c
@@ -126,7 +137,7 @@ target_compile_definitions(test_vault_script PRIVATE
   BIP44_COIN_TYPE=1
   VAULT_TARGET_SIGNET
 )
-target_link_libraries(test_vault_script cmocka)
+target_link_libraries(test_vault_script cmocka ${SECP256K1_LIBRARY})
 
 add_test(NAME test_vault_script COMMAND test_vault_script)
 
@@ -166,6 +177,6 @@ add_executable(test_bip322
 )
 
 target_compile_definitions(test_bip322 PRIVATE TEST BIP44_COIN_TYPE=1)
-target_link_libraries(test_bip322 cmocka)
+target_link_libraries(test_bip322 cmocka ${SECP256K1_LIBRARY})
 
 add_test(NAME test_bip322 COMMAND test_bip322)

@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
 
       - name: Install dependencies
-        run: sudo apt-get install -y libcmocka-dev cmake lcov
+        run: sudo apt-get install -y libcmocka-dev cmake lcov libsecp256k1-dev
 
       - name: Configure
         run: cmake -B unit-tests/build -S unit-tests -DCMAKE_BUILD_TYPE=Debug
