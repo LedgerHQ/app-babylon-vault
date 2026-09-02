@@ -204,8 +204,14 @@ void cx_hkdf_extract(cx_md_t        hash_id,
 }
 
 // ---------------------------------------------------------------------------
-// BIP-32 mock: returns g_mock_bip32_key (default 0x42-filled) regardless of path.
-// Tests may set g_mock_bip32_key to pin a specific IKM (e.g. a published vector).
+// BIP-32 mock: returns g_mock_bip32_key (default 0x42-filled) for the one derivation
+// request the vault makes, and fails for anything else.
+//
+// It previously ignored curve, path, path_len and chain_code and always returned CX_OK,
+// which left two blind spots (V-034): changing the unit under test to request the wrong
+// curve or path did not change the result, and the production failure branch — where
+// derive_vault_privkey must return false and leave no derived material — could never
+// execute. The contract is now asserted, and g_mock_bip32_result injects failures.
 // ---------------------------------------------------------------------------
 
 // When g_mock_bip32_key_set is false the mock returns the default 0x42-filled key;
@@ -213,18 +219,37 @@ void cx_hkdf_extract(cx_md_t        hash_id,
 uint8_t g_mock_bip32_key[32];
 bool    g_mock_bip32_key_set = false;
 
+// Forced return value. Set to anything but CX_OK to exercise the caller's error path,
+// then restore to CX_OK — it is global state shared by every test in the binary.
+cx_err_t g_mock_bip32_result = CX_OK;
+
+// The vault derives its HKDF input key at m/73681862' and nowhere else; mirrors
+// VAULT_HKDF_PATH_INDEX in src/handler/derive_context_hash_core.h.
+#define MOCK_VAULT_HKDF_PATH_INDEX (0x80000000u | 73681862u)
+
 cx_err_t bip32_derive_init_privkey_256(cx_curve_t                 curve,
                                         const uint32_t            *path,
                                         size_t                     path_len,
                                         cx_ecfp_256_private_key_t *privkey,
                                         uint8_t                   *chain_code) {
-    (void)curve; (void)path; (void)path_len; (void)chain_code;
+    // Mirror the SDK contract: on failure the caller must not be handed key material.
+    if (privkey == NULL || path == NULL || curve != CX_CURVE_SECP256K1 || path_len != 1u ||
+        path[0] != MOCK_VAULT_HKDF_PATH_INDEX || g_mock_bip32_result != CX_OK) {
+        if (privkey != NULL) {
+            memset(privkey, 0, sizeof(*privkey));
+        }
+        return g_mock_bip32_result != CX_OK ? g_mock_bip32_result : CX_ERROR;
+    }
+
     privkey->curve = curve;
     privkey->d_len = 32u;
     if (g_mock_bip32_key_set) {
         memcpy(privkey->d, g_mock_bip32_key, 32u);
     } else {
         memset(privkey->d, 0x42, 32u);
+    }
+    if (chain_code != NULL) {
+        memset(chain_code, 0, 32u);
     }
     return CX_OK;
 }

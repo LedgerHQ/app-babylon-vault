@@ -140,10 +140,25 @@ TEST_DEPOSITOR_XONLY_MAINNET = bytes.fromhex('FBB1F6159D2D75F87CD29137D3D58C3C52
 TEST_DEPOSITOR_XONLY_TESTNET = bytes.fromhex('DC8D2F9EFF0C4F4DBDE070A48E330EFC908B62A766568D91E658F284B324B878')
 
 
+def _require_sw_ok(response, command: str) -> bytes:
+    """Return the response data, but only for an exact SW_OK.
+
+    conftest whitelists 0x9000 and 0xE000 on the backend so the standard Bitcoin
+    SIGN_PSBT client-command protocol can operate. The custom CLA 0xE1 handlers never
+    legitimately use interrupted execution, so without this check a 0xE000 from those
+    commands would be read as successful completion and mask an APDU-routing or
+    state-machine regression (Cerberus V-037).
+    """
+    if response.status != SW_OK:
+        raise AssertionError(f"{command} expected SW_OK, got {response.status:#06x}")
+    return bytes(response.data)
+
+
 def _dch_exchange(client: "RaggerClient", p1: int, p2: int, data: bytes) -> bytes:
     """Send one DERIVE_CONTEXT_HASH APDU and return the response data.
 
-    Raises ExceptionRAPDU on any non-whitelisted SW (handled by caller).
+    Raises ExceptionRAPDU on any non-whitelisted SW (handled by caller), and
+    AssertionError on a whitelisted-but-wrong SW such as 0xE000.
     """
     response = client.transport_client.exchange(
         cla=CLA_VAULT,
@@ -152,7 +167,7 @@ def _dch_exchange(client: "RaggerClient", p1: int, p2: int, data: bytes) -> byte
         p2=p2,
         data=data,
     )
-    return bytes(response.data)
+    return _require_sw_ok(response, "DERIVE_CONTEXT_HASH")
 
 
 def _encode_bip32_path(path: List[int]) -> bytes:
@@ -392,6 +407,7 @@ def build_group_tlv(
 
 
 def _approve_exchange(client: "RaggerClient", p1: int, data: bytes) -> bytes:
+    """Send one synchronous APPROVE_VAULT_INTENT phase; requires exact SW_OK (V-037)."""
     response = client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
@@ -399,7 +415,7 @@ def _approve_exchange(client: "RaggerClient", p1: int, data: bytes) -> bytes:
         p2=P2_UNUSED,
         data=data,
     )
-    return bytes(response.data)
+    return _require_sw_ok(response, "APPROVE_VAULT_INTENT")
 
 
 def approve_vault_intent_with_nav(

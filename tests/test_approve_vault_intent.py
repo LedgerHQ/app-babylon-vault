@@ -131,14 +131,22 @@ def _make_group(**overrides) -> bytes:
 
 
 def _raw_exchange(client, p1: int, data: bytes):
-    """Send one APPROVE_VAULT_INTENT APDU; returns response or raises ExceptionRAPDU."""
-    return client.transport_client.exchange(
+    """Send one APPROVE_VAULT_INTENT APDU; returns the response or raises.
+
+    Raises ExceptionRAPDU on any non-whitelisted SW, and AssertionError on 0xE000 — the
+    other status conftest whitelists, which this command never legitimately returns
+    (V-037). Callers that expect a rejection wrap the call in pytest.raises.
+    """
+    response = client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
         p1=p1,
         p2=P2_UNUSED,
         data=data,
     )
+    assert response.status == SW_OK, (
+        f"APPROVE_VAULT_INTENT expected SW_OK, got {response.status:#06x}")
+    return response
 
 
 def _derive_silent(client, bitcoin_network: str) -> None:

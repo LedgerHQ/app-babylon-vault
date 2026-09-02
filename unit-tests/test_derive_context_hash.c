@@ -23,6 +23,7 @@
 // Settable BIP-32 mock key (defined in mock_cx.c).
 extern uint8_t g_mock_bip32_key[32];
 extern bool g_mock_bip32_key_set;
+extern cx_err_t g_mock_bip32_result;
 
 // ---------------------------------------------------------------------------
 // derive-context-hash §4.2 authoritative wallet-integration vector
@@ -203,6 +204,42 @@ static void test_root_no_ctx(void **state) {
     assert_memory_equal(root, REF_ROOT_NO_CTX, 32);
 }
 
+/* ---------------------------------------------------------------------------
+ * BIP-32 derivation failure path (V-034)
+ *
+ * The mock used to ignore its arguments and always return CX_OK, so this branch of
+ * hkdf_derive_root could never execute and a wrong derivation request could not change
+ * any unit-test result. mock_cx.c now asserts the curve/path contract and exposes
+ * g_mock_bip32_result for injection.
+ * ------------------------------------------------------------------------- */
+
+static void test_root_fails_when_derivation_fails(void **state) {
+    (void) state;
+    uint8_t root[32];
+    memset(root, 0xA5, sizeof(root));
+
+    g_mock_bip32_result = CX_ERROR;
+    bool ok = hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST,
+                               (const uint8_t *) "", 0, root);
+    g_mock_bip32_result = CX_OK; /* shared across the binary — always restore */
+
+    assert_false(ok);
+    /* The caller must not have written a root it cannot vouch for. */
+    for (size_t i = 0; i < sizeof(root); i++) {
+        assert_int_equal(root[i], 0xA5);
+    }
+}
+
+static void test_root_succeeds_after_failure_restored(void **state) {
+    (void) state;
+    /* Guards against the injection leaking into later tests, and confirms the mock's
+     * success path still matches the reference vector. */
+    uint8_t root[32];
+    assert_true(
+        hkdf_derive_root((const uint8_t *) "TestApp", 7, PK_TEST, (const uint8_t *) "", 0, root));
+    assert_memory_equal(root, REF_ROOT_NO_CTX, 32);
+}
+
 static void test_root_with_ctx(void **state) {
     (void) state;
     uint8_t root[32];
@@ -280,6 +317,8 @@ int main(void) {
         cmocka_unit_test(test_spec_vector_4_1_v3),
         cmocka_unit_test(test_spec_vector_4_2),
         cmocka_unit_test(test_root_no_ctx),
+        cmocka_unit_test(test_root_fails_when_derivation_fails),
+        cmocka_unit_test(test_root_succeeds_after_failure_restored),
         cmocka_unit_test(test_root_with_ctx),
         cmocka_unit_test(test_deterministic),
         cmocka_unit_test(test_different_app_name_diverges),

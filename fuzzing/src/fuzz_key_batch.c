@@ -18,22 +18,6 @@
 #include <stdint.h>
 #include <string.h>
 
-/* The base app's secp256k1 constant table is pulled into this translation unit rather
- * than linked as its own object, which is unusual and deliberate.
- *
- * secp256k1.c defines only const arrays — no functions — so it compiles to zero coverage
- * guards and zero UBSan handlers. Linked separately it made half of this target's objects
- * carry no instrumentation, and oss-fuzz's bad_build_check then rejected the binary under
- * SANITIZER=undefined ("only partial coverage instrumentation", "does not seem to be
- * compiled with UBSan"). AddressSanitizer passes the same binary because it instruments
- * globals, which is why only the UBSan matrix entry failed.
- *
- * Including it here keeps the field prime single-sourced from the base app — the
- * alternative, a local copy of p, is what vault_xonly_key_is_canonical exists to avoid —
- * while leaving this target as one fully instrumented object. The unit tests still link
- * secp256k1.c normally and assert the constant matches (test_xonly_matches_base_app_prime). */
-#include "../../bitcoin_app_base/src/secp256k1.c"
-
 #include "handler/approve_vault_intent_core.h"
 
 #define FUZZ_HEADER_LEN (3u + VAULT_XONLY_PUBKEY_LEN)
