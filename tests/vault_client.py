@@ -118,7 +118,17 @@ TEST_VALID_KEYS = [
 # Guaranteed-invalid x-coordinate: x = p-2 gives (p-2)³+7 ≡ (-2)³+7 ≡ -1 (mod p).
 # -1 is never a quadratic residue when p ≡ 3 (mod 4), which secp256k1's prime satisfies,
 # so no point with this x exists. crypto_tr_lift_x must reject it.
+# Note this value is a *canonical* encoding (p-2 < p); it exercises curve membership,
+# not the BIP-340 field bound — see TEST_NONCANONICAL_XONLY_KEY for that.
 TEST_INVALID_XONLY_KEY = bytes.fromhex('FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D')
+
+# Non-canonical x-coordinate: x = p+1, which BIP-340 forbids (x must be < p) but which a
+# modular curve check accepts as its residue x = 1 — and x = 1 *is* on secp256k1, since
+# 1³+7 = 8 is a quadratic residue mod p. So this value passes a lift that reduces mod p
+# and is caught only by an explicit field-bound check. Distinct from
+# TEST_INVALID_XONLY_KEY, which is in range and simply off-curve.
+TEST_NONCANONICAL_XONLY_KEY = bytes.fromhex(
+    'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC30')
 
 # Pre-computed x-only depositor pubkeys for the test mnemonic (see conftest.py) at
 # BIP-86 path m/86'/coin_type'/0'/0/0.  The firmware derives this key at the end of
@@ -130,10 +140,25 @@ TEST_DEPOSITOR_XONLY_MAINNET = bytes.fromhex('FBB1F6159D2D75F87CD29137D3D58C3C52
 TEST_DEPOSITOR_XONLY_TESTNET = bytes.fromhex('DC8D2F9EFF0C4F4DBDE070A48E330EFC908B62A766568D91E658F284B324B878')
 
 
+def _require_sw_ok(response, command: str) -> bytes:
+    """Return the response data, but only for an exact SW_OK.
+
+    conftest whitelists 0x9000 and 0xE000 on the backend so the standard Bitcoin
+    SIGN_PSBT client-command protocol can operate. The custom CLA 0xE1 handlers never
+    legitimately use interrupted execution, so without this check a 0xE000 from those
+    commands would be read as successful completion and mask an APDU-routing or
+    state-machine regression (Cerberus V-037).
+    """
+    if response.status != SW_OK:
+        raise AssertionError(f"{command} expected SW_OK, got {response.status:#06x}")
+    return bytes(response.data)
+
+
 def _dch_exchange(client: "RaggerClient", p1: int, p2: int, data: bytes) -> bytes:
     """Send one DERIVE_CONTEXT_HASH APDU and return the response data.
 
-    Raises ExceptionRAPDU on any non-whitelisted SW (handled by caller).
+    Raises ExceptionRAPDU on any non-whitelisted SW (handled by caller), and
+    AssertionError on a whitelisted-but-wrong SW such as 0xE000.
     """
     response = client.transport_client.exchange(
         cla=CLA_VAULT,
@@ -142,7 +167,7 @@ def _dch_exchange(client: "RaggerClient", p1: int, p2: int, data: bytes) -> byte
         p2=p2,
         data=data,
     )
-    return bytes(response.data)
+    return _require_sw_ok(response, "DERIVE_CONTEXT_HASH")
 
 
 def _encode_bip32_path(path: List[int]) -> bytes:
@@ -382,6 +407,7 @@ def build_group_tlv(
 
 
 def _approve_exchange(client: "RaggerClient", p1: int, data: bytes) -> bytes:
+    """Send one synchronous APPROVE_VAULT_INTENT phase; requires exact SW_OK (V-037)."""
     response = client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
@@ -389,7 +415,7 @@ def _approve_exchange(client: "RaggerClient", p1: int, data: bytes) -> bytes:
         p2=P2_UNUSED,
         data=data,
     )
-    return bytes(response.data)
+    return _require_sw_ok(response, "APPROVE_VAULT_INTENT")
 
 
 def approve_vault_intent_with_nav(
@@ -515,7 +541,8 @@ def sign_psbt_with_nav_and_compare(
     navigator: "Navigator",
     testname: str,
     nav_instructions: "List[NavInsID]",
-) -> None:
+    require_review: bool = True,
+):
     """Call sign_psbt while capturing all review screens into a single snapshot folder.
 
     The standard client.sign_psbt + Instructions approach stores one screenshot per
@@ -528,12 +555,25 @@ def sign_psbt_with_nav_and_compare(
 
     Use for touch devices (Flex, Stax, Apex).  For Nano, pass an Instructions object
     to client.sign_psbt directly.
+
+    Returns client.sign_psbt's result — the list of (input_index, PartialSignature) pairs —
+    so callers can verify the signatures rather than only the screens.  Discarding it made
+    cryptographic verification impossible at every call site (Cerberus V-035).
+
+    require_review: assert that at least one APDU actually blocked for review.  This helper
+    exists to prove review-required flows display and await approval, but every exchange
+    completing synchronously (done=True) silently skips navigate_and_compare, so firmware
+    that returned signatures with no confirmation screen would satisfy it (V-026).  Pass
+    False only for a flow that is legitimately silent — in which case prefer
+    client.sign_psbt directly.
     """
     from ragger.utils import pack_APDU
 
     screenshot_dir = client.screenshot_dir
+    review_count = 0
 
     def _flat_navigate(self, _nav, apdu, _instructions, _testname, index):
+        nonlocal review_count
         cla, ins, p1, p2, data = apdu.values()
         self.transport_client.apdu_timeout = 1.0
         with self.transport_client.exchange_async_raw(pack_APDU(cla, ins, p1, p2, data)) as done:
@@ -544,13 +584,21 @@ def sign_psbt_with_nav_and_compare(
                     instructions=nav_instructions,
                     screen_change_before_first_instruction=True,
                 )
+                review_count += 1
                 index += 1
         sw, response = self.last_async_response()
         return sw, response, index
 
     client.ragger_navigate = types.MethodType(_flat_navigate, client)
     try:
-        client.sign_psbt(psbt, wallet, wallet_hmac, navigator, testname=testname)
+        result = client.sign_psbt(psbt, wallet, wallet_hmac, navigator, testname=testname)
     finally:
         del client.ragger_navigate
+
+    if require_review:
+        assert review_count > 0, (
+            "SIGN_PSBT completed without ever blocking for a review screen — "
+            "signatures were returned with no user confirmation"
+        )
+    return result
 

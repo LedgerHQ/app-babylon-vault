@@ -873,6 +873,73 @@ static void test_group_idx_vault_utxo_leaf_differs(void **state) {
     assert_memory_not_equal(buf0, buf1, (size_t) len0);
 }
 
+/* ---------------------------------------------------------------------------
+ * BIP-341 output-key tweak — reference vectors (V-030)
+ *
+ * crypto_tr_tweak_pubkey was a SHA-256 stub with y_parity hardcoded to 0, so this target
+ * could not tell a correct P2TR output key from an incorrect one and only ever exercised
+ * parity 0. It now uses libsecp256k1, and these vectors pin it: expected values were
+ * computed independently in Python (lift_x, TapTweak tagged hash, Q = P + t*G) rather than
+ * captured from this implementation, so they fail if the tweak regresses.
+ *
+ * Both parities are covered deliberately — the control-block parity bit feeds
+ * vault_script_build_control_block, and a stub that always returns 0 leaves the parity-1
+ * branch untested.
+ * ------------------------------------------------------------------------- */
+
+/* tweak(NUMS, "") — BIP-86-style, empty merkle root. parity = 1 */
+static const uint8_t s_tweak_nums_empty[32] = {
+    0x19,0x2c,0x2a,0x30,0xcb,0xd7,0xd0,0x35,0x2f,0x94,0xd4,0xc3,0x1a,0x43,0xf7,0x67,
+    0xf1,0xef,0x43,0xd7,0xff,0x64,0x38,0x83,0x98,0x80,0xec,0x07,0x5d,0x81,0xa9,0xf6,
+};
+/* tweak(depositor_pk, "") — BIP-86 key-path only. parity = 1 */
+static const uint8_t s_tweak_dep_empty[32] = {
+    0x58,0x28,0xf0,0xa5,0x8d,0x69,0x84,0x84,0xe5,0xf1,0xd8,0x17,0xe3,0xa5,0xb1,0x25,
+    0xd8,0x76,0x00,0x05,0xea,0x90,0x20,0x91,0x24,0x47,0x5d,0x24,0x40,0xba,0x56,0x03,
+};
+/* tweak(NUMS, 0x01*32) — parity = 0, so the other branch is exercised too */
+static const uint8_t s_tweak_nums_root01[32] = {
+    0x4d,0x0e,0xd8,0xf1,0xe0,0x31,0xd3,0x2e,0x2e,0x3b,0x47,0xfd,0xa2,0x1f,0xae,0x9c,
+    0xd4,0x81,0x04,0xec,0x94,0x67,0x88,0xfe,0x10,0xcc,0x4b,0xdc,0xb5,0x3e,0x15,0xef,
+};
+
+static void test_tweak_vector_nums_empty(void **state) {
+    (void) state;
+    uint8_t out[32], parity = 0xFF;
+    assert_int_equal(crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, NULL, 0, &parity, out), 0);
+    assert_memory_equal(out, s_tweak_nums_empty, 32);
+    assert_int_equal(parity, 1);
+}
+
+static void test_tweak_vector_depositor_empty(void **state) {
+    (void) state;
+    uint8_t out[32], parity = 0xFF;
+    assert_int_equal(crypto_tr_tweak_pubkey(s_depositor_pk, NULL, 0, &parity, out), 0);
+    assert_memory_equal(out, s_tweak_dep_empty, 32);
+    assert_int_equal(parity, 1);
+}
+
+static void test_tweak_vector_parity_zero(void **state) {
+    (void) state;
+    uint8_t root[32];
+    memset(root, 0x01, sizeof(root));
+    uint8_t out[32], parity = 0xFF;
+    assert_int_equal(crypto_tr_tweak_pubkey(VAULT_NUMS_XONLY, root, sizeof(root), &parity, out), 0);
+    assert_memory_equal(out, s_tweak_nums_root01, 32);
+    assert_int_equal(parity, 0);
+}
+
+static void test_tweak_rejects_off_curve_key(void **state) {
+    (void) state;
+    /* p - 2: in range but no curve point has this x. The stub accepted anything. */
+    uint8_t off_curve[32] = {
+        0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+        0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFE,0xFF,0xFF,0xFC,0x2D,
+    };
+    uint8_t out[32], parity = 0xFF;
+    assert_int_not_equal(crypto_tr_tweak_pubkey(off_curve, NULL, 0, &parity, out), 0);
+}
+
 static void test_group_idx_htlc_leaf0_differs(void **state) {
     (void)state;
     vault_intent_t intent = make_two_group();
@@ -963,6 +1030,10 @@ int main(void) {
         cmocka_unit_test(test_group_idx_htlc_leaf0_differs),
         cmocka_unit_test(test_group_idx_assert0_leaf_differs),
         cmocka_unit_test(test_group_idx_pegin_txid_differs),
+        cmocka_unit_test(test_tweak_vector_nums_empty),
+        cmocka_unit_test(test_tweak_vector_depositor_empty),
+        cmocka_unit_test(test_tweak_vector_parity_zero),
+        cmocka_unit_test(test_tweak_rejects_off_curve_key),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

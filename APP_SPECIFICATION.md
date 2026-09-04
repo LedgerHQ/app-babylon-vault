@@ -27,6 +27,39 @@ All custom APDUs use **CLA `0xE1`**.
 | `0x80` | `APPROVE_VAULT_INTENT`  | Three-phase APDU. **P1=`0x00`**: parse and validate 13 scalar TLV fields. **P1=`0x01`**: receive per-vault group TLV (6 fields per vault group, repeated `vault_count` times). **P1=`0x02`**: stream keeper then challenger x-only public keys (TLV-wrapped; tag `2B` + length `1B` + 32-byte key). After all keys are received the device displays the vault parameters for user approval and, on confirmation, transitions the session to `INTENT_LOADED`. |
 | `0x81` | `DERIVE_CONTEXT_HASH`   | Chunked streaming APDU (**P1=`0x00`** initial chunk, **P1=`0x01`** continuation). Derives a 32-byte context root from the device's BIP-32 key at `m/73681862'` via HKDF-SHA-256 and stores it in the session context. **P2=`0x00`**: shows a user approval screen ("Allow derivation?") and, on confirmation, returns the raw 32-byte root to the host. **P2=`0x01`**: silent re-derivation; returns `SW_OK` with no data. |
 
+#### DERIVE_CONTEXT_HASH — caller identity is not authenticated
+
+Screen 1 (P2=`0x00`) shows the host-supplied `appName` and nothing else. This is a
+**known, accepted deviation** from the bundled protocol specification, which requires more:
+
+> `docs/specs/derive-context-hash.md` §2.1 — "The dialog MUST display the `appName` **and
+> the requesting origin**. The dialog SHOULD also display the context bytes."
+
+The device cannot satisfy that MUST. It speaks raw APDU over USB/BLE/NFC, a transport that
+carries no browser or application origin, and the same spec states plainly that `appName`
+"is not, by itself, an authenticated identity signal; a malicious application can choose
+any allowed string". Validation here restricts only length and character set
+(`[a-z0-9\-]`), so any caller may claim `babylon-btc-vault`.
+
+Consequences a reviewer and an integrator should both be aware of (Cerberus V-012):
+
+- A phishing application that reconstructs a known vault's public context and derivation
+  path can produce a Screen 1 indistinguishable from the legitimate one, and on approval
+  receives the same deterministic 32-byte root — from which every Babylon sub-secret
+  (hashlock, auth anchor, WOTS seed) expands.
+- The screen says "Allow derivation?", which understates what is released: a deterministic
+  **secret root**, not a hash of public data.
+- The physical approval gesture is the only remaining control, and it is being made on
+  incomplete information.
+
+Closing this needs identity established outside the raw APDU — an origin assertion from a
+wallet or transport layer that the device can verify — which is an ecosystem change, not an
+app one. The available in-app mitigation is to give the user something cross-checkable:
+display the connected public key (or a short fingerprint of it) and a digest of the
+context, and reword the prompt to state that a secret root will be exported. That changes
+Screen 1, so it requires HLD sign-off and golden-snapshot regeneration across all five
+devices and both networks; it is not implemented.
+
 ### APPROVE_VAULT_INTENT — intent fields
 
 #### P1=`0x00` — scalar fields (13)
@@ -172,10 +205,12 @@ The depositor reclaims BTC from the HTLC before the vault is finalised (timelock
 **PSBT requirements:**
 - Single input spending the HTLC; leaf script read from `TAP_LEAF_SCRIPT` in the PSBT
 - Leaf script shape: `<key> OP_CHECKSIGVERIFY <n> OP_CHECKSEQUENCEVERIFY`; `<key>` must be owned by this device at the BIP-32 path in `TAP_BIP32_DERIVATION`; control block must produce a valid Taproot commitment
+- CSV operand `<n>`: a positive CScriptNum push (`OP_1`–`OP_16`, `OP_PUSHBYTES_1`–`OP_PUSHBYTES_4`, or `OP_PUSHDATA1`; minimal encoding is not enforced), at most `0xFFFF` — the BIP-68 block-count field is the only part of the operand `OP_CHECKSEQUENCEVERIFY` acts on, so a larger value would display a delay the transaction does not enforce. `INTENT_LOADED` additionally requires `<n> == htlc_refund_timelock`; outside it, `<n> ≥ 72` (the protocol minimum)
+- `PSBT_IN_SEQUENCE`: must equal `<n>` **exactly** (compared unmasked), with the BIP-68 disable (bit 31) and time-based (bit 22) flags clear. Bits consensus ignores are rejected rather than masked away, so the displayed timelock is always the one that will be enforced
 - Single output: BIP-86 P2TR (`account_index ≤ 100`, `address_index ≤ 10000`)
 - Sighash: `SIGHASH_DEFAULT`; version ≥ 2; locktime = 0
 
-**User display:** amount reclaimed, fee.
+**User display:** Pre-PegIn txid, reclaimed amount, refund timelock (blocks), transaction fee, reclaim address.
 
 ---
 
@@ -196,9 +231,11 @@ The depositor pre-signs a NoPayout leaf for a specific challenger, authorising t
 | `<D>` key | Must match `intent.depositor_pk` |
 | `<Cj>` key | Must be one of the keeper or challenger keys from the loaded intent |
 | Full leaf | Reconstructed from intent and compared byte-for-byte (prevents parameter substitution) |
-| WITNESS_UTXO value | Must be ≤ `VAULT_DUST_LIMIT` (546 sat) |
+| Input 0 WITNESS_UTXO value | In `[VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + base_fee_rate × MAX_COUNCIL_NOPAYOUT_VSIZE]` — Assert:0 is funded to cover the CouncilNoPayout that may spend it instead, so its value scales with the fee rate. Defence-in-depth only; the fee bound below is the operative control |
+| Inputs 1, 2 WITNESS_UTXO value | **Not constrained individually.** Read from the PSBT and used only to compute `actual_fee`. Committed by Input 0's `SIGHASH_DEFAULT`, so no trust is placed in them: a misstated value produces an unusable signature (DoS only). These connectors are funded to cover the WronglyChallenged transaction that may spend them, so their value scales with `base_fee_rate` and exceeds `VAULT_DUST_LIMIT` above 1 sat/vB — the device deliberately does not re-derive that funding formula |
+| Fee bound | `actual_fee = Σ inputs − Σ outputs`; must be non-negative and `≤ base_fee_rate × MAX_NOPAYOUT_VSIZE` (450, checked arithmetic). This is the control that prevents the Assert:0 connector being burned to miner fees, and it must not be replaced by tightening the input ranges |
 | Sighash | `SIGHASH_DEFAULT` only |
-| Output 0 | P2TR of `Cj` (key-path tweak, no scripts); verified by device |
+| Output 0 | P2TR of `Cj` (key-path tweak, no scripts); verified by device; value ≥ `VAULT_DUST_LIMIT` |
 | Counter | At most `vault_count × (keeper_count + challenger_count)` NoPayout signings allowed per session |
 
 **NoPayout leaf script:**
@@ -226,14 +263,14 @@ The depositor spends the Depositor Claim UTXO created by the PegIn transaction.
 | `<D>` key | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path (`m/86'/coin_type'/acct'/chg/idx`, `account_index ≤ 100`, `address_index ≤ 10000`); derived key must match leaf key |
 | Taproot commitment | Control block must produce a valid commitment to the leaf |
 | Sighash | `SIGHASH_DEFAULT` only |
-| Output 0 | ClaimAssertConnector; not verified by device (host-provided) |
+| Output 0 | ClaimAssertConnector. Its script is **not reconstructed** by the device — the WOTS connector tree is outside the device's model — but it is not unconstrained either: the read requires exactly `VAULT_P2TR_SCRIPTPUBKEY_LEN` (34 B), so Output 0 must be a witness-v1 P2TR (a P2WPKH or legacy substitution is rejected), and the script is rendered as a bech32m address on the review screen for the user to check. Substitution by another P2TR remains possible and is visible, not silent |
 | Output 1 | BIP-86 P2TR(`<D>`); value = `VAULT_DUST_LIMIT` (CPFP anchor) |
 | Fee | `input_value − total_outputs > 0` (positive fee required) |
 
 **Depositor Claim leaf script:**
 `<D> OP_CHECKSIG`
 
-**User display:** amount spent (input UTXO value), connector amount (Output 0 value), fee, PegIn txid (from `PSBT_IN_PREVIOUS_TXID`).
+**User display:** amount spent (input UTXO value), connector amount (Output 0 value), fee, PegIn txid (from `PSBT_IN_PREVIOUS_TXID`), Output 0 address (bech32m).
 
 ---
 

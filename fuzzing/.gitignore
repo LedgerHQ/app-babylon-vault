@@ -1,2 +1,12 @@
 build/
 crashes/
+
+# libFuzzer's working corpus: run_local.sh passes this directory to the fuzzer, which
+# writes every input it discovers into it. Machine-generated and unbounded, so it stays
+# local.
+corpus/
+
+# Generated seed blobs. seeds/generate_seeds.py is the committed, reviewable source; the
+# blobs it emits are not, because a 99-byte binary in a diff cannot be checked against
+# any description of it. Regenerate with `python3 fuzzing/seeds/generate_seeds.py`.
+seeds/*/

@@ -161,3 +161,44 @@ def test_sign_psbt_refund_wrong_tx_version(
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_refund_csv_high_bits_bypass(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A CSV operand with bits above the BIP-68 block-count field must be rejected.
+
+    OP_CHECKSEQUENCEVERIFY acts only on the low 16 bits of its operand, so operand
+    0x00010001 reads as 65537 blocks (~15 months) but is satisfied by nSequence = 1.
+    Without the operand bound the device displays the long delay, passes the protocol
+    minimum, and signs a refund spendable after a single block.
+    """
+    fingerprint, leaf_key, out_key, coin_type = _refund_keys(client, bitcoin_network)
+    psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type,
+                              csv_timelock=0x00010001)
+    psbt.tx.vin[0].nSequence = 1
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_refund_nsequence_reserved_bits(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """nSequence carrying bits above the block-count field must be rejected.
+
+    Complements the operand bound: here the leaf is a normal 144-block CSV, but
+    nSequence is 0x00010090 — the same low 16 bits plus a reserved bit consensus
+    ignores.  A comparison masked to the low 16 bits would accept it, signing a value
+    the device never validated or displayed.
+    """
+    fingerprint, leaf_key, out_key, coin_type = _refund_keys(client, bitcoin_network)
+    psbt = _build_refund_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt.tx.vin[0].nSequence = 0x00010000 | _REFUND_CSV_TIMELOCK
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA

@@ -123,7 +123,13 @@ loads the intent again for user approval).
 [ context_total_len: 2B BE ][ first context chunk: remaining bytes ]
 ```
 
-- `app_name` — host sends `"babylon-btc-vault"`.
+- `app_name` — host sends `"babylon-btc-vault"`. Validated for length and character set
+  (`[a-z0-9\-]`) only: it is **not** an authentication signal, and any caller can claim this
+  string. Screen 1 shows it and nothing else, so the user cannot distinguish two callers
+  using the same name, and approving releases a deterministic secret root. See
+  "DERIVE_CONTEXT_HASH — caller identity is not authenticated" in `APP_SPECIFICATION.md`
+  for the accepted deviation from the protocol spec's requirement to display a requesting
+  origin.
 - `path` — BIP-32 path of the **connectedPubkey**; the device derives the 33-byte compressed
   key and mixes it into `info`.
 - `context_total_len` — total `vaultContext` byte count (1–1024), **2 bytes big-endian**.
@@ -288,7 +294,7 @@ have been issued via `payout_claimer_mask`.
 | PSBT field | Requirement |
 |------------|-------------|
 | `PSBT_IN_SEQUENCE` | Must equal `intent.payout_timelock` |
-| `PSBT_IN_WITNESS_UTXO` value | Must equal `VAULT_DUST_LIMIT` (546 sat) |
+| `PSBT_IN_WITNESS_UTXO` value | In `[VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + base_fee_rate × MAX_COUNCIL_NOPAYOUT_VSIZE]` — Assert:0 is funded to cover the CouncilNoPayout that may spend it instead, so its value scales with the fee rate rather than being fixed at dust |
 | `PSBT_IN_WITNESS_UTXO` scriptPubKey | Must match Assert:0 Payout spk for `claimer_idx` |
 | `PSBT_IN_TAP_LEAF_SCRIPT` | Must contain the Assert:0 Payout leaf for `claimer_idx` |
 
@@ -340,9 +346,10 @@ set is all VaultKeepers plus all UniversalChallengers (the VaultProvider is excl
 | `nLockTime` | 0 |
 | Input count | Exactly 3 |
 | Output count | Exactly 1 |
-| Input 0 (signed) | P2TR script-path spend of Assert:0 (depositor graph); leaf: `<Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG`; `SIGHASH_DEFAULT` |
-| Input 1, 2 (not signed) | ChallengeAssertX_j:0 / ChallengeAssertY_j:0; committed via Input 0 `SIGHASH_DEFAULT` |
-| Output 0 | Any standard address (Challenger_j's registered address) |
+| Input 0 (signed) | P2TR script-path spend of Assert:0 (depositor graph); leaf: `<Depositor> OP_CHECKSIGVERIFY <Challenger_j> OP_CHECKSIG`; `SIGHASH_DEFAULT`. `PSBT_IN_OUTPUT_INDEX` must be 0; value in `[VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + base_fee_rate × MAX_COUNCIL_NOPAYOUT_VSIZE]` |
+| Input 1, 2 (not signed) | ChallengeAssertX_j:0 / ChallengeAssertY_j:0; committed via Input 0 `SIGHASH_DEFAULT`. Values are **not** constrained individually — they are read untrusted and used only to compute the fee, so fund them as the protocol requires (they exceed `VAULT_DUST_LIMIT` above 1 sat/vB) |
+| Output 0 | BIP-86 P2TR of `Challenger_j` (key-path tweak, no script tree) — reconstructed and compared byte-for-byte by the device, **not** an arbitrary registered address; value must be ≥ `VAULT_DUST_LIMIT` |
+| Fee | `Σ inputs − Σ outputs` must be non-negative and `≤ base_fee_rate × MAX_NOPAYOUT_VSIZE` (450) |
 
 The device reconstructs the 2-key NoPayout leaf from `Depositor` and `Challenger_j` (keepers
 first, then challengers, by index). Per-type cap: at most
@@ -403,8 +410,8 @@ Required wallet policy: **none** (`has_no_wallet_policy == true`).
 | Input 0 `PSBT_IN_WITNESS_UTXO` | P2TR HTLC scriptPubKey (34 bytes, `OP_1 OP_PUSHBYTES_32 ...`) |
 | Input 0 `PSBT_IN_TAP_LEAF_SCRIPT` | Exactly one entry; leaf version must be `0xC0` |
 | Leaf script shape | Standard refund script: `<leaf_key> OP_CHECKSIGVERIFY <csv_value> OP_CHECKSEQUENCEVERIFY` |
-| CSV value in leaf | When intent is loaded: must equal `intent.htlc_refund_timelock` |
-| Input 0 `PSBT_IN_SEQUENCE` | Must satisfy BIP-68: `sequence ≥ csv_value`, bits 31 and 22 clear (block-based) |
+| CSV value in leaf | At most `0xFFFF` — the BIP-68 block-count field is all `OP_CHECKSEQUENCEVERIFY` acts on, so a larger operand would claim a delay the transaction does not enforce. When intent is loaded: must equal `intent.htlc_refund_timelock`; otherwise must be `≥ 72` (protocol minimum) |
+| Input 0 `PSBT_IN_SEQUENCE` | Must equal `csv_value` **exactly** (compared unmasked), with bits 31 (disable) and 22 (time-based) clear. Note this is stricter than BIP-68 itself, which would allow any `sequence ≥ csv_value`: the device signs only the timelock it displayed, so bits consensus ignores are rejected rather than masked away |
 | Input 0 `PSBT_IN_TAP_BIP32_DERIVATION` for `leaf_key` | Must be present; fingerprint must match this device's master key; path must be BIP-86 |
 | Taproot commitment | Control block internal key must be `VAULT_NUMS_XONLY`; Merkle root must verify against HTLC spk |
 | Output 0 | P2TR BIP-86 change output; must include valid `PSBT_OUT_TAP_BIP32_DERIVATION` pointing to this device |
@@ -412,7 +419,8 @@ Required wallet policy: **none** (`has_no_wallet_policy == true`).
 The device derives the signing key from the BIP-86 path in `PSBT_IN_TAP_BIP32_DERIVATION`,
 verifies the derived x-only key matches `leaf_key`, then signs.
 
-The device **displays** amount reclaimed, fee, and destination address. User must approve.
+The device **displays** the Pre-PegIn txid, amount reclaimed, refund timelock (blocks), fee, and
+reclaim address. User must approve.
 
 **State after:** unchanged.
 

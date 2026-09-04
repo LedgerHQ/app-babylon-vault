@@ -30,6 +30,12 @@ from ledger_bitcoin.psbt import PSBT, PartiallySignedInput, PartiallySignedOutpu
 from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
 from test_utils.taproot import tagged_hash, taproot_tweak_pubkey, ser_script, pubkey_gen
+# Independent BIP-341 sighash and BIP-340 verifier, used to check returned signatures
+# against the PSBT rather than trusting the device's own output (V-035).
+from test_utils.taproot_sighash import TaprootSignatureHash
+from test_utils.bip0340 import schnorr_verify
+
+SIGHASH_DEFAULT = 0
 
 from .vault_client import (
     SW_BAD_STATE,
@@ -591,13 +597,47 @@ def _depositor_pk(bitcoin_network: str) -> bytes:
     return TEST_DEPOSITOR_XONLY_MAINNET if bitcoin_network == "main" else TEST_DEPOSITOR_XONLY_TESTNET
 
 
-def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: int = 0) -> None:
+def _assert_schnorr_sig_verifies(psbt: PSBT, result, expected_xonly: bytes,
+                                 expected_input: int = 0) -> None:
+    """Independently verify a returned signature against the sighash it must commit to.
+
+    Closes Cerberus V-035: the count/index/pubkey/length checks in
+    _assert_single_schnorr_sig are shape checks, not verification — a regression that
+    returned arbitrary 64-byte data, or signed a *different* digest than the PSBT the
+    user reviewed, would satisfy every one of them.  This recomputes the BIP-341
+    script-path sighash from the original PSBT and checks the BIP-340 signature under the
+    expected key, using the base app's independent implementations rather than anything
+    the device produced.
+
+    The leaf script and version are taken from the PSBT's own PSBT_IN_TAP_LEAF_SCRIPT, so
+    this works for any custom-input flow without the caller restating them.
+    """
+    input_index, partial_sig = result[0]
+    leaf_script, leaf_ver = next(iter(psbt.inputs[input_index].tap_scripts))
+    sighash = TaprootSignatureHash(
+        psbt.tx,
+        [inp.witness_utxo for inp in psbt.inputs],
+        SIGHASH_DEFAULT,
+        input_index=input_index,
+        scriptpath=True,
+        script=leaf_script,
+        leaf_ver=leaf_ver,
+    )
+    assert schnorr_verify(sighash, expected_xonly, partial_sig.signature[:64]), (
+        "returned signature does not verify against the sighash of the reviewed PSBT")
+
+
+def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: int = 0,
+                               psbt: Optional[PSBT] = None) -> None:
     """Assert a custom-input sign yielded exactly one usable signature.
 
     A successful vault custom-input sign (PegIn / Payout / Refund) returns a single
     BIP-340 Schnorr signature — 64 bytes, since the device signs SIGHASH_DEFAULT — for
     `expected_input`, produced by `expected_xonly`.  Checking the yielded value (not just
     the SW_OK) guards against a regression that returns success without a valid signature.
+
+    Pass `psbt` to additionally verify the signature cryptographically against the sighash
+    that PSBT implies (V-035).  Prefer doing so: without it these are shape checks only.
     """
     assert len(result) == 1, f"expected exactly one signature, got {len(result)}: {result}"
     input_index, partial_sig = result[0]
@@ -605,6 +645,8 @@ def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: in
     assert partial_sig.pubkey[-32:] == expected_xonly, "signed with an unexpected key"
     assert len(partial_sig.signature) == 64, (
         f"expected 64-byte SIGHASH_DEFAULT Schnorr sig, got {len(partial_sig.signature)}")
+    if psbt is not None:
+        _assert_schnorr_sig_verifies(psbt, result, expected_xonly, expected_input)
 
 
 def _build_intent_tlv_for_test(
@@ -613,6 +655,7 @@ def _build_intent_tlv_for_test(
     keeper_pks: Optional[List[bytes]] = None,
     challenger_pks: Optional[List[bytes]] = None,
     prepegin_max_fee: int = 500_000,
+    base_fee_rate: int = _BASE_FEE_RATE,
 ) -> bytes:
     if keeper_pks is None:
         keeper_pks = _TEST_KEEPER_PKS
@@ -620,7 +663,7 @@ def _build_intent_tlv_for_test(
         challenger_pks = _TEST_CHALLENGER_PKS
     return build_intent_tlv(
         coin_type=coin_type,
-        base_fee_rate=_BASE_FEE_RATE,
+        base_fee_rate=base_fee_rate,
         pegin_csv_timelock=_PEGIN_CSV_TIMELOCK,
         payout_timelock=_PAYOUT_TIMELOCK,
         prepegin_txid=prepegin_txid,
@@ -824,6 +867,7 @@ def _setup_s2_state(
     keeper_pks: Optional[List[bytes]] = None,
     challenger_pks: Optional[List[bytes]] = None,
     n_swipes: Optional[int] = None,
+    base_fee_rate: int = _BASE_FEE_RATE,
 ) -> bytes:
     """Derive root + approve intent with a non-zero prepegin_txid.  Returns the 32-byte hashlock h.
 
@@ -844,7 +888,8 @@ def _setup_s2_state(
         challenger_pks = _TEST_CHALLENGER_PKS
     assert any(prepegin_txid), "prepegin_txid must be non-zero for txid-bound intent tests"
     hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
-    scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid, keeper_pks, challenger_pks)
+    scalars_tlv = _build_intent_tlv_for_test(coin_type, prepegin_txid, keeper_pks, challenger_pks,
+                                             base_fee_rate=base_fee_rate)
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,
@@ -1634,7 +1679,7 @@ def test_sign_psbt_pegin(
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     result = client.sign_psbt(psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)  # HTLC Leaf 0 signed by the depositor key
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)  # HTLC Leaf 0 signed by the depositor key
 
 
 def test_sign_psbt_pegin_wrong_txid(
@@ -2297,10 +2342,12 @@ def _setup_payout_state(
     device,
     coin_type: int,
     prepegin_txid: bytes = _PREPEGIN_TXID,
+    base_fee_rate: int = _BASE_FEE_RATE,
 ) -> bytes:
     """Approve intent then sign PegIn (pegin_signed=1, payout_index=0). Returns the 32-byte hashlock."""
     dep_pk = TEST_DEPOSITOR_XONLY_MAINNET if coin_type == 0 else TEST_DEPOSITOR_XONLY_TESTNET
-    hashlock = _setup_s2_state(client, navigator, device, coin_type, prepegin_txid)
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, prepegin_txid,
+                               base_fee_rate=base_fee_rate)
     pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, prepegin_txid)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     # NAPPS-1377: PegIn signing is fully wired; SW_OK advances state to PAYOUT_EXPECTED.
@@ -2324,7 +2371,7 @@ def test_sign_psbt_payout_vp(
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     result = client.sign_psbt(psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)  # Vault UTXO signed by the depositor key
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)  # Vault UTXO signed by the depositor key
 
 
 def test_sign_psbt_payout_multileaf_assert0(
@@ -3323,34 +3370,77 @@ def test_sign_psbt_payout_depositor_wrong_cpfp_anchor_key(
 # NoPayout transaction (NAPPS-1462)
 # ===========================================================================
 
-# NoPayout amounts. Input 0 (Assert:0) carries the fee, Inputs 1-2 are DUST connectors.
-# The firmware bounds the implied fee by base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE and
-# requires Output 0 to be at least DUST, so the default output leaves a fee under the cap.
-_NOPAYOUT_INPUTS_TOTAL = 3 * VAULT_DUST_LIMIT
-_NOPAYOUT_MAX_FEE = _BASE_FEE_RATE * _MAX_COUNCIL_NOPAYOUT_VSIZE
-_NOPAYOUT_OUT_VALUE = _NOPAYOUT_INPUTS_TOTAL - 400
+# NoPayout amounts, funded from the protocol formula rather than pinned to DUST.
+#
+# The previous fixture hardcoded all three inputs to VAULT_DUST_LIMIT — the maximum the
+# old connector cap allowed and a value the protocol never produces — so the whole suite
+# passed while no real NoPayout could be signed above 1 sat/vB. Values below follow
+# btc-vault's builders (see tmp/hld-discrepancies-2026-09-01.md):
+#
+#   Assert:0            = DUST      + rate * council_nopayout_vsize
+#   ChallengeAssert:0   = P2TR_DUST + rate * WronglyChallenged_vsize
+#
+# These live only in the test: the firmware deliberately mirrors none of them, bounding
+# the fee instead (D1). They are here so the fixture funds like production does.
+_P2TR_DUST = 330                    # rust-bitcoin P2TR_DUST_THRESHOLD; not DUST (546)
+_WC_VSIZE = 179                     # WronglyChallenged, fixed (WC taptree is pinned)
+_COUNCIL_NOPAYOUT_VSIZE = 210       # 3-of-5 council, 2 challengers
+_NOPAYOUT_VSIZE = 337               # NoPayout itself at N=M=1
+_MAX_NOPAYOUT_VSIZE = 450           # must match MAX_NOPAYOUT_VSIZE in sign_psbt_validate.c
+
+
+def _nopayout_input0_value(base_fee_rate: int = _BASE_FEE_RATE) -> int:
+    """Assert:0 funding: covers the CouncilNoPayout that may spend it."""
+    return VAULT_DUST_LIMIT + base_fee_rate * _COUNCIL_NOPAYOUT_VSIZE
+
+
+def _nopayout_connector_value(base_fee_rate: int = _BASE_FEE_RATE) -> int:
+    """ChallengeAssert:0 funding: covers the WronglyChallenged that may spend it."""
+    return _P2TR_DUST + base_fee_rate * _WC_VSIZE
+
+
+def _nopayout_inputs_total(base_fee_rate: int = _BASE_FEE_RATE) -> int:
+    return _nopayout_input0_value(base_fee_rate) + 2 * _nopayout_connector_value(base_fee_rate)
+
+
+def _nopayout_out_value(base_fee_rate: int = _BASE_FEE_RATE) -> int:
+    """Output 0 leaving a realistic NoPayout fee (rate * its own vsize)."""
+    return _nopayout_inputs_total(base_fee_rate) - base_fee_rate * _NOPAYOUT_VSIZE
+
+
+_NOPAYOUT_INPUTS_TOTAL = _nopayout_inputs_total()
+_NOPAYOUT_MAX_FEE = _BASE_FEE_RATE * _MAX_NOPAYOUT_VSIZE
+_NOPAYOUT_OUT_VALUE = _nopayout_out_value()
 
 
 def _build_nopayout_psbt(
     depositor_pk: bytes,
     challenger_pk: bytes,
     assert_txid: bytes = _ASSERT_TXID,
-    out_value: int = _NOPAYOUT_OUT_VALUE,
+    out_value: Optional[int] = None,
+    base_fee_rate: int = _BASE_FEE_RATE,
 ) -> PSBT:
     """Build a NoPayout PSBT: 3 custom inputs, 1 output.
 
     Input 0: NoPayout leaf <D> OP_CHECKSIGVERIFY <Cj> OP_CHECKSIG (68 bytes),
-             single-leaf P2TR (NUMS internal key), value=VAULT_DUST_LIMIT.
+             single-leaf P2TR (NUMS internal key), funded per the protocol formula
+             (DUST + rate * council_nopayout_vsize).
              Its prevout is Assert:0 (HLD: NoPayout Input 0 spends the depositor graph's
              Assert output 0). Only vout==0 is checked; the txid is unconstrained because
              the device cannot reconstruct the Assert txid.
-    Inputs 1, 2: ChallengeAssert connectors — WITNESS_UTXO only (device ignores script).
+    Inputs 1, 2: ChallengeAssert connectors — WITNESS_UTXO only (device ignores script),
+             funded at P2TR_DUST + rate * WC_vsize, which exceeds DUST above 1 sat/vB.
+    base_fee_rate: must match the rate in the loaded intent; scales all three input values
+             and the default output, so the implied fee stays at rate * NoPayout vsize.
     Output 0: P2TR(key-path-tweak(challenger_pk)) — device verifies this exact scriptPubKey,
              requires out_value >= DUST, and bounds the implied fee.
 
     Needs no intent geometry: the leaf and the output are functions of (depositor,
     challenger) alone, which is exactly why the device cannot tell vault groups apart here.
     """
+    if out_value is None:
+        out_value = _nopayout_out_value(base_fee_rate)
+
     nopayout_leaf = bytes([0x20]) + depositor_pk + bytes([0xAD, 0x20]) + challenger_pk + bytes([0xAC])
     assert len(nopayout_leaf) == 68, f"NoPayout leaf must be exactly 68 bytes, got {len(nopayout_leaf)}"
 
@@ -3382,10 +3472,11 @@ def _build_nopayout_psbt(
     psbt.inputs = [PartiallySignedInput(0), PartiallySignedInput(0), PartiallySignedInput(0)]
     psbt.outputs = [PartiallySignedOutput(0)]
 
-    psbt.inputs[0].witness_utxo = CTxOut(VAULT_DUST_LIMIT, nopayout_spk)
+    psbt.inputs[0].witness_utxo = CTxOut(_nopayout_input0_value(base_fee_rate), nopayout_spk)
     psbt.inputs[0].tap_scripts[(nopayout_leaf, 0xC0)] = {control_block}
-    psbt.inputs[1].witness_utxo = CTxOut(VAULT_DUST_LIMIT, connector_spk)
-    psbt.inputs[2].witness_utxo = CTxOut(VAULT_DUST_LIMIT, connector_spk)
+    connector_value = _nopayout_connector_value(base_fee_rate)
+    psbt.inputs[1].witness_utxo = CTxOut(connector_value, connector_spk)
+    psbt.inputs[2].witness_utxo = CTxOut(connector_value, connector_spk)
 
     return psbt
 
@@ -3408,7 +3499,7 @@ def test_sign_psbt_nopayout(
 
     # NoPayout is silent — no display, no navigator interaction required.
     result = client.sign_psbt(psbt, dummy_wallet, None)
-    _assert_single_schnorr_sig(result, dep_pk)
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)
 
 
 def test_sign_psbt_nopayout_assert_txid_unconstrained(
@@ -4431,45 +4522,67 @@ def test_sign_psbt_nopayout_input0_value_too_high(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_sign_psbt_nopayout_input1_value_too_high(
+@pytest.mark.parametrize("input_index", [1, 2])
+def test_sign_psbt_nopayout_connector_above_dust_accepted(
     client: "RaggerClient",
     navigator: Navigator,
     bitcoin_network: str,
     device,
+    input_index: int,
 ) -> None:
-    """NoPayout fails when Input 1 WITNESS_UTXO value exceeds VAULT_DUST_LIMIT."""
+    """A ChallengeAssert connector above VAULT_DUST_LIMIT is accepted (D1).
+
+    These inputs used to be capped at DUST, which is what rejected every real NoPayout.
+    There is deliberately no replacement bound: the extra value is passed through to
+    Output 0 here, so the fee is unchanged and nothing should object. What still protects
+    the depositor is Output 0's pinned scriptPubKey, the fee bound, and SIGHASH_DEFAULT
+    committing every prevout amount — see the burned-to-fee test below for the fee half.
+    """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     _setup_payout_state(client, navigator, device, coin_type)
 
-    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
-    psbt.inputs[1].witness_utxo = CTxOut(
-        VAULT_DUST_LIMIT + 1, psbt.inputs[1].witness_utxo.scriptPubKey
+    # Well clear of the old cap, and passed straight through to Output 0.
+    delta = 1000
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0],
+                                out_value=_NOPAYOUT_OUT_VALUE + delta)
+    raised = _nopayout_connector_value() + delta
+    assert raised > VAULT_DUST_LIMIT, "test must exceed the removed cap to be meaningful"
+    psbt.inputs[input_index].witness_utxo = CTxOut(
+        raised, psbt.inputs[input_index].witness_utxo.scriptPubKey
     )
 
-    with pytest.raises(ExceptionRAPDU) as exc:
-        client.sign_psbt(psbt, dummy_wallet, None)
-    assert exc.value.status == SW_INCORRECT_DATA
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk)
 
 
-def test_sign_psbt_nopayout_input2_value_too_high(
+@pytest.mark.parametrize("input_index", [1, 2])
+def test_sign_psbt_nopayout_inflated_connector_burned_to_fee_rejected(
     client: "RaggerClient",
     navigator: Navigator,
     bitcoin_network: str,
     device,
+    input_index: int,
 ) -> None:
-    """NoPayout fails when Input 2 WITNESS_UTXO value exceeds VAULT_DUST_LIMIT."""
+    """Inflating a connector without paying it out is caught by the fee bound (D1).
+
+    The adversarial case the removed per-input cap was aimed at: extra input value that
+    does not reach Output 0 becomes miner fee. Removing the cap does not open that up,
+    because the fee bound is computed over all three inputs.
+    """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
     _setup_payout_state(client, navigator, device, coin_type)
 
+    # Output 0 left at its default, so the whole delta lands in the fee.
     psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0])
-    psbt.inputs[2].witness_utxo = CTxOut(
-        VAULT_DUST_LIMIT + 1, psbt.inputs[2].witness_utxo.scriptPubKey
+    psbt.inputs[input_index].witness_utxo = CTxOut(
+        _nopayout_connector_value() + _NOPAYOUT_MAX_FEE + 1,
+        psbt.inputs[input_index].witness_utxo.scriptPubKey,
     )
 
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -4524,13 +4637,40 @@ def test_sign_psbt_nopayout_sub_dust_output_value(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+@pytest.mark.parametrize("base_fee_rate", [1, 2, 10, 50])
+def test_sign_psbt_nopayout_real_funding(
+    client: "RaggerClient",
+    navigator: Navigator,
+    bitcoin_network: str,
+    device,
+    base_fee_rate: int,
+) -> None:
+    """NoPayout signs when its inputs are funded the way btc-vault actually funds them.
+
+    Regression for D1: the ChallengeAssert connectors were capped at VAULT_DUST_LIMIT, but
+    the protocol funds them at P2TR_DUST(330) + rate * WC_vsize(179) — 509 sat at 1 sat/vB
+    and 688 at 2 — so every real NoPayout above 1 sat/vB was rejected. Rate 1 passed only
+    by 37 sat of accident. The old fixture pinned all three inputs to DUST and so could
+    never have caught it; this one funds from the protocol formula and sweeps the rate.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    dep_pk = _depositor_pk(bitcoin_network)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    _setup_payout_state(client, navigator, device, coin_type, base_fee_rate=base_fee_rate)
+
+    psbt = _build_nopayout_psbt(dep_pk, _TEST_KEEPER_PKS[0], base_fee_rate=base_fee_rate)
+    result = client.sign_psbt(psbt, dummy_wallet, None)
+    _assert_single_schnorr_sig(result, dep_pk, psbt=psbt)
+
+
 def test_sign_psbt_nopayout_fee_above_bound(
     client: "RaggerClient",
     navigator: Navigator,
     bitcoin_network: str,
     device,
 ) -> None:
-    """NoPayout fails when the implied fee exceeds base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE.
+    """NoPayout fails when the implied fee exceeds base_fee_rate * MAX_NOPAYOUT_VSIZE.
 
     Output 0 still clears the dust floor here, so only the fee bound can reject it.
     """
@@ -4555,7 +4695,7 @@ def test_sign_psbt_nopayout_fee_at_bound(
     bitcoin_network: str,
     device,
 ) -> None:
-    """NoPayout accepts a fee exactly equal to base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE."""
+    """NoPayout accepts a fee exactly equal to base_fee_rate * MAX_NOPAYOUT_VSIZE."""
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])

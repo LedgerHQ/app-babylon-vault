@@ -36,8 +36,9 @@ if(NOT DEFINED ENV{LIB_FUZZING_ENGINE})
 endif()
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-set(SRC_DIR   ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-set(STUBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
+set(SRC_DIR      ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+set(BASE_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../bitcoin_app_base/src)
+set(STUBS_DIR    ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
 
 # stubs/ must come first to shadow SDK headers (os_utils.h, etc.)
 include_directories(${STUBS_DIR} ${SRC_DIR})
@@ -68,5 +69,14 @@ add_fuzz_target(fuzz_vault_tlv
     ${SRC_DIR}/vault_tlv.c
 )
 
-# P1=0x01 key batch validation (static inline — no extra .c needed)
-add_fuzz_target(fuzz_key_batch)
+# P1=0x01 key batch validation (static inline; secp256k1.c supplies the field prime
+# that approve_vault_intent_core.h needs for the BIP-340 encoding check)
+add_fuzz_target(fuzz_key_batch
+    ${BASE_SRC_DIR}/secp256k1.c
+)
+
+# P1=0x01 group TLV parser — an independent parser in the same translation unit as
+# vault_tlv_parse, with its own framing and consumed-length contract (V-024)
+add_fuzz_target(fuzz_vault_group_tlv
+    ${SRC_DIR}/vault_tlv.c
+)

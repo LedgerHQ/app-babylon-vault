@@ -38,7 +38,7 @@ Duplicate tags, unknown tags, and wrong-length fields are rejected.
 | `0x0001` | `structure_type`            | 1 B    | `u8`        | Must equal `VAULT_STRUCTURE_TYPE` |
 | `0x0002` | `version`                   | 1 B    | `u8`        | Must equal `VAULT_PROTOCOL_VERSION` (= `0x01`) |
 | `0x0021` | `coin_type`                 | 4 B    | `u32 BE`    | Must equal `BIP44_COIN_TYPE` |
-| `0x0100` | `base_fee_rate`             | 8 B    | `u64 BE`    | Non-zero; ≤ `UINT32_MAX` (sat/vbyte) |
+| `0x0100` | `base_fee_rate`             | 8 B    | `u64 BE`    | Non-zero; ≤ `10000` (sat/vbyte) — the btc-vault daemon caps ingest at 10 000 and the Babylon contract at 1 000. Every fee bound derived from this value relies on the real cap for its overflow guard |
 | `0x0101` | `pegin_csv_timelock`        | 4 B    | `u32 BE`    | `[72, 1008]` inclusive |
 | `0x0102` | `payout_timelock`           | 4 B    | `u32 BE`    | `(90, 4032)` exclusive |
 | `0x0027` | `prepegin_txid`             | 32 B   | bytes       | Little-endian txid |

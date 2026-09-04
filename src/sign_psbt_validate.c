@@ -71,10 +71,23 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 _Static_assert(VAULT_PAYOUT_SPK_MAX_LEN >= VAULT_PAYOUT_SPK_MIN_LEN,
                "payout scriptPubKey bounds inverted — no length would be accepted");
 
-/* NoPayout council transaction vsize upper bound.
- * Assert:0 WITNESS_UTXO value must not exceed VAULT_DUST_LIMIT + base_fee_rate * this value,
- * and the NoPayout fee must not exceed base_fee_rate * this value. */
+/* CouncilNoPayout transaction vsize upper bound.
+ *
+ * This bounds the *funding* of Assert:0, not the NoPayout fee: btc-vault funds that output at
+ * VAULT_DUST_LIMIT + base_fee_rate * council_nopayout_vsize, so it is the ceiling for Input 0's
+ * WITNESS_UTXO value.  Measured 210 vB at a 3-of-5 council with 2 challengers and 447 vB at
+ * 10-of-15 with 64; 500 therefore assumes a council no larger than about 12-of-18 (13-of-19
+ * measures 529).  A larger council would make this reject valid transactions — see D7 in
+ * tmp/hld-discrepancies-2026-09-01.md, which asks Babylon for the production ceiling. */
 #define MAX_COUNCIL_NOPAYOUT_VSIZE 500u
+
+/* NoPayout transaction vsize upper bound, for its own fee.
+ *
+ * Distinct from MAX_COUNCIL_NOPAYOUT_VSIZE above: this transaction measures 337 vB at N=M=1 and
+ * 377 at N=M=32, so 450 gives ~20% headroom, matching the convention used for the other bounds.
+ * The fee was previously bounded by the CouncilNoPayout ceiling, which worked only because
+ * 500 > 377 and would have mis-priced silently if either transaction changed (D5). */
+#define MAX_NOPAYOUT_VSIZE 450u
 
 /* PayoutFinalize (Screen 8) fee bound: 2-in/2-out tapscript spend, no per-participant term. */
 #define MAX_PAYOUTFINALIZE_VSIZE 500u
@@ -971,8 +984,11 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        /* Canonical: sequence must encode exactly the CSV timelock, not just satisfy it. */
-        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
+        /* Canonical: sequence must encode exactly the CSV timelock, not just satisfy it.
+         * Compared unmasked — parse_refund_leaf_script bounds csv_value to the BIP-68
+         * block-count field, so any bit set above it in nsequence is a value the device
+         * never displayed and must not sign. */
+        if (nsequence != csv_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2229,33 +2245,33 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    /* Inputs 1 and 2 (ChallengeAssert connectors): WITNESS_UTXO value must be <= DUST.
-     * Their values feed the fee bound below, so they are accumulated here. */
-    uint64_t connectors_value = 0;
-    for (unsigned int ci = 1; ci <= 2; ci++) {
-        merkleized_map_commitment_t conn_map;
-        if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, ci, &conn_map) < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t wu[MAX_WITNESS_UTXO_LEN];
-        int wu_len = call_get_merkleized_map_value(dc,
-                                                   &conn_map,
-                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
-                                                   1,
-                                                   wu,
-                                                   sizeof(wu));
-        if (wu_len < 8) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint64_t connector_value = read_u64_le(wu, 0);
-        if (connector_value > VAULT_DUST_LIMIT) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        connectors_value += connector_value;
-    }
+    /* Inputs 1 and 2 (ChallengeAssert connectors) carry no per-input value bound: they are
+     * read untrusted and enter only the fee computation below, exactly as the HLD's Payout
+     * section treats its own Assert:0 input.
+     *
+     * They were capped at VAULT_DUST_LIMIT, which rejected every real NoPayout above
+     * 1 sat/vB: btc-vault funds each ChallengeAssert:0 to cover the WronglyChallenged
+     * transaction that may spend it instead, so the value is 509 sat at 1 sat/vB and 688
+     * at 2 — and that formula never yields exactly 546, so the cap admitted only a value
+     * the protocol cannot produce.  The cap also defeated the path it was meant to
+     * protect: a connector held at 546 leaves too little to broadcast the 179 vB
+     * WronglyChallenged spend above 1 sat/vB.
+     *
+     * Nothing replaces it, deliberately, and this needs no new spec concept — it is the
+     * model the HLD already states for Payout ("Assert:0_amount is Input 1's WITNESS_UTXO
+     * value from the PSBT, committed by SIGHASH_DEFAULT, so no trust is placed in it: a
+     * misstated value produces an unusable signature (DoS only)"), and which the HLD
+     * already extends to this flow ("The same argument covers NoPayout Input 0 ... relies
+     * on the same DoS-only argument").  Re-deriving the connector values instead would
+     * hardcode btc-vault's funding internals into firmware, where they would silently
+     * break on any upstream change and where btc-vault exports no constant to diff
+     * against.  What protects the depositor is unchanged: Output 0 is pinned to
+     * P2TR(Challenger_j), the fee is bounded below, and SIGHASH_DEFAULT commits every
+     * prevout amount.  This is why Payout never had this bug.
+     *
+     * See D1/D2/D13 in tmp/hld-discrepancies-2026-09-01.md; the NoPayout "<= DUST" row
+     * and its "at most 3xDUST at stake" claim contradict both HLD passages cited above
+     * and must be replaced by the Payout wording. */
 
     /* Output 0: must pay P2TR(Challenger_j) — key-path spend with empty script tree. */
     uint64_t out0_value;
@@ -2278,22 +2294,29 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
         }
     }
 
-    /* Fee bound: fee <= base_fee_rate * MAX_COUNCIL_NOPAYOUT_VSIZE, mirroring Payout and
+    /* Fee bound: fee <= base_fee_rate * MAX_NOPAYOUT_VSIZE, mirroring Payout and
      * PayoutFinalize.  Pinning Output 0's scriptPubKey alone leaves its amount free, and
      * NoPayout is signed with no user screen, so this is the only thing stopping a host
      * from burning the whole Assert:0 connector — depositor funds — to miner fees.
      * Output 0 must also clear the dust floor, as in every other paying flow.
-     * base_fee_rate is capped at intent-load time, so the checks above leave every input
-     * value well under 2^32 and their sum cannot overflow; the subtraction is guarded
-     * because Output 0's value is attacker-controlled. */
-    uint64_t total_in = input0_value + connectors_value;
-    if (out0_value < VAULT_DUST_LIMIT || out0_value > total_in) {
+     *
+     * The totals come from the base app rather than being summed here: every input must
+     * carry a UTXO for preprocess_inputs to accept the PSBT, so inputs_total_amount covers
+     * all three, and accumulating three host-provided uint64 values locally would need its
+     * own overflow guard now that the connectors are unbounded.  base_fee_rate is capped at
+     * intent-load time, so the fee product cannot overflow, and the check is written as a
+     * division to stay safe if that cap is ever raised. */
+    if (st->inputs_total_amount < st->outputs.total_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
-    uint64_t fee = total_in - out0_value;
-    if ((uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE > UINT64_MAX / intent->base_fee_rate ||
-        fee > intent->base_fee_rate * (uint64_t) MAX_COUNCIL_NOPAYOUT_VSIZE) {
+    if (out0_value < VAULT_DUST_LIMIT) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint64_t fee = st->inputs_total_amount - st->outputs.total_amount;
+    if ((uint64_t) MAX_NOPAYOUT_VSIZE > UINT64_MAX / intent->base_fee_rate ||
+        fee > intent->base_fee_rate * (uint64_t) MAX_NOPAYOUT_VSIZE) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -3330,7 +3353,11 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if ((nsequence & BIP68_SEQUENCE_MASK) != (csv_value & BIP68_SEQUENCE_MASK)) {
+        /* Unmasked, for the same reason as the Refund path: parse_payout_leaf_script
+         * bounds t2 to [VAULT_PAYOUT_TIMELOCK_MIN, VAULT_PAYOUT_TIMELOCK_MAX], well
+         * inside the BIP-68 block-count field, so a masked compare would accept an
+         * nsequence carrying reserved bits the device never validated. */
+        if (nsequence != csv_value) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }

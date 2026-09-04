@@ -5,11 +5,13 @@
  * @brief Pure key-batch validation logic for APPROVE_VAULT_INTENT (INS 0x80).
  *
  * All functions are static inline — no APDU layer, no globals, no SDK calls.
- * Unit tests include this header directly with no mocking required.
+ * Unit tests include this header directly; the only link dependency is the base app's
+ * secp256k1 constant table (bitcoin_app_base/src/secp256k1.c), which is plain data.
  *
- * Covers two operations:
- *   1. vault_validate_and_store_key() — per-key lex order, uniqueness, VP check
- *   2. vault_check_depositor_uniqueness() — final cross-role check after all keys loaded
+ * Covers three operations:
+ *   1. vault_xonly_key_is_canonical() — BIP-340 field-bound check on a host-supplied key
+ *   2. vault_validate_and_store_key() — per-key lex order, uniqueness, VP check
+ *   3. vault_check_depositor_uniqueness() — final cross-role check after all keys loaded
  *
  * The handler (approve_vault_intent.c) owns:
  *   - G_approve_intent_state management
@@ -23,6 +25,29 @@
 #include <string.h>
 
 #include "../vault_intent.h"
+
+#include "../../bitcoin_app_base/src/secp256k1.h"
+
+/**
+ * @brief Verify that @p x is a canonically encoded BIP-340 x-only public key.
+ *
+ * BIP-340 requires the x coordinate to be a 32-byte big-endian integer strictly below
+ * the secp256k1 field prime.  crypto_tr_lift_x does not enforce that bound: it evaluates
+ * the curve equation modulo p and then copies the caller's bytes verbatim, so a
+ * non-canonical value such as p + 1 lifts as the valid residue 1 and is stored unreduced.
+ * Those bytes are embedded into tapscript CHECKSIG/CHECKSIGADD branches, where a BIP-340
+ * parser rejects them — the branch is then unspendable and the funds it guards are
+ * recoverable only by waiting out the refund timelock.
+ *
+ * Call this before crypto_tr_lift_x on every host-supplied key; it bounds the encoding,
+ * it does not replace the curve check.
+ *
+ * @param x 32-byte big-endian x coordinate.
+ * @return true if x < p, and the key may be passed to crypto_tr_lift_x.
+ */
+static inline bool vault_xonly_key_is_canonical(const uint8_t x[VAULT_XONLY_PUBKEY_LEN]) {
+    return memcmp(x, secp256k1_p, VAULT_XONLY_PUBKEY_LEN) < 0;
+}
 
 /**
  * Return codes for vault_validate_and_store_key.

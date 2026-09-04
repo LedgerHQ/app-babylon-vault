@@ -11,49 +11,85 @@ on:
 
 permissions: read-all
 
+# Pull-request runs use code-change mode, which reads the stored corpus but does not
+# publish a new one, so those two sanitizers are safe to run in parallel.
+#
+# Everything else touches the shared corpus and is therefore chained with `needs:`
+# (Cerberus V-028). The phases used to be parallel matrix entries with per-entry
+# concurrency groups, which deliberately put them in *different* groups rather than
+# serialising them: with ClusterFuzzLite's default shared corpus storage, prune could
+# download the pre-run corpus while the batch jobs were still discovering inputs and then
+# race their publication, so the last writer silently dropped the other's finds and
+# coverage could replay a stale corpus. Ordering costs almost nothing here — coverage
+# already runs 18000s against 600s for the other phases, and each job carries its own
+# timeout — so the chain is roughly 5h50m against 5h fully parallel.
+#
+# No 'undefined' (UBSan) phase, and that is not an oversight (Cerberus V-027 stays open).
+# oss-fuzz's bad_build_check requires at least THRESHOLD_FOR_NUMBER_OF_EDGES=100 coverage
+# edges per target. Measured with that checker: fuzz_vault_group_tlv has 173 edges and
+# fuzz_vault_tlv 157, both of which pass, but fuzz_key_batch has 46 and is rejected with
+# "only partial coverage instrumentation" / "does not seem to be compiled with UBSan",
+# failing the whole phase. That target is small by nature — header-inline comparisons over
+# 32-byte keys — so there is no honest way to reach the bar. Enabling UBSan needs either a
+# materially larger key-batch target or oss-fuzz's broken-target allowance raised, and the
+# latter would also mask real breakage.
+
 jobs:
-  prepare_matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix_json: ${{ steps.set_matrix.outputs.matrix }}
-    steps:
-      - name: Set sanitizer matrix
-        id: set_matrix
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            MATRIX='[{"sanitizer":"address","mode":"code-change"},{"sanitizer":"memory","mode":"code-change"}]'
-          else
-            MATRIX='[{"sanitizer":"address","mode":"batch"},{"sanitizer":"memory","mode":"batch"},{"sanitizer":"address","mode":"prune"},{"sanitizer":"coverage","mode":"coverage"}]'
-          fi
-          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+  # ── Pull requests: parallel, corpus read-only ────────────────────────────────
+  pr_address:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/_fuzz_phase.yml
+    with:
+      sanitizer: address
+      mode: code-change
+      fuzz-seconds: 300
+      output-sarif: true
 
-  Fuzzing:
-    name: ${{ matrix.mode }} (${{ matrix.sanitizer }})
-    runs-on: ubuntu-latest
-    needs: prepare_matrix
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.prepare_matrix.outputs.matrix_json) }}
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.event_name }}-${{ matrix.mode }}-${{ matrix.sanitizer }}-${{ github.ref }}
-      cancel-in-progress: true
+  pr_memory:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/_fuzz_phase.yml
+    with:
+      sanitizer: memory
+      mode: code-change
+      fuzz-seconds: 300
+      output-sarif: true
 
-    steps:
-      - name: Build Fuzzers
-        id: build
-        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          language: c
-          sanitizer: ${{ matrix.sanitizer }}
+  # ── Scheduled / push: ordered corpus phases ──────────────────────────────────
+  # grow (address) → grow (memory) → prune → coverage
+  batch_address:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/_fuzz_phase.yml
+    with:
+      sanitizer: address
+      mode: batch
+      fuzz-seconds: 600
 
-      - name: Run Fuzzers
-        id: run
-        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: ${{ github.event_name == 'pull_request' && 300 || (matrix.mode == 'coverage' && 18000 || 600) }}
-          mode: ${{ matrix.mode }}
-          sanitizer: ${{ matrix.sanitizer }}
-          output-sarif: ${{ github.event_name == 'pull_request' }}
+  batch_memory:
+    if: github.event_name != 'pull_request'
+    needs: batch_address
+    uses: ./.github/workflows/_fuzz_phase.yml
+    with:
+      sanitizer: memory
+      mode: batch
+      fuzz-seconds: 600
+
+  # Runs only once both corpus-growing phases have published, so minimisation cannot
+  # discard inputs a concurrent batch job was still discovering.
+  prune:
+    if: github.event_name != 'pull_request'
+    needs: batch_memory
+    uses: ./.github/workflows/_fuzz_phase.yml
+    with:
+      sanitizer: address
+      mode: prune
+      fuzz-seconds: 600
+
+  # Last, so the coverage report describes the pruned corpus rather than a stale one.
+  coverage:
+    if: github.event_name != 'pull_request'
+    needs: prune
+    uses: ./.github/workflows/_fuzz_phase.yml
+    with:
+      sanitizer: coverage
+      mode: coverage
+      fuzz-seconds: 18000

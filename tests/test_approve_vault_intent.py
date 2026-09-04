@@ -57,6 +57,7 @@ from .vault_client import (
     TEST_VP_KEY,
     TEST_VALID_KEYS,
     TEST_INVALID_XONLY_KEY,
+    TEST_NONCANONICAL_XONLY_KEY,
     TEST_DEPOSITOR_XONLY_MAINNET,
     TEST_DEPOSITOR_XONLY_TESTNET,
     _ktlv,
@@ -130,14 +131,22 @@ def _make_group(**overrides) -> bytes:
 
 
 def _raw_exchange(client, p1: int, data: bytes):
-    """Send one APPROVE_VAULT_INTENT APDU; returns response or raises ExceptionRAPDU."""
-    return client.transport_client.exchange(
+    """Send one APPROVE_VAULT_INTENT APDU; returns the response or raises.
+
+    Raises ExceptionRAPDU on any non-whitelisted SW, and AssertionError on 0xE000 — the
+    other status conftest whitelists, which this command never legitimately returns
+    (V-037). Callers that expect a rejection wrap the call in pytest.raises.
+    """
+    response = client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
         p1=p1,
         p2=P2_UNUSED,
         data=data,
     )
+    assert response.status == SW_OK, (
+        f"APPROVE_VAULT_INTENT expected SW_OK, got {response.status:#06x}")
+    return response
 
 
 def _derive_silent(client, bitcoin_network: str) -> None:
@@ -524,7 +533,7 @@ def test_invalid_ec_point_vault_provider_pk_rejected(client: RaggerClient, bitco
     scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
     _raw_exchange(client, P1_SCALARS, scalars)
     with pytest.raises(ExceptionRAPDU) as exc:
-        # TEST_INVALID_XONLY_KEY = 0xFF * 32 which is >= secp256k1 prime p.
+        # TEST_INVALID_XONLY_KEY is p-2: in range, but no curve point has this x.
         _raw_exchange(client, P1_GROUP, _make_group(vault_provider_pk=TEST_INVALID_XONLY_KEY))
     assert exc.value.status == SW_INCORRECT_DATA
 
@@ -552,7 +561,7 @@ def test_invalid_ec_point_keeper_rejected(client: RaggerClient, navigator: Navig
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        # TEST_INVALID_XONLY_KEY is >= secp256k1 prime p — no valid curve point.
+        # TEST_INVALID_XONLY_KEY is p-2: in range, but no curve point has this x.
         _raw_exchange(client, P1_KEY_BATCH,
                       _ktlv(TAG_KEEPER_PK, TEST_INVALID_XONLY_KEY) +
                       _ktlv(TAG_CHALLENGER_PK, KEY_B))
@@ -567,10 +576,56 @@ def test_invalid_ec_point_challenger_rejected(client: RaggerClient, navigator: N
     _raw_exchange(client, P1_SCALARS, scalars)
     _raw_exchange(client, P1_GROUP, _make_group())
     with pytest.raises(ExceptionRAPDU) as exc:
-        # TEST_INVALID_XONLY_KEY is >= secp256k1 prime p — no valid curve point.
+        # TEST_INVALID_XONLY_KEY is p-2: in range, but no curve point has this x.
         _raw_exchange(client, P1_KEY_BATCH,
                       _ktlv(TAG_KEEPER_PK, KEY_A) +
                       _ktlv(TAG_CHALLENGER_PK, TEST_INVALID_XONLY_KEY))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_noncanonical_xonly_vault_provider_pk_rejected(client: RaggerClient,
+                                                       bitcoin_network: str):
+    """vault_provider_pk = p+1 must return SW_INCORRECT_DATA.
+
+    BIP-340 requires x < p.  crypto_tr_lift_x reduces mod p, so it sees x = 1, which is a
+    valid curve point — only an explicit field-bound check rejects this.  Accepting it
+    would embed unreduced bytes into the vault's tapscript branches, which every BIP-340
+    parser then refuses, leaving the branch unspendable.
+    """
+    _derive_silent(client, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_GROUP,
+                      _make_group(vault_provider_pk=TEST_NONCANONICAL_XONLY_KEY))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_noncanonical_xonly_keeper_rejected(client: RaggerClient, navigator: Navigator,
+                                            device: Device, bitcoin_network: str):
+    """A keeper key of p+1 must return SW_INCORRECT_DATA (see the VP-key test for why)."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, TEST_NONCANONICAL_XONLY_KEY) +
+                      _ktlv(TAG_CHALLENGER_PK, KEY_B))
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_noncanonical_xonly_challenger_rejected(client: RaggerClient, navigator: Navigator,
+                                                device: Device, bitcoin_network: str):
+    """A challenger key of p+1 must return SW_INCORRECT_DATA (see the VP-key test for why)."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=1, challenger_count=1)
+    _raw_exchange(client, P1_SCALARS, scalars)
+    _raw_exchange(client, P1_GROUP, _make_group())
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _raw_exchange(client, P1_KEY_BATCH,
+                      _ktlv(TAG_KEEPER_PK, KEY_A) +
+                      _ktlv(TAG_CHALLENGER_PK, TEST_NONCANONICAL_XONLY_KEY))
     assert exc.value.status == SW_INCORRECT_DATA
 
 
