@@ -441,6 +441,11 @@ _Static_assert(sizeof(nbgl_layoutTagValue_t) == VAULT_DISPLAY_PAIR_SIZE,
 #define VAULT_INTENT_REVIEW_TITLE "Review vault intent\nto approve vault\nparameters"
 #define VAULT_INTENT_FINISH_TITLE "Approve vault\nintent?"
 #define VAULT_VP_KEY_LABEL        "Vault provider key"
+/* Phase 2's own intro page.  NBGL draws an intro for every streaming review and the
+ * phases are separate reviews, so this page cannot be suppressed; distinct wording keeps
+ * it from reading as a repeat of phase 1 and marks where the skippable section starts.
+ * Touch only — nano runs the whole review as a single phase. */
+#define VAULT_VAULTS_REVIEW_TITLE "Review vault\namounts and\nparticipant keys"
 #else
 #define VAULT_INTENT_REVIEW_TITLE "Review vault intent"
 #define VAULT_INTENT_FINISH_TITLE "Approve intent?"
@@ -614,7 +619,7 @@ static void vault_after_params(bool confirm) {
      * whole streaming review and excludes per-page narrowing for STREAMING_NAV. */
     nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
                                      &ICON_APP_ACTION,
-                                     VAULT_INTENT_REVIEW_TITLE,
+                                     VAULT_VAULTS_REVIEW_TITLE,
                                      NULL,
                                      vault_stream_vaults_start);
 #else
