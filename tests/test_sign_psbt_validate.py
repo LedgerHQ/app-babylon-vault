@@ -4971,9 +4971,9 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
         for gi in range(_V)
     ]
     # Intent approval here is setup, not the assertion, and no snapshots are captured, so
-    # navigate to the finish page by title rather than pinning a swipe count.  A fixed count has
-    # to be recalibrated whenever NBGL repacks pairs per page — which it did when
-    # SKIPPABLE_OPERATION was removed from the intent review, freeing header space.
+    # navigate to the finish page by title rather than pinning a swipe count.  A fixed count
+    # has to be recalibrated whenever NBGL repacks pairs per page, which the phase-2 Skip
+    # header changes; navigating by title is immune to that.
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,

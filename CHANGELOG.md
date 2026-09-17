@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.10.2] - Skip restored on the intent review
+
+### Changed
+
+- **Screen 2 phase 2 is skippable again; phase 1 stays mandatory**: the intent review's second streaming phase — per-vault groups (VP key, vault amount, commission fee, depositor claim, max PegIn fee) and the whole keeper/challenger key list — now carries `SKIPPABLE_OPERATION`, while phase 1 — the app name, base fee rate, the three timelocks and the max Pre-PegIn fee — must still be paged through in full. Requested by Babylon (Jerome Wang, option 1 of two proposed boundaries) for usability on large intents, where the key list runs to 64 entries. The boundary is exactly the existing phase 1 / phase 2 seam, so no restructuring was needed: the two-phase split had been kept for precisely this, since NBGL arms `SKIPPABLE_OPERATION` for a whole streaming review and excludes per-page narrowing for `STREAMING_NAV`. Skip lands on the approve/reject page rather than approving silently, so "chose not to read the details" stays distinct from "never approved". Nano is unaffected — the SDK offers no skip affordance there, and its goldens are unchanged (`src/display.c`)
+
+  **This reverses an audit fix, and the HLD is not being amended.** The removal cited S-01 / Govard #5 / D7, on the grounds that Screen 2 is the sole anchor for the *silent* signing that follows it — Pre-PegIn signs with no further screen — and HLD v23 §Safety UX still reads "the user must approve before any signing can proceed" over intent fields marked ✅, all of which phase 2 contains. `APP_SPECIFICATION.md` records the deviation, the mandatory/skippable split, and the reversal. It is the closest analogue in this repo to the V-012 entry below: a deviation that will not be closed, documented where the next reviewer will find it rather than left implicit in the code.
+
+  **Assert's session-scoped binding now depends on a skippable screen.** `APP_SPECIFICATION.md` identifies the user's review of the Screen 2 key list as what prevents a substituted challenger set from being signed over, since the device cannot recognise the intent a vault was funded under. That list is in phase 2, so a user who skips it loses that check; the binding still holds against the intent loaded in the session. Both the Assert note and the new Screen 2 section now say so. Displaying the challenger set on Screen 5 would remove the dependency; not done here.
+
+### Tests
+
+- **Skip affordance covered in both directions**: `test_skip_intent_screen` walks params in full, taps Skip on the first vault group, and approves — capturing the short path as goldens, and asserting by construction that Skip reaches the approval page rather than a signature. `test_phase1_params_not_skippable` reads the NBGL header off each live screen and asserts "Skip" is absent on every phase-1 params page and present on the first phase-2 page, so the boundary is pinned by observed behaviour rather than a page count. Both skip on nano, where no affordance exists. The pre-existing asymmetric 4-keeper/3-challenger test is kept as the full-review counterpart — it is the only intent test with unequal counts (`tests/test_screen2_vault_intent.py`, `tests/instructions.py`)
+- **Step-count helpers recalibrated for the Skip header**: the header costs vertical space, so NBGL repacks tag/value pairs. Measured against regenerated goldens: Flex and Apex fit 1 key per page (down from 2), Stax still fits 2, nano is unchanged. `_vault_intent_key_pages` now splits Stax from Flex/Apex, and the new `vault_intent_params_pages` shares the phase-1 page count between the skip navigation and the boundary assertion. Verified for `vault_count` 1 and 10 and for 2, 7 and 64 keys (`tests/instructions.py`)
+- **Screen 2 goldens regenerated on touch devices only**: stax, flex and apex_p across both networks, for `test_screen2_vault_intent.py` and the intent-approval snapshots in `test_approve_vault_intent.py`. nanox and nanosp pass unchanged against their existing goldens, which is the intended evidence that the affordance is touch-only. The dashboard goldens are regenerated on all five devices for the version bump alone — the "App info" page renders `APPVERSION` (`tests/snapshots/`, `Makefile`)
+
+
 ## [0.10.1] - Cerberus scan remediation (scan `64679654`, 2026-08-26)
 
 Triage of all 36 findings is in `tmp/cerberus-triage-2026-08-31.md`. The scan was run
