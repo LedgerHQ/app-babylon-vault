@@ -11,7 +11,7 @@
 #include "../bitcoin_app_base/src/common/wallet.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map_value.h"
-#include "../bitcoin_app_base/src/handler/lib/stream_merkleized_map_value.h"
+#include "../bitcoin_app_base/src/handler/lib/stream_merkle_leaf_element.h"
 #include "../bitcoin_app_base/src/handler/sign_psbt.h"
 #include "../bitcoin_app_base/src/handler/sign_psbt/psbt_fields.h"
 
@@ -289,8 +289,7 @@ static void _leaf_stream_data_cb(buffer_t *buf, void *opaque) {
 static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
                                    tap_leaf_script_state_t *state,
                                    const merkleized_map_commitment_t *map_commitment,
-                                   const uint8_t *full_key,
-                                   size_t full_key_len) {
+                                   int index) {
     /* Without a loaded intent there is no approved challenger set to compare against, so
      * no leaf can qualify as an Assert. */
     leaf_stream_ctx_t ctx = {
@@ -299,13 +298,13 @@ static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
                                  ? (int32_t) vault_assert_prefix_len(&G_vault_intent)
                                  : -1};
 
-    int rc = call_stream_merkleized_map_value(dc,
-                                              map_commitment,
-                                              full_key,
-                                              full_key_len,
-                                              _leaf_stream_len_cb,
-                                              _leaf_stream_data_cb,
-                                              &ctx);
+    int rc = call_stream_merkle_leaf_element(dc,
+                                             map_commitment->values_root,
+                                             (uint32_t) map_commitment->size,
+                                             (uint32_t) index,
+                                             _leaf_stream_len_cb,
+                                             _leaf_stream_data_cb,
+                                             &ctx);
     if (rc < 0 || ctx.len_rejected || !ctx.len_known || ctx.overflow) return false;
     if ((uint32_t) rc != ctx.value_len || ctx.seen != ctx.value_len) return false;
 
@@ -328,12 +327,10 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
                                       int index,
                                       buffer_t *data) {
     UNUSED(dc);
-    UNUSED(index);
 
     size_t data_len = data->size - data->offset;
     if (data_len < 1) return;
 
-    size_t full_key_start = data->offset;
     uint8_t key_type;
     buffer_read_u8(data, &key_type);
     if (key_type != PSBT_IN_TAP_LEAF_SCRIPT) return;
@@ -353,32 +350,28 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     state->control_block_len = (uint16_t) cb_len;
     memcpy(state->control_block, data->ptr + data->offset, cb_len);
 
-    /*
-     * Read the value: <leaf_script> || <leaf_version (1B)>.
-     * The map_commitment has the value Merkle root; look up by position (index).
-     * We use call_get_merkleized_map_value on the *value* merkle tree via a
-     * temporary full key reconstruction: the full key is key_type || control_block,
-     * which is exactly what was in `data` before we read the type byte.
-     */
-    /* data->ptr + full_key_start is key_type || control_block — the full map key. */
-    const uint8_t *full_key = data->ptr + full_key_start;
-    size_t full_key_len = 1 + cb_len;
-
-    /* The value is always read by streaming, never with call_get_merkleized_map_value.
+    /* Read the value: <leaf_script> || <leaf_version (1B)>.
      *
-     * A buffered read cannot be used as the primary path with a streaming fallback for
-     * oversized values: call_get_merkle_preimage decides the value is too large right
-     * after the first GET_PREIMAGE response and returns -4 *without draining the rest*,
-     * leaving the host client's element queue full.  The next client command that needs
-     * an empty queue (GET_MERKLE_LEAF_PROOF) then fails, so the aborted read corrupts the
-     * protocol state rather than merely wasting a round-trip.
+     * The value is read by *index* on values_root, never by key: this callback fires while
+     * the map's keys are still being verified sorted, and the by-key readers require that
+     * precondition (they assert on it).  Reading by index is also exact rather than merely
+     * permitted — the values tree is ordered by corresponding key, so element `index` of
+     * values_root is the value of the key this callback was just handed.
+     *
+     * The read is always streamed, never buffered.  A buffered read cannot be used as the
+     * primary path with a streaming fallback for oversized values: call_get_merkle_preimage
+     * decides the value is too large right after the first GET_PREIMAGE response and
+     * returns -4 *without draining the rest*, leaving the host client's element queue full.
+     * The next client command that needs an empty queue (GET_MERKLE_LEAF_PROOF) then fails,
+     * so the aborted read corrupts the protocol state rather than merely wasting a
+     * round-trip.
      *
      * Streaming has no such abort: it consumes the whole value, hash-verifies the
      * complete preimage exactly as the buffered path does, and buffers the script into
      * tls.leaf_script when it fits.  Chunks are written straight into leaf_script (union
      * offset 262), which no longer needs leaf_check.actual_buf as an intermediate — so
      * the old memmove-overlap hazard is gone too. */
-    if (!_stream_tap_leaf_value(dc, state, map_commitment, full_key, full_key_len)) {
+    if (!_stream_tap_leaf_value(dc, state, map_commitment, index)) {
         state->ambiguous = true;
     }
 }
