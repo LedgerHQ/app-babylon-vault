@@ -11,8 +11,9 @@
 #include "../bitcoin_app_base/src/common/wallet.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map.h"
 #include "../bitcoin_app_base/src/handler/lib/get_merkleized_map_value.h"
-#include "../bitcoin_app_base/src/handler/lib/stream_merkleized_map_value.h"
+#include "../bitcoin_app_base/src/handler/lib/stream_merkle_leaf_element.h"
 #include "../bitcoin_app_base/src/handler/sign_psbt.h"
+#include "../bitcoin_app_base/src/handler/sign_psbt/psbt_fields.h"
 
 #include "cx.h"
 #include "../bitcoin_app_base/src/crypto.h"
@@ -288,8 +289,7 @@ static void _leaf_stream_data_cb(buffer_t *buf, void *opaque) {
 static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
                                    tap_leaf_script_state_t *state,
                                    const merkleized_map_commitment_t *map_commitment,
-                                   const uint8_t *full_key,
-                                   size_t full_key_len) {
+                                   int index) {
     /* Without a loaded intent there is no approved challenger set to compare against, so
      * no leaf can qualify as an Assert. */
     leaf_stream_ctx_t ctx = {
@@ -298,13 +298,13 @@ static bool _stream_tap_leaf_value(dispatcher_context_t *dc,
                                  ? (int32_t) vault_assert_prefix_len(&G_vault_intent)
                                  : -1};
 
-    int rc = call_stream_merkleized_map_value(dc,
-                                              map_commitment,
-                                              full_key,
-                                              full_key_len,
-                                              _leaf_stream_len_cb,
-                                              _leaf_stream_data_cb,
-                                              &ctx);
+    int rc = call_stream_merkle_leaf_element(dc,
+                                             map_commitment->values_root,
+                                             (uint32_t) map_commitment->size,
+                                             (uint32_t) index,
+                                             _leaf_stream_len_cb,
+                                             _leaf_stream_data_cb,
+                                             &ctx);
     if (rc < 0 || ctx.len_rejected || !ctx.len_known || ctx.overflow) return false;
     if ((uint32_t) rc != ctx.value_len || ctx.seen != ctx.value_len) return false;
 
@@ -327,12 +327,10 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
                                       int index,
                                       buffer_t *data) {
     UNUSED(dc);
-    UNUSED(index);
 
     size_t data_len = data->size - data->offset;
     if (data_len < 1) return;
 
-    size_t full_key_start = data->offset;
     uint8_t key_type;
     buffer_read_u8(data, &key_type);
     if (key_type != PSBT_IN_TAP_LEAF_SCRIPT) return;
@@ -352,32 +350,28 @@ static void _tap_leaf_script_callback(dispatcher_context_t *dc,
     state->control_block_len = (uint16_t) cb_len;
     memcpy(state->control_block, data->ptr + data->offset, cb_len);
 
-    /*
-     * Read the value: <leaf_script> || <leaf_version (1B)>.
-     * The map_commitment has the value Merkle root; look up by position (index).
-     * We use call_get_merkleized_map_value on the *value* merkle tree via a
-     * temporary full key reconstruction: the full key is key_type || control_block,
-     * which is exactly what was in `data` before we read the type byte.
-     */
-    /* data->ptr + full_key_start is key_type || control_block — the full map key. */
-    const uint8_t *full_key = data->ptr + full_key_start;
-    size_t full_key_len = 1 + cb_len;
-
-    /* The value is always read by streaming, never with call_get_merkleized_map_value.
+    /* Read the value: <leaf_script> || <leaf_version (1B)>.
      *
-     * A buffered read cannot be used as the primary path with a streaming fallback for
-     * oversized values: call_get_merkle_preimage decides the value is too large right
-     * after the first GET_PREIMAGE response and returns -4 *without draining the rest*,
-     * leaving the host client's element queue full.  The next client command that needs
-     * an empty queue (GET_MERKLE_LEAF_PROOF) then fails, so the aborted read corrupts the
-     * protocol state rather than merely wasting a round-trip.
+     * The value is read by *index* on values_root, never by key: this callback fires while
+     * the map's keys are still being verified sorted, and the by-key readers require that
+     * precondition (they assert on it).  Reading by index is also exact rather than merely
+     * permitted — the values tree is ordered by corresponding key, so element `index` of
+     * values_root is the value of the key this callback was just handed.
+     *
+     * The read is always streamed, never buffered.  A buffered read cannot be used as the
+     * primary path with a streaming fallback for oversized values: call_get_merkle_preimage
+     * decides the value is too large right after the first GET_PREIMAGE response and
+     * returns -4 *without draining the rest*, leaving the host client's element queue full.
+     * The next client command that needs an empty queue (GET_MERKLE_LEAF_PROOF) then fails,
+     * so the aborted read corrupts the protocol state rather than merely wasting a
+     * round-trip.
      *
      * Streaming has no such abort: it consumes the whole value, hash-verifies the
      * complete preimage exactly as the buffered path does, and buffers the script into
      * tls.leaf_script when it fits.  Chunks are written straight into leaf_script (union
      * offset 262), which no longer needs leaf_check.actual_buf as an intermediate — so
      * the old memmove-overlap hazard is gone too. */
-    if (!_stream_tap_leaf_value(dc, state, map_commitment, full_key, full_key_len)) {
+    if (!_stream_tap_leaf_value(dc, state, map_commitment, index)) {
         state->ambiguous = true;
     }
 }
@@ -453,11 +447,7 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
             return false;
 
         uint32_t vout;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &in_map,
-                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                                 1,
-                                                 &vout) != 4) {
+        if (PSBT_FIELD_PRESENT != psbt_get_input_prevout_index(dc, &in_map, &vout)) {
             return false;
         }
         write_u32_le(tmp, 0, vout);
@@ -473,12 +463,7 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
          * behaviour.  Pre-PegIn has locktime=0 and must use SEQUENCE_FINAL
          * (no RBF, no CSV) — any other sequence is rejected. */
         uint32_t seq;
-        int seq_rc = call_get_merkleized_map_value_u32_le(dc,
-                                                          &in_map,
-                                                          (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                                          1,
-                                                          &seq);
-        if (seq_rc != 4) return false;
+        if (PSBT_FIELD_PRESENT != psbt_get_input_sequence(dc, &in_map, &seq)) return false;
         if (seq != SEQUENCE_FINAL) return false;
         write_u32_le(tmp, 0, seq);
         if (cx_hash_no_throw(&sha.header, 0, tmp, 4, NULL, 0) != CX_OK) return false;
@@ -572,20 +557,17 @@ static bool _validate_prepegin(
             return false;
         }
         uint32_t sighash_type = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash_type);
-        if (res >= 0 && res != 4) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash_type);
+        if (res == PSBT_FIELD_ERROR) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (res == 4 && sighash_type != SIGHASH_DEFAULT && sighash_type != SIGHASH_ALL) {
+        if (res == PSBT_FIELD_PRESENT && sighash_type != SIGHASH_DEFAULT &&
+            sighash_type != SIGHASH_ALL) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        /* res < 0 means absent → SIGHASH_DEFAULT (0) → OK */
+        /* PSBT_FIELD_ABSENT means no PSBT_IN_SIGHASH_TYPE → SIGHASH_DEFAULT → OK */
     }
 
     /* Per vault group: verify htlc_vout range, HTLC scriptPubKey, and amount. */
@@ -828,19 +810,15 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
     }
     {
         uint32_t sighash_type = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash_type);
-        if (res >= 0 && res != 4) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash_type);
+        if (res == PSBT_FIELD_ERROR) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
         /* HLD mandates SIGHASH_DEFAULT only; explicit SIGHASH_ALL is rejected even
          * though BIP-341 defines it as equivalent for tapscript, to enforce strict
          * canonical encoding per the protocol spec. */
-        if (res == 4 && sighash_type != SIGHASH_DEFAULT) {
+        if (res == PSBT_FIELD_PRESENT && sighash_type != SIGHASH_DEFAULT) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -970,12 +948,7 @@ static bool _validate_display_refund(dispatcher_context_t *dc, sign_psbt_state_t
      * BIP-68: bit 31 enables/disables sequence, bit 22 selects block vs time. */
     {
         uint32_t nsequence = 0;
-        int seq_res = call_get_merkleized_map_value_u32_le(dc,
-                                                           &input_map,
-                                                           (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                                           1,
-                                                           &nsequence);
-        if (seq_res != 4) {
+        if (PSBT_FIELD_PRESENT != psbt_get_input_sequence(dc, &input_map, &nsequence)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1227,22 +1200,14 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
     }
 
     uint32_t vout;
-    if (call_get_merkleized_map_value_u32_le(dc,
-                                             input_map,
-                                             (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                             1,
-                                             &vout) != 4 ||
+    if (PSBT_FIELD_PRESENT != psbt_get_input_prevout_index(dc, input_map, &vout) ||
         vout != intent->groups[group_idx].htlc_vout) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
 
     uint32_t seq;
-    if (call_get_merkleized_map_value_u32_le(dc,
-                                             input_map,
-                                             (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                             1,
-                                             &seq) != 4 ||
+    if (PSBT_FIELD_PRESENT != psbt_get_input_sequence(dc, input_map, &seq) ||
         seq != PEGIN_TX_SEQUENCE) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
@@ -1250,12 +1215,8 @@ static bool _pegin_validate_input(dispatcher_context_t *dc,
 
     /* SIGHASH_DEFAULT only (spec: absent or explicit 0; SIGHASH_ALL rejected). */
     uint32_t sighash_type = 0;
-    int res = call_get_merkleized_map_value_u32_le(dc,
-                                                   input_map,
-                                                   (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                   1,
-                                                   &sighash_type);
-    if ((res >= 0 && res != 4) || (res == 4 && sighash_type != SIGHASH_DEFAULT)) {
+    psbt_field_status_t res = psbt_get_input_sighash_type(dc, input_map, &sighash_type);
+    if (res == PSBT_FIELD_ERROR || (res == PSBT_FIELD_PRESENT && sighash_type != SIGHASH_DEFAULT)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1443,11 +1404,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* Auto-detect group_idx: find the vault group whose htlc_vout matches
      * Input 0's PSBT_IN_OUTPUT_INDEX.  This enables multi-vault PegIn signing. */
     uint32_t htlc_vout;
-    if (call_get_merkleized_map_value_u32_le(dc,
-                                             &input_map,
-                                             (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                             1,
-                                             &htlc_vout) != 4) {
+    if (PSBT_FIELD_PRESENT != psbt_get_input_prevout_index(dc, &input_map, &htlc_vout)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -1786,11 +1743,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* PSBT_IN_OUTPUT_INDEX must be 0 (Vault UTXO = output 0 of PegIn) */
     {
         uint32_t vout;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &input_map,
-                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                                 1,
-                                                 &vout) != 4 ||
+        if (PSBT_FIELD_PRESENT != psbt_get_input_prevout_index(dc, &input_map, &vout) ||
             vout != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1800,11 +1753,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* PSBT_IN_SEQUENCE must equal pegin_csv_timelock */
     {
         uint32_t seq;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &input_map,
-                                                 (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                                 1,
-                                                 &seq) != 4 ||
+        if (PSBT_FIELD_PRESENT != psbt_get_input_sequence(dc, &input_map, &seq) ||
             seq != (uint32_t) intent->pegin_csv_timelock) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1814,12 +1763,8 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* Sighash: SIGHASH_DEFAULT only (absent or 0; 1=ALL rejected) */
     {
         uint32_t sighash = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash);
-        if ((res >= 0 && res != 4) || (res == 4 && sighash != 0)) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash);
+        if (res == PSBT_FIELD_ERROR || (res == PSBT_FIELD_PRESENT && sighash != SIGHASH_DEFAULT)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -1869,11 +1814,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
     /* PSBT_IN_SEQUENCE must equal payout_timelock */
     {
         uint32_t seq;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &input1_map,
-                                                 (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                                 1,
-                                                 &seq) != 4 ||
+        if (PSBT_FIELD_PRESENT != psbt_get_input_sequence(dc, &input1_map, &seq) ||
             seq != (uint32_t) intent->payout_timelock) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -1889,11 +1830,7 @@ static bool _validate_payout(dispatcher_context_t *dc, sign_psbt_state_t *st) {
      * Assert:0 UTXO at vout=0 with the correct scripts cannot be detected. */
     {
         uint32_t assert_vout;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &input1_map,
-                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                                 1,
-                                                 &assert_vout) != 4 ||
+        if (PSBT_FIELD_PRESENT != psbt_get_input_prevout_index(dc, &input1_map, &assert_vout) ||
             assert_vout != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2183,12 +2120,8 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     /* Sighash must be SIGHASH_DEFAULT (absent or 0) */
     {
         uint32_t sighash = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash);
-        if ((res >= 0 && res != 4) || (res == 4 && sighash != 0)) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash);
+        if (res == PSBT_FIELD_ERROR || (res == PSBT_FIELD_PRESENT && sighash != SIGHASH_DEFAULT)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2234,11 +2167,7 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
     /* PSBT_IN_OUTPUT_INDEX must be 0 (Assert:0 = output 0 of Assert tx) */
     {
         uint32_t vout;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &input_map,
-                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                                 1,
-                                                 &vout) != 4 ||
+        if (PSBT_FIELD_PRESENT != psbt_get_input_prevout_index(dc, &input_map, &vout) ||
             vout != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -2350,16 +2279,15 @@ static bool _validate_nopayout(dispatcher_context_t *dc, sign_psbt_state_t *st) 
  * ---------------------------------------------------------------------- */
 
 /* Verify Input 0 nSequence == SEQUENCE_FINAL (RBF-disabled, no CSV).
- * Absent PSBT_IN_SEQUENCE is treated as the spec-default SEQUENCE_FINAL. */
+ * Absent PSBT_IN_SEQUENCE is treated as the spec-default SEQUENCE_FINAL; a field that is
+ * present but unreadable is fatal, as defaulting there would sign over a sequence the
+ * client never committed to. */
 static bool _require_sequence_final(dispatcher_context_t *dc,
                                     merkleized_map_commitment_t *input_map) {
-    uint32_t seq = SEQUENCE_FINAL;
-    int seq_rc = call_get_merkleized_map_value_u32_le(dc,
-                                                      input_map,
-                                                      (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                                      1,
-                                                      &seq);
-    if ((seq_rc >= 0 && seq_rc != 4) || seq != SEQUENCE_FINAL) {
+    uint32_t seq;
+    psbt_field_status_t status = psbt_get_input_sequence(dc, input_map, &seq);
+    if (status == PSBT_FIELD_ABSENT) return true;
+    if (status != PSBT_FIELD_PRESENT || seq != SEQUENCE_FINAL) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -2400,12 +2328,8 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     /* Sighash must be SIGHASH_DEFAULT */
     {
         uint32_t sighash = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash);
-        if ((res >= 0 && res != 4) || (res == 4 && sighash != 0)) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash);
+        if (res == PSBT_FIELD_ERROR || (res == PSBT_FIELD_PRESENT && sighash != SIGHASH_DEFAULT)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2608,12 +2532,8 @@ static bool _validate_display_assert(dispatcher_context_t *dc, sign_psbt_state_t
     /* Sighash must be SIGHASH_DEFAULT */
     {
         uint32_t sighash = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash);
-        if ((res >= 0 && res != 4) || (res == 4 && sighash != 0)) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash);
+        if (res == PSBT_FIELD_ERROR || (res == PSBT_FIELD_PRESENT && sighash != SIGHASH_DEFAULT)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2764,12 +2684,8 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
     /* Sighash must be SIGHASH_DEFAULT */
     {
         uint32_t sighash = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash);
-        if ((res >= 0 && res != 4) || (res == 4 && sighash != 0)) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash);
+        if (res == PSBT_FIELD_ERROR || (res == PSBT_FIELD_PRESENT && sighash != SIGHASH_DEFAULT)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2915,7 +2831,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
                                                 BIP322_PSBT_PROP_KEY_LEN,
                                                 msg_buf,
                                                 BIP322_POP_MSG_MAX_LEN);
-    /* call_get_merkleized_map_value returns −4 (error) when the value exceeds the
+    /* call_get_merkleized_map_value returns MAP_VALUE_ERROR when the value exceeds the
      * buffer size, so msg_len > BIP322_POP_MSG_MAX_LEN is structurally unreachable —
      * kept as explicit documentation of the intended upper-bound rejection. */
     if (msg_len <= 0 || msg_len > BIP322_POP_MSG_MAX_LEN) {
@@ -2942,16 +2858,12 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
     /* Sighash: absent (SIGHASH_DEFAULT) or explicit 0 only */
     {
         uint32_t sighash = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash);
-        if (res >= 0 && res != 4) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash);
+        if (res == PSBT_FIELD_ERROR) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (res == 4 && sighash != 0) {
+        if (res == PSBT_FIELD_PRESENT && sighash != SIGHASH_DEFAULT) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3113,11 +3025,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
     /* PSBT_IN_OUTPUT_INDEX must be 0 */
     {
         uint32_t vout;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &input_map,
-                                                 (uint8_t[]) {PSBT_IN_OUTPUT_INDEX},
-                                                 1,
-                                                 &vout) != 4 ||
+        if (PSBT_FIELD_PRESENT != psbt_get_input_prevout_index(dc, &input_map, &vout) ||
             vout != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -3127,12 +3035,7 @@ static bool _validate_display_pop(dispatcher_context_t *dc, sign_psbt_state_t *s
     /* PSBT_IN_SEQUENCE must be 0 (BIP-322 to_sign nSequence = 0) */
     {
         uint32_t seq;
-        if (call_get_merkleized_map_value_u32_le(dc,
-                                                 &input_map,
-                                                 (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                                 1,
-                                                 &seq) != 4 ||
-            seq != 0) {
+        if (PSBT_FIELD_PRESENT != psbt_get_input_sequence(dc, &input_map, &seq) || seq != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3238,12 +3141,8 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
     /* Sighash must be SIGHASH_DEFAULT */
     {
         uint32_t sighash = 0;
-        int res = call_get_merkleized_map_value_u32_le(dc,
-                                                       &input1_map,
-                                                       (uint8_t[]) {PSBT_IN_SIGHASH_TYPE},
-                                                       1,
-                                                       &sighash);
-        if ((res >= 0 && res != 4) || (res == 4 && sighash != 0)) {
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input1_map, &sighash);
+        if (res == PSBT_FIELD_ERROR || (res == PSBT_FIELD_PRESENT && sighash != SIGHASH_DEFAULT)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3340,12 +3239,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
      * nSequence must be block-based and encode exactly the CSV timelock t2. */
     {
         uint32_t nsequence = 0;
-        int seq_res = call_get_merkleized_map_value_u32_le(dc,
-                                                           &input1_map,
-                                                           (uint8_t[]) {PSBT_IN_SEQUENCE},
-                                                           1,
-                                                           &nsequence);
-        if (seq_res != 4) {
+        if (PSBT_FIELD_PRESENT != psbt_get_input_sequence(dc, &input1_map, &nsequence)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
