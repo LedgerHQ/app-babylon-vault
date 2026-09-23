@@ -6,12 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [0.10.1] - Cerberus scan remediation (scan `64679654`, 2026-08-26)
+## [0.10.2] - Skip restored on the intent review
 
-Triage of all 36 findings is in `tmp/cerberus-triage-2026-08-31.md`. The scan was run
-against `04688011` (2026-08-10) rather than the then-current `develop`, so 10 of its 13
-HIGH/MEDIUM findings were already fixed or mitigated before it reported; only V-005 and
-V-013 were genuinely open in embedded code.
+### Changed
+
+- **Screen 2 phase 2 is skippable again; phase 1 stays mandatory**: the intent review's second streaming phase — per-vault groups (VP key, vault amount, commission fee, depositor claim, max PegIn fee) and the whole keeper/challenger key list — now carries `SKIPPABLE_OPERATION`, while phase 1 — the app name, base fee rate, the three timelocks and the max Pre-PegIn fee — must still be paged through in full. Requested by Babylon (Jerome Wang, option 1 of two proposed boundaries) for usability on large intents, where the key list runs to 64 entries. The boundary is exactly the existing phase 1 / phase 2 seam, so no restructuring was needed: the two-phase split had been kept for precisely this, since NBGL arms `SKIPPABLE_OPERATION` for a whole streaming review and excludes per-page narrowing for `STREAMING_NAV`. Skip lands on the approve/reject page rather than approving silently, so "chose not to read the details" stays distinct from "never approved". Nano is unaffected — the SDK offers no skip affordance there, and its goldens are unchanged (`src/display.c`)
+
+  **This reverses an audit fix, and the HLD is not being amended.** The removal cited S-01 / Govard #5 / D7, on the grounds that Screen 2 is the sole anchor for the *silent* signing that follows it — Pre-PegIn signs with no further screen — and HLD v23 §Safety UX still reads "the user must approve before any signing can proceed" over intent fields marked ✅, all of which phase 2 contains. `APP_SPECIFICATION.md` records the deviation, the mandatory/skippable split, and the reversal. It is the closest analogue in this repo to the Screen 1 caller-identity entry below: a deviation that will not be closed, documented where the next reviewer will find it rather than left implicit in the code.
+
+  **Assert's session-scoped binding now depends on a skippable screen.** `APP_SPECIFICATION.md` identifies the user's review of the Screen 2 key list as what prevents a substituted challenger set from being signed over, since the device cannot recognise the intent a vault was funded under. That list is in phase 2, so a user who skips it loses that check; the binding still holds against the intent loaded in the session. Both the Assert note and the new Screen 2 section now say so. Displaying the challenger set on Screen 5 would remove the dependency; not done here.
+
+### Tests
+
+- **Skip affordance covered in both directions**: `test_skip_intent_screen` walks params in full, taps Skip on the first vault group, and approves — capturing the short path as goldens, and asserting by construction that Skip reaches the approval page rather than a signature. `test_phase1_params_not_skippable` reads the NBGL header off each live screen and asserts "Skip" is absent on every phase-1 params page and present on the first phase-2 page, so the boundary is pinned by observed behaviour rather than a page count. Both skip on nano, where no affordance exists. The pre-existing asymmetric 4-keeper/3-challenger test is kept as the full-review counterpart — it is the only intent test with unequal counts (`tests/test_screen2_vault_intent.py`, `tests/instructions.py`)
+- **Step-count helpers recalibrated for the Skip header**: the header costs vertical space, so NBGL repacks tag/value pairs. Measured against regenerated goldens: Flex and Apex fit 1 key per page (down from 2), Stax still fits 2, nano is unchanged. `_vault_intent_key_pages` now splits Stax from Flex/Apex, and the new `vault_intent_params_pages` shares the phase-1 page count between the skip navigation and the boundary assertion. Verified for `vault_count` 1 and 10 and for 2, 7 and 64 keys (`tests/instructions.py`)
+- **Screen 2 goldens regenerated on touch devices only**: stax, flex and apex_p across both networks, for `test_screen2_vault_intent.py` and the intent-approval snapshots in `test_approve_vault_intent.py`. nanox and nanosp pass unchanged against their existing goldens, which is the intended evidence that the affordance is touch-only. The dashboard goldens are regenerated on all five devices for the version bump alone — the "App info" page renders `APPVERSION` (`tests/snapshots/`, `Makefile`)
+
+
+## [0.10.1] - security scan remediation
+
+The scan was run against `04688011` (2026-08-10) rather than the then-current `develop`,
+so 10 of its 13 HIGH/MEDIUM findings were already fixed or mitigated before it reported;
+only two were genuinely open in embedded code.
 
 ### Fixed — NoPayout rejected every real transaction above 1 sat/vB (D1)
 
@@ -23,52 +39,52 @@ V-013 were genuinely open in embedded code.
 - **NoPayout fee bounded by its own vsize, not CouncilNoPayout's (D5)**: the bound used `MAX_COUNCIL_NOPAYOUT_VSIZE` (500) — a different transaction's ceiling. It happened to work because 500 > 377, but would have mis-priced silently if either transaction changed. New `MAX_NOPAYOUT_VSIZE` (450) gives ~20% headroom over the measured 337–377 vB. `MAX_COUNCIL_NOPAYOUT_VSIZE` is retained for what it actually bounds — Input 0's funding — with its ~12-of-18 council assumption now documented (D7) (`sign_psbt_validate.c`)
 - **NoPayout test fixture funded from the protocol formula (D8)**: `_build_nopayout_psbt` pinned all three inputs to `VAULT_DUST_LIMIT` — the maximum the broken check allowed, and a value the protocol never produces — so the entire NoPayout suite passed while no real transaction could be signed. Inputs are now funded per btc-vault's builders, `base_fee_rate` is threaded through intent setup, and a new test sweeps 1/2/10/50 sat/vB. The two former `input{1,2}_value_too_high` tests are repurposed rather than dropped: they now assert that a connector above DUST is accepted when its value reaches Output 0, and that inflating one without paying it out is caught by the fee bound (`tests/test_sign_psbt_validate.py`)
 
-- **Group TLV parser now fuzzed (V-024)**: `vault_tlv.c` holds two independent parsers, and only the P1=0x00 scalar one had a target. `vault_tlv_parse_group` — fed host-controlled bytes straight off the wire, with its own boundary arithmetic, 32-byte key copy, tag-order tracking, consumed-length contract and back-to-back record framing — was reachable from any USB/BLE/NFC host yet unreachable from every fuzz target. New `fuzz_vault_group_tlv` mirrors production framing by advancing on the parser's own `consumed` value and treating zero or over-long progress as a hard stop, the way `handle_group_payload` does. Seeded with a valid record, two back-to-back records, and truncated / bad-length / unknown-tag variants; registered in CMake and in the ClusterFuzz seed zip loop. Replaying the seeds reaches cov 28 / ft 54 (`fuzzing/src/fuzz_vault_group_tlv.c`, `fuzzing/CMakeLists.txt`, `.clusterfuzzlite/build.sh`)
-- **Key-batch fuzzer could not reach the collision checks (V-023)**: the harness zero-initialised `vault_intent_t` and never set `vault_count`, so both provider-key loops in `approve_vault_intent_core.h` — `for (g = 0; g < intent->vault_count; g++)` — could not execute. `VAULT_KEY_ERR_ROLE_COLLISION` and the depositor-versus-provider path were dead, despite a comment claiming the zero provider key exercised them. The harness now sets one active group, takes the provider key from the input, and uses a control byte to deterministically replay it as a candidate rather than relying on the fuzzer guessing a 32-byte equality; it also exercises `vault_xonly_key_is_canonical`. Seeded with collision, accepted and depositor-only inputs. Coverage on seed replay went from cov 2 to **cov 26** (`fuzzing/src/fuzz_key_batch.c`)
+- **Group TLV parser now fuzzed**: `vault_tlv.c` holds two independent parsers, and only the P1=0x00 scalar one had a target. `vault_tlv_parse_group` — fed host-controlled bytes straight off the wire, with its own boundary arithmetic, 32-byte key copy, tag-order tracking, consumed-length contract and back-to-back record framing — was reachable from any USB/BLE/NFC host yet unreachable from every fuzz target. New `fuzz_vault_group_tlv` mirrors production framing by advancing on the parser's own `consumed` value and treating zero or over-long progress as a hard stop, the way `handle_group_payload` does. Seeded with a valid record, two back-to-back records, and truncated / bad-length / unknown-tag variants; registered in CMake and in the ClusterFuzz seed zip loop. Replaying the seeds reaches cov 28 / ft 54 (`fuzzing/src/fuzz_vault_group_tlv.c`, `fuzzing/CMakeLists.txt`, `.clusterfuzzlite/build.sh`)
+- **Key-batch fuzzer could not reach the collision checks**: the harness zero-initialised `vault_intent_t` and never set `vault_count`, so both provider-key loops in `approve_vault_intent_core.h` — `for (g = 0; g < intent->vault_count; g++)` — could not execute. `VAULT_KEY_ERR_ROLE_COLLISION` and the depositor-versus-provider path were dead, despite a comment claiming the zero provider key exercised them. The harness now sets one active group, takes the provider key from the input, and uses a control byte to deterministically replay it as a candidate rather than relying on the fuzzer guessing a 32-byte equality; it also exercises `vault_xonly_key_is_canonical`. Seeded with collision, accepted and depositor-only inputs. Coverage on seed replay went from cov 2 to **cov 26** (`fuzzing/src/fuzz_key_batch.c`)
 - **Seeds are generated from a reviewable script, not committed as blobs**: seeds initially went in `fuzzing/corpus/` — the same directory `run_local.sh` hands libFuzzer as its *writable* corpus, so committed fixtures shared a path with every input the fuzzer discovered, inviting machine-generated files into commits. Worse for review, a committed seed appears in a diff as `Bin 0 -> 99 bytes`: unreadable, and impossible to check against any description. Now `fuzzing/seeds/generate_seeds.py` is the committed artifact and the blobs are gitignored. It names every field it writes (tag constants mirroring `src/vault_intent_tags.h`, the `fuzz_key_batch` input layout, and per-seed comments saying which branch each one reaches), and offers `--dump` for an annotated hex breakdown and `--check` to verify on-disk blobs against the source. Both consumers invoke it: `.clusterfuzzlite/build.sh` generates then zips, `run_local.sh` generates then primes `corpus/` with `cp -n`. Verified the generator reproduces the original blobs byte-for-byte, runs in the oss-fuzz build image, and yields identical coverage (`fuzzing/seeds/`, `fuzzing/.gitignore`, `.clusterfuzzlite/build.sh`, `fuzzing/run_local.sh`)
-- **UndefinedBehaviorSanitizer added to the fuzzing matrix (V-027)**: neither the pull-request nor the scheduled branch included ClusterFuzzLite's `undefined` sanitizer, and the local `-fsanitize=undefined` fallback in `fuzzing/CMakeLists.txt` is conditioned on `LIB_FUZZING_ENGINE` being absent — which it never is in CI. UBSan-only classes (invalid shifts, signed overflow, enum misuse) were therefore outside continuous fuzzing entirely. Added alongside address and memory, not instead of them (`.github/workflows/clusterfuzzlite.yml`)
-- **Local fuzz runner no longer executes stale binaries (V-025)**: `make` sat inside an `if [[ ! -d build ]] || [[ CMakeLists.txt -nt build/Makefile ]]` gate, so editing `src/vault_tlv.c`, a harness, or any included header rebuilt nothing — CMake's dependency tracking never got the chance to run — and the script then ran whatever `fuzz_*` binaries already existed, reporting clean results for changed code. Configuration is still cached; the build now always runs (`fuzzing/run_local.sh`)
-- **Coverage artifact no longer implies project-wide coverage (V-031)**: LCOV reports only translation units the build instrumented, so the six uncompiled security-critical sources — `sign_psbt_validate.c`, `sign_custom_inputs.c`, `apdu_handler.c`, `display.c` and both custom handlers — vanished from numerator *and* denominator instead of showing 0%, letting a contributor change them without moving the reported percentage. The artifact is renamed `unit-subset-coverage`, `gen_coverage.sh` now carries both scope lists explicitly (instrumented, and Ragger-covered-only with the reason they are not host-compilable), and it fails if an instrumented source disappears from `coverage.info` — verified to pass with all six present and exit 1 when one is dropped. Compiling those TUs into host targets remains the real fix; this makes the gap reviewable rather than invisible (`unit-tests/gen_coverage.sh`, `.github/workflows/unit_tests.yml`)
-- **Third-party actions pinned to commit SHAs (V-015, V-019)**: `actions/checkout@v4` (×3), `actions/upload-artifact@v4`, `codespell-project/actions-codespell@v2` and both `google/clusterfuzzlite` actions ran from mutable major-version tags, and `.clusterfuzzlite/Dockerfile` built from the mutable `base-builder:v1` tag — retargeting any of them would substitute runner code with no change in this repository. All now pinned to full 40-character SHAs (image by `sha256` digest) with the release in a trailing comment. Each SHA was verified to resolve to the version claimed: checkout `v4.4.0`, upload-artifact `v4.6.2`, codespell `v2.2`, clusterfuzzlite `v1`. The LedgerHQ reusable workflows are left on `@v1` deliberately — the project trust model covers tag retargeting for those (`.github/workflows/*.yml`, `.clusterfuzzlite/Dockerfile`)
-- **Least-privilege tokens and no persisted credentials in CI (V-019, V-033)**: `unit_tests.yml`, `misspellings_checks.yml` and `check_baseapp_submodule.yml` had no `permissions:` block, so token scope came from mutable repository/organisation defaults, and `actions/checkout` retained the job token in `.git/config` by default. `unit_tests.yml` matters most: it configures PR-controlled CMake, compiles PR-controlled sources and executes the resulting binaries in the credential-bearing workspace, so a same-repo contributor could read the token back out of test code. All three now declare `permissions: contents: read` and set `persist-credentials: false` (`.github/workflows/*.yml`)
-- **Submodule freshness check no longer trusts the revision under test (V-020)**: it ran `git submodule update --init --remote --recursive` and diffed, taking the origin URL and branch from the checked-out `.gitmodules` — repository content. A pull request could redirect `bitcoin_app_base` to an attacker-controlled repository, set the gitlink to that branch's head, and get a green check that proved only self-consistency. The expected path, URL and branch are now hardcoded and compared against `.gitmodules`, and the committed gitlink is compared directly with `refs/heads/baseapp` fetched from the hardcoded LedgerHQ URL. Also scoped to `bitcoin_app_base` alone, rather than updating every submodule including `ledger-app-ai-instructions` (`.github/workflows/check_baseapp_submodule.yml`)
-- **LCOV failures no longer masked in `gen_coverage.sh` (V-029)**: the six stages formed one `&&` list, which defeats `set -e` — only the final member is subject to errexit, so a failure in any earlier stage short-circuited the rest, fell through to the unconditional `rm -f`, and returned *that* command's status. CI reported coverage generation as successful with no tracefile produced. Demonstrated directly: on an lcov failure the old form exits 0 and the split form exits 1. Stages are now separate commands under `set -Eeuo pipefail`, intermediates are cleaned by an `EXIT` trap, and the tracefile and HTML directory are asserted to exist. The upload step also sets `if-no-files-found: error`, so a missing report fails instead of warning (`unit-tests/gen_coverage.sh`, `.github/workflows/unit_tests.yml`)
-- **SIGN_PSBT test helpers now verify signatures cryptographically (V-035)**: `sign_psbt_with_nav_and_compare` discarded `client.sign_psbt`'s return value, so no call site could check what the device produced, and the shared assertion checked only count, input index, claimed pubkey and 64-byte length. A regression returning arbitrary bytes — or signing a *different* digest than the PSBT the user reviewed — satisfied all of it. The helper now returns the result, and `_assert_schnorr_sig_verifies` recomputes the BIP-341 script-path sighash from the original PSBT and checks the BIP-340 signature under the expected key, using the base app's independent implementations. The leaf script and version come from the PSBT's own `PSBT_IN_TAP_LEAF_SCRIPT`, so it applies to any custom-input flow without the caller restating them; wired into the PegIn, Payout and NoPayout happy paths. The verifier was confirmed non-vacuous: it rejects a flipped signature bit, a wrong message, and 64 zero bytes (`tests/vault_client.py`, `tests/test_sign_psbt_validate.py`)
-- **Screen-test helper accepted signing with no review UI (V-026)**: `_flat_navigate` only calls `navigate_and_compare` when an exchange blocks (`done == False`), so firmware that returned signatures without ever showing a confirmation screen satisfied the very helper meant to prove review-required flows display and await approval. The helper now counts blocking reviews and asserts at least one occurred, with a `require_review=False` escape for flows that are legitimately silent (`tests/vault_client.py`)
-- **`--network` no longer overloads `test` as an auto sentinel (V-032)**: an omitted option and an explicit `--network test` were indistinguishable, so either could be silently switched to `main` by ELF detection — and no CLI value could force testnet. Detection also took the first glob hit and `break`ed, so a stale build directory from the other network decided the whole run; it fell back to `test` on unreadable files. This bit us in practice this session: a leftover mainnet `build/nanos2` made the suite send mainnet coin type `0'` at a testnet binary, and every test returned `0x6F00` until it was traced. Now `auto` is a distinct value and the default, detection requires all present variants to agree (returning nothing on disagreement or unreadability), an explicit request fails closed on mismatch instead of adapting, and the testnet CI job states `--network test` (`tests/conftest.py`, `.github/workflows/build_and_functional_tests.yml`)
+- **UndefinedBehaviorSanitizer added to the fuzzing matrix**: neither the pull-request nor the scheduled branch included ClusterFuzzLite's `undefined` sanitizer, and the local `-fsanitize=undefined` fallback in `fuzzing/CMakeLists.txt` is conditioned on `LIB_FUZZING_ENGINE` being absent — which it never is in CI. UBSan-only classes (invalid shifts, signed overflow, enum misuse) were therefore outside continuous fuzzing entirely. Added alongside address and memory, not instead of them (`.github/workflows/clusterfuzzlite.yml`)
+- **Local fuzz runner no longer executes stale binaries**: `make` sat inside an `if [[ ! -d build ]] || [[ CMakeLists.txt -nt build/Makefile ]]` gate, so editing `src/vault_tlv.c`, a harness, or any included header rebuilt nothing — CMake's dependency tracking never got the chance to run — and the script then ran whatever `fuzz_*` binaries already existed, reporting clean results for changed code. Configuration is still cached; the build now always runs (`fuzzing/run_local.sh`)
+- **Coverage artifact no longer implies project-wide coverage**: LCOV reports only translation units the build instrumented, so the six uncompiled security-critical sources — `sign_psbt_validate.c`, `sign_custom_inputs.c`, `apdu_handler.c`, `display.c` and both custom handlers — vanished from numerator *and* denominator instead of showing 0%, letting a contributor change them without moving the reported percentage. The artifact is renamed `unit-subset-coverage`, `gen_coverage.sh` now carries both scope lists explicitly (instrumented, and Ragger-covered-only with the reason they are not host-compilable), and it fails if an instrumented source disappears from `coverage.info` — verified to pass with all six present and exit 1 when one is dropped. Compiling those TUs into host targets remains the real fix; this makes the gap reviewable rather than invisible (`unit-tests/gen_coverage.sh`, `.github/workflows/unit_tests.yml`)
+- **Third-party actions pinned to commit SHAs**: `actions/checkout@v4` (×3), `actions/upload-artifact@v4`, `codespell-project/actions-codespell@v2` and both `google/clusterfuzzlite` actions ran from mutable major-version tags, and `.clusterfuzzlite/Dockerfile` built from the mutable `base-builder:v1` tag — retargeting any of them would substitute runner code with no change in this repository. All now pinned to full 40-character SHAs (image by `sha256` digest) with the release in a trailing comment. Each SHA was verified to resolve to the version claimed: checkout `v4.4.0`, upload-artifact `v4.6.2`, codespell `v2.2`, clusterfuzzlite `v1`. The LedgerHQ reusable workflows are left on `@v1` deliberately — the project trust model covers tag retargeting for those (`.github/workflows/*.yml`, `.clusterfuzzlite/Dockerfile`)
+- **Least-privilege tokens and no persisted credentials in CI**: `unit_tests.yml`, `misspellings_checks.yml` and `check_baseapp_submodule.yml` had no `permissions:` block, so token scope came from mutable repository/organisation defaults, and `actions/checkout` retained the job token in `.git/config` by default. `unit_tests.yml` matters most: it configures PR-controlled CMake, compiles PR-controlled sources and executes the resulting binaries in the credential-bearing workspace, so a same-repo contributor could read the token back out of test code. All three now declare `permissions: contents: read` and set `persist-credentials: false` (`.github/workflows/*.yml`)
+- **Submodule freshness check no longer trusts the revision under test**: it ran `git submodule update --init --remote --recursive` and diffed, taking the origin URL and branch from the checked-out `.gitmodules` — repository content. A pull request could redirect `bitcoin_app_base` to an attacker-controlled repository, set the gitlink to that branch's head, and get a green check that proved only self-consistency. The expected path, URL and branch are now hardcoded and compared against `.gitmodules`, and the committed gitlink is compared directly with `refs/heads/baseapp` fetched from the hardcoded LedgerHQ URL. Also scoped to `bitcoin_app_base` alone, rather than updating every submodule including `ledger-app-ai-instructions` (`.github/workflows/check_baseapp_submodule.yml`)
+- **LCOV failures no longer masked in `gen_coverage.sh`**: the six stages formed one `&&` list, which defeats `set -e` — only the final member is subject to errexit, so a failure in any earlier stage short-circuited the rest, fell through to the unconditional `rm -f`, and returned *that* command's status. CI reported coverage generation as successful with no tracefile produced. Demonstrated directly: on an lcov failure the old form exits 0 and the split form exits 1. Stages are now separate commands under `set -Eeuo pipefail`, intermediates are cleaned by an `EXIT` trap, and the tracefile and HTML directory are asserted to exist. The upload step also sets `if-no-files-found: error`, so a missing report fails instead of warning (`unit-tests/gen_coverage.sh`, `.github/workflows/unit_tests.yml`)
+- **SIGN_PSBT test helpers now verify signatures cryptographically**: `sign_psbt_with_nav_and_compare` discarded `client.sign_psbt`'s return value, so no call site could check what the device produced, and the shared assertion checked only count, input index, claimed pubkey and 64-byte length. A regression returning arbitrary bytes — or signing a *different* digest than the PSBT the user reviewed — satisfied all of it. The helper now returns the result, and `_assert_schnorr_sig_verifies` recomputes the BIP-341 script-path sighash from the original PSBT and checks the BIP-340 signature under the expected key, using the base app's independent implementations. The leaf script and version come from the PSBT's own `PSBT_IN_TAP_LEAF_SCRIPT`, so it applies to any custom-input flow without the caller restating them; wired into the PegIn, Payout and NoPayout happy paths. The verifier was confirmed non-vacuous: it rejects a flipped signature bit, a wrong message, and 64 zero bytes (`tests/vault_client.py`, `tests/test_sign_psbt_validate.py`)
+- **Screen-test helper accepted signing with no review UI**: `_flat_navigate` only calls `navigate_and_compare` when an exchange blocks (`done == False`), so firmware that returned signatures without ever showing a confirmation screen satisfied the very helper meant to prove review-required flows display and await approval. The helper now counts blocking reviews and asserts at least one occurred, with a `require_review=False` escape for flows that are legitimately silent (`tests/vault_client.py`)
+- **`--network` no longer overloads `test` as an auto sentinel**: an omitted option and an explicit `--network test` were indistinguishable, so either could be silently switched to `main` by ELF detection — and no CLI value could force testnet. Detection also took the first glob hit and `break`ed, so a stale build directory from the other network decided the whole run; it fell back to `test` on unreadable files. This bit us in practice this session: a leftover mainnet `build/nanos2` made the suite send mainnet coin type `0'` at a testnet binary, and every test returned `0x6F00` until it was traced. Now `auto` is a distinct value and the default, detection requires all present variants to agree (returning nothing on disagreement or unreadability), an explicit request fails closed on mismatch instead of adapting, and the testnet CI job states `--network test` (`tests/conftest.py`, `.github/workflows/build_and_functional_tests.yml`)
 - **Stale-snapshot check no longer fails every subsequent test**: `check_no_extra_snapshots` is autouse and scanned all of `snapshots-tmp/<device>/`, which accumulates for the whole session, so the first bad directory failed every test that ran after it — one flaky capture on stax produced ~300 teardown errors, most naming a directory the failing test never wrote, burying the single real signal. It now checks only directories whose PNG count this test changed (`tests/conftest.py`)
 - **`docs/apdu.md` `base_fee_rate` domain contradicted the code (D10)**: documented as "Non-zero; ≤ `UINT32_MAX`", while `vault_tlv.c` rejects anything above 10 000. Not cosmetic — every fee bound derived from this value relies on the real cap for its overflow guard, so a reader checking the arithmetic against the documented domain would conclude the guards were insufficient. Corrected, with the reason for the 10 000 figure (`docs/apdu.md`)
 - **`docs/integration-guide.md` stale NoPayout and Payout rows (D11)**: Payout Input 1 was documented as "Must equal `VAULT_DUST_LIMIT` (546 sat)" when the code enforces the fee-scaled range; NoPayout Output 0 as "Any standard address (Challenger_j's registered address)" when the device reconstructs BIP-86 `P2TR(Challenger_j)` and compares it byte-for-byte — the opposite of arbitrary. The NoPayout table also gained the `vout == 0` requirement, the Input 0 value range, the connectors' deliberate absence of one, and the fee bound. The Payout *non-depositor* output rows were checked and left as-is: those genuinely are arbitrary registered addresses, value-checked only, per HLD "Payout terminal outputs" (`docs/integration-guide.md`)
 
 - **CI fixes for the hardening above**: three regressions from this release's own CI changes, caught by CI and fixed here. (a) The `base-builder` digest pin carried a trailing `# v1` comment on the `FROM` line, which Docker rejects — `FROM` takes one or three arguments — breaking every ClusterFuzzLite build; the version note moved to its own line. (b) `gen_coverage.sh`'s new scope guard required `src/globals.c`, which is compiled into three targets but holds only definitions and `_Static_assert`s, so gcov emits no data and lcov writes no `SF:` record for it; it is now listed as the data-only exception, and the remaining five entries were verified against the `.gcda` files CI actually produces. (c) New `.dockerignore`: `.clusterfuzzlite/Dockerfile` does `COPY . $SRC/...`, which ignores `.gitignore`, so a local `fuzzing/build/` from `run_local.sh` was copied into the image and broke its CMake configure with a stale cache path — a local-only failure that looks like a broken build script. `.clusterfuzzlite/build.sh` also restates `set -euo pipefail` explicitly, because shebang flags are dropped when a script is invoked as `bash build.sh`, which let a failed compile fall through to the seed-zip step and exit 0. Verified by building the ClusterFuzzLite image and running its `build.sh` end to end: exit 0, three fuzzers, both seed zips (`.clusterfuzzlite/`, `.dockerignore`, `unit-tests/gen_coverage.sh`)
 
-- **UBSan matrix entry rejected `fuzz_key_batch` (follow-up to V-027 + V-013)**: adding the `undefined` sanitizer made ClusterFuzzLite fail with `BAD BUILD: ... only partial coverage instrumentation` / `does not seem to be compiled with UBSan`, for one target only. Cause: V-013 linked `bitcoin_app_base/src/secp256k1.c` into that harness for the field prime, and it defines only const arrays — measured at zero coverage guards and zero UBSan handlers — so half of the target's objects carried no instrumentation. AddressSanitizer accepts the same binary because it instruments globals, which is why only the UBSan entry failed. The harness now `#include`s the constant table instead of linking it, leaving one fully instrumented object while keeping the prime single-sourced from the base app; a local copy of `p` is precisely what `vault_xonly_key_is_canonical` exists to avoid, and the unit tests still link `secp256k1.c` normally and assert the value. Verified: all three targets now carry UBSan handlers and coverage guards under CI's exact flags, and seed-replay coverage is byte-identical before and after the change at matched flags (`cov: 16 ft: 16`) (`fuzzing/src/fuzz_key_batch.c`, `fuzzing/CMakeLists.txt`)
+- **UBSan matrix entry rejected `fuzz_key_batch`**: adding the `undefined` sanitizer made ClusterFuzzLite fail with `BAD BUILD: ... only partial coverage instrumentation` / `does not seem to be compiled with UBSan`, for one target only. Cause: the canonical-key fix linked `bitcoin_app_base/src/secp256k1.c` into that harness for the field prime, and it defines only const arrays — measured at zero coverage guards and zero UBSan handlers — so half of the target's objects carried no instrumentation. AddressSanitizer accepts the same binary because it instruments globals, which is why only the UBSan entry failed. The harness now `#include`s the constant table instead of linking it, leaving one fully instrumented object while keeping the prime single-sourced from the base app; a local copy of `p` is precisely what `vault_xonly_key_is_canonical` exists to avoid, and the unit tests still link `secp256k1.c` normally and assert the value. Verified: all three targets now carry UBSan handlers and coverage guards under CI's exact flags, and seed-replay coverage is byte-identical before and after the change at matched flags (`cov: 16 ft: 16`) (`fuzzing/src/fuzz_key_batch.c`, `fuzzing/CMakeLists.txt`)
 
-- **Custom-command test helpers require exact SW_OK (V-037)**: `conftest` whitelists `0xE000` on the backend so the standard Bitcoin SIGN_PSBT client-command protocol can operate, but the raw CLA 0xE1 helpers discarded `response.status` — so an interrupted-execution reply from `DERIVE_CONTEXT_HASH` or a synchronous `APPROVE_VAULT_INTENT` phase read as successful completion, masking an APDU-routing or state-machine regression. Those handlers never legitimately use interrupted execution. `_dch_exchange`, `_approve_exchange` and `_raw_exchange` now assert `SW_OK`; the asynchronous approval path already did. Rejection tests are unaffected — they wrap the call in `pytest.raises`. 95/95 of the affected tests pass (`tests/vault_client.py`, `tests/test_approve_vault_intent.py`)
-- **BIP-32 mock is contract-sensitive and failure-injectable (V-034)**: the mock ignored curve, path, path_len and chain_code and always returned `CX_OK`, so requesting the wrong derivation could not change a unit-test result and `derive_vault_privkey`'s failure branch could never execute. It now requires `CX_CURVE_SECP256K1`, `path_len == 1` and `m/73681862'` (mirroring `VAULT_HKDF_PATH_INDEX`), zeroes the private-key output on any failure as the SDK does, and initialises a requested chain code. New `g_mock_bip32_result` injects errors, covered by two tests: one asserts `hkdf_derive_root` returns false **and leaves the caller's root buffer untouched**, the other that the success path still matches the reference vector afterwards (`unit-tests/mock_cx.c`, `unit-tests/test_derive_context_hash.c`)
+- **Custom-command test helpers require exact SW_OK**: `conftest` whitelists `0xE000` on the backend so the standard Bitcoin SIGN_PSBT client-command protocol can operate, but the raw CLA 0xE1 helpers discarded `response.status` — so an interrupted-execution reply from `DERIVE_CONTEXT_HASH` or a synchronous `APPROVE_VAULT_INTENT` phase read as successful completion, masking an APDU-routing or state-machine regression. Those handlers never legitimately use interrupted execution. `_dch_exchange`, `_approve_exchange` and `_raw_exchange` now assert `SW_OK`; the asynchronous approval path already did. Rejection tests are unaffected — they wrap the call in `pytest.raises`. 95/95 of the affected tests pass (`tests/vault_client.py`, `tests/test_approve_vault_intent.py`)
+- **BIP-32 mock is contract-sensitive and failure-injectable**: the mock ignored curve, path, path_len and chain_code and always returned `CX_OK`, so requesting the wrong derivation could not change a unit-test result and `derive_vault_privkey`'s failure branch could never execute. It now requires `CX_CURVE_SECP256K1`, `path_len == 1` and `m/73681862'` (mirroring `VAULT_HKDF_PATH_INDEX`), zeroes the private-key output on any failure as the SDK does, and initialises a requested chain code. New `g_mock_bip32_result` injects errors, covered by two tests: one asserts `hkdf_derive_root` returns false **and leaves the caller's root buffer untouched**, the other that the success path still matches the reference vector afterwards (`unit-tests/mock_cx.c`, `unit-tests/test_derive_context_hash.c`)
 
 - **Dev-tools image runs as a non-root user**: `./Dockerfile` had no `USER` instruction, so containers built from it ran as UID 0 (flagged by Wiz). It now creates an `app` account and drops to it. UID/GID default to 1000 rather than using `nobody`: the image is used by bind-mounting the repository, and the container user must be able to write `build/`, `unit-tests/build/` and `tests/snapshots-tmp/` in it — `USER nobody` (UID 65534) satisfies the rule but cannot write a mount owned by the host user, breaking every build and test invocation. `/opt/venv` is chowned too, since the test flow pip-installs into it at runtime. Overridable via `--build-arg APP_UID/APP_GID`. Verified as uid 1000: device build succeeds, 7/7 unit-test suites pass, and `pip install -r tests/requirements.txt` completes with no permission errors (`Dockerfile`)
 - **ClusterFuzzLite image documented as a deliberate root exception**: the same Wiz rule applies to `.clusterfuzzlite/Dockerfile`, but it cannot be satisfied there. ClusterFuzzLite's `build_fuzzers` action runs the image with no `--user` flag and supplies `$OUT` through `--volumes-from` its own root-owned container, so a non-root image user cannot write `$OUT` and `build.sh` fails at `mv ./build/fuzz_* $OUT` (`--privileged` grants capabilities to root, not an ownership bypass). Verified the build itself runs fine as uid 1000 once `$SRC` is chowned, so `$OUT` is the sole blocker. A `USER builder` line was additionally impossible — the pinned base-builder image has no such account, so `docker run` failed with "unable to find user builder". The reasoning and the accepted risk are recorded in the Dockerfile; the finding needs a scanner exception rather than a code change (`.clusterfuzzlite/Dockerfile`)
 
-- **Fuzzing corpus phases are ordered instead of racing (V-028)**: the corpus-growing batch variants, the prune variant and coverage replay were all matrix entries of one job, and the concurrency key included `matrix.mode`/`matrix.sanitizer` — which put them in *different* groups rather than serialising them. With ClusterFuzzLite's default shared corpus storage, prune could download the pre-run corpus while a batch job was still discovering inputs and then race its publication, so the last writer silently dropped the other's finds and coverage could replay a stale corpus. The phases are now chained with `needs:`: grow (address) → grow (memory) → prune → coverage, via a small reusable `_fuzz_phase.yml` so the two action steps are not repeated four times. Pull-request runs stay parallel, since code-change mode reads the corpus without publishing one. Ordering is nearly free in wall-clock: coverage already runs 18000s against 600s for the other phases, and each job carries its own timeout, so the chain is ~5h50m against ~5h (`.github/workflows/clusterfuzzlite.yml`, `.github/workflows/_fuzz_phase.yml`)
+- **Fuzzing corpus phases are ordered instead of racing**: the corpus-growing batch variants, the prune variant and coverage replay were all matrix entries of one job, and the concurrency key included `matrix.mode`/`matrix.sanitizer` — which put them in *different* groups rather than serialising them. With ClusterFuzzLite's default shared corpus storage, prune could download the pre-run corpus while a batch job was still discovering inputs and then race its publication, so the last writer silently dropped the other's finds and coverage could replay a stale corpus. The phases are now chained with `needs:`: grow (address) → grow (memory) → prune → coverage, via a small reusable `_fuzz_phase.yml` so the two action steps are not repeated four times. Pull-request runs stay parallel, since code-change mode reads the corpus without publishing one. Ordering is nearly free in wall-clock: coverage already runs 18000s against 600s for the other phases, and each job carries its own timeout, so the chain is ~5h50m against ~5h (`.github/workflows/clusterfuzzlite.yml`, `.github/workflows/_fuzz_phase.yml`)
 
-- **Taproot output-key tweak is real EC, not a hash stub (V-030)**: `crypto_tr_tweak_pubkey` in `mock_cx.c` replaced the BIP-341 tweak with `SHA-256(pubkey || h)` and hardcoded `y_parity` to 0. It was deterministic and input-sensitive, so tests checking P2TR format and cross-intent uniqueness passed — but the target could not distinguish a correct output key from an incorrect one, and the parity-1 branch feeding `vault_script_build_control_block` was never exercised. The file header and the CMake comment both already claimed libsecp256k1 was used, so code and documentation disagreed. Now computes `Q = P + int(TapTweak(P || h)) * G` via libsecp256k1 (`secp256k1_context_static`, no secret-key operations), mirroring `bitcoin_app_base/src/crypto.c` including failure propagation. Four new tests pin it against vectors computed independently in Python rather than captured from the implementation, covering **both parities** and rejection of an off-curve key (`p - 2`), which the stub accepted. `libsecp256k1-dev` is now a required unit-test dependency — deliberately not optional, since a silent stub fallback is the defect — and is installed in CI. All 7 suites and 43 `test_vault_script` cases pass with real EC; no existing test depended on the stub's output (`unit-tests/mock_cx.c`, `unit-tests/CMakeLists.txt`, `unit-tests/test_vault_script.c`, `.github/workflows/unit_tests.yml`)
+- **Taproot output-key tweak is real EC, not a hash stub**: `crypto_tr_tweak_pubkey` in `mock_cx.c` replaced the BIP-341 tweak with `SHA-256(pubkey || h)` and hardcoded `y_parity` to 0. It was deterministic and input-sensitive, so tests checking P2TR format and cross-intent uniqueness passed — but the target could not distinguish a correct output key from an incorrect one, and the parity-1 branch feeding `vault_script_build_control_block` was never exercised. The file header and the CMake comment both already claimed libsecp256k1 was used, so code and documentation disagreed. Now computes `Q = P + int(TapTweak(P || h)) * G` via libsecp256k1 (`secp256k1_context_static`, no secret-key operations), mirroring `bitcoin_app_base/src/crypto.c` including failure propagation. Four new tests pin it against vectors computed independently in Python rather than captured from the implementation, covering **both parities** and rejection of an off-curve key (`p - 2`), which the stub accepted. `libsecp256k1-dev` is now a required unit-test dependency — deliberately not optional, since a silent stub fallback is the defect — and is installed in CI. All 7 suites and 43 `test_vault_script` cases pass with real EC; no existing test depended on the stub's output (`unit-tests/mock_cx.c`, `unit-tests/CMakeLists.txt`, `unit-tests/test_vault_script.c`, `.github/workflows/unit_tests.yml`)
 
-- **Unauthenticated caller identity on Screen 1 now documented (V-012, partial)**: the bundled protocol spec requires the approval dialog to display `appName` **and the requesting origin** (`docs/specs/derive-context-hash.md` §2.1, a MUST), and the device displays `appName` alone — an undocumented deviation until now. It cannot be closed in the app: raw APDU over USB/BLE/NFC carries no origin, and the same spec states `appName` "is not, by itself, an authenticated identity signal". `APP_SPECIFICATION.md` now records the deviation, why it is unsatisfiable, and the three consequences that follow — a phishing app reconstructing a known vault's public context can produce an indistinguishable Screen 1 and receive the same deterministic root; the "Allow derivation?" wording understates that a secret root is released; and the approval gesture is therefore made on incomplete information. `docs/integration-guide.md` carries the same caveat next to the `app_name` field. **Not fixed**, and deliberately so: the in-app mitigation (show the connected pubkey fingerprint and a context digest, reword the prompt) changes Screen 1 and needs HLD sign-off plus snapshot regeneration on 5 devices × 2 networks (`APP_SPECIFICATION.md`, `docs/integration-guide.md`)
+- **Unauthenticated caller identity on Screen 1 now documented (partial)**: the bundled protocol spec requires the approval dialog to display `appName` **and the requesting origin** (`docs/specs/derive-context-hash.md` §2.1, a MUST), and the device displays `appName` alone — an undocumented deviation until now. It cannot be closed in the app: raw APDU over USB/BLE/NFC carries no origin, and the same spec states `appName` "is not, by itself, an authenticated identity signal". `APP_SPECIFICATION.md` now records the deviation, why it is unsatisfiable, and the three consequences that follow — a phishing app reconstructing a known vault's public context can produce an indistinguishable Screen 1 and receive the same deterministic root; the "Allow derivation?" wording understates that a secret root is released; and the approval gesture is therefore made on incomplete information. `docs/integration-guide.md` carries the same caveat next to the `app_name` field. **Not fixed**, and deliberately so: the in-app mitigation (show the connected pubkey fingerprint and a context digest, reword the prompt) changes Screen 1 and needs HLD sign-off plus snapshot regeneration on 5 devices × 2 networks (`APP_SPECIFICATION.md`, `docs/integration-guide.md`)
 
 **Spec note.** The HLD's NoPayout `≤ DUST` row and its "at most 3×DUST is at stake, fee bounded by 2×DUST" claim contradict both HLD passages cited above and are false at every fee rate; they need replacing with the Payout wording. Full analysis, including the glossary defect that generated the rule, is in `tmp/hld-discrepancies-2026-09-01.md`.
 
 ### Security
 
-- **Refund CSV operand constrained to the BIP-68 block-count field (V-005)**: `parse_refund_leaf_script` decoded the `OP_CHECKSEQUENCEVERIFY` operand into a full `uint32_t` — up to `0x7FFFFFFF` — while the nSequence comparison masked *both* sides to `BIP68_SEQUENCE_MASK`, despite a comment claiming the sequence "must encode exactly the CSV timelock". Consensus ignores the same high bits, so operand `0x00010001` read as 65,537 blocks (~15 months), cleared the `≥ 72` protocol minimum on the standalone route, and was satisfied by `nSequence = 1`: the device displayed a 15-month delay on Screen 3 and signed a refund spendable after one block. Verified on Speculos — before the fix the exploit PSBT is accepted and reaches the review screen; after it, `SW_INCORRECT_DATA`. Fixed in the parser, so both leaf parsers inherit the domain: the operand must now be at most `0xFFFF`, which also makes the BIP-68 disable and time-based flags unsettable, and the callers therefore compare nSequence to it **unmasked**. Applied to the Payout path too — not currently exploitable there, since `parse_payout_leaf_script` already bounds `t2` to `[90, 4032]` and `INTENT_LOADED` requires equality with `payout_timelock`, but it removes the pattern rather than leaving it to regress. Intent-loaded refunds were never affected (exact equality with the bounded approved value), and the output stays pinned to a device-owned BIP-86 address, so this was a protocol timing bypass rather than fund redirection (`sign_psbt_validate_helpers.c`, `sign_psbt_validate.c`)
-- **Non-canonical BIP-340 participant keys rejected (V-013)**: `crypto_tr_lift_x` was the only mathematical check on host-supplied VaultProvider, keeper and challenger keys. It evaluates the curve equation *modulo p* and then copies the caller's bytes verbatim, so it never enforces BIP-340's `x < p`: `x = p + 1` reduces to the residue `x = 1`, which is on secp256k1 (`1³ + 7 = 8` is a quadratic residue mod p), and the unreduced bytes were stored in the intent and embedded verbatim into tapscript `OP_CHECKSIG`/`OP_CHECKSIGADD` branches — which every BIP-340 parser then refuses, leaving the branch unspendable and the funds it guards recoverable only by waiting out the refund timelock. Confirmed on Speculos: before the fix the group APDU carrying `p + 1` returns `9000`. New `vault_xonly_key_is_canonical` bounds the encoding against the base app's `secp256k1_p` before the lift, at both intake points; the lift is retained, since the bound does not replace the curve check. Unit and fuzz targets now link the real `bitcoin_app_base/src/secp256k1.c` so the check is tested against the same prime the firmware uses rather than a copy that could drift. The durable fix is a `crypto_tr_validate_xonly_pubkey` helper upstream in `app-bitcoin`, so no caller can mistake modular liftability for canonical encoding; not done here (`approve_vault_intent_core.h`, `approve_vault_intent.c`)
+- **Refund CSV operand constrained to the BIP-68 block-count field**: `parse_refund_leaf_script` decoded the `OP_CHECKSEQUENCEVERIFY` operand into a full `uint32_t` — up to `0x7FFFFFFF` — while the nSequence comparison masked *both* sides to `BIP68_SEQUENCE_MASK`, despite a comment claiming the sequence "must encode exactly the CSV timelock". Consensus ignores the same high bits, so operand `0x00010001` read as 65,537 blocks (~15 months), cleared the `≥ 72` protocol minimum on the standalone route, and was satisfied by `nSequence = 1`: the device displayed a 15-month delay on Screen 3 and signed a refund spendable after one block. Verified on Speculos — before the fix the exploit PSBT is accepted and reaches the review screen; after it, `SW_INCORRECT_DATA`. Fixed in the parser, so both leaf parsers inherit the domain: the operand must now be at most `0xFFFF`, which also makes the BIP-68 disable and time-based flags unsettable, and the callers therefore compare nSequence to it **unmasked**. Applied to the Payout path too — not currently exploitable there, since `parse_payout_leaf_script` already bounds `t2` to `[90, 4032]` and `INTENT_LOADED` requires equality with `payout_timelock`, but it removes the pattern rather than leaving it to regress. Intent-loaded refunds were never affected (exact equality with the bounded approved value), and the output stays pinned to a device-owned BIP-86 address, so this was a protocol timing bypass rather than fund redirection (`sign_psbt_validate_helpers.c`, `sign_psbt_validate.c`)
+- **Non-canonical BIP-340 participant keys rejected**: `crypto_tr_lift_x` was the only mathematical check on host-supplied VaultProvider, keeper and challenger keys. It evaluates the curve equation *modulo p* and then copies the caller's bytes verbatim, so it never enforces BIP-340's `x < p`: `x = p + 1` reduces to the residue `x = 1`, which is on secp256k1 (`1³ + 7 = 8` is a quadratic residue mod p), and the unreduced bytes were stored in the intent and embedded verbatim into tapscript `OP_CHECKSIG`/`OP_CHECKSIGADD` branches — which every BIP-340 parser then refuses, leaving the branch unspendable and the funds it guards recoverable only by waiting out the refund timelock. Confirmed on Speculos: before the fix the group APDU carrying `p + 1` returns `9000`. New `vault_xonly_key_is_canonical` bounds the encoding against the base app's `secp256k1_p` before the lift, at both intake points; the lift is retained, since the bound does not replace the curve check. Unit and fuzz targets now link the real `bitcoin_app_base/src/secp256k1.c` so the check is tested against the same prime the firmware uses rather than a copy that could drift. The durable fix is a `crypto_tr_validate_xonly_pubkey` helper upstream in `app-bitcoin`, so no caller can mistake modular liftability for canonical encoding; not done here (`approve_vault_intent_core.h`, `approve_vault_intent.c`)
 
 ### Fixed
 
-- **Refund specification omitted the timelock rules and three Screen 3 fields**: `APP_SPECIFICATION.md` documented the Refund leaf shape but neither the CSV operand domain nor the nSequence relationship — the two rules V-005 turned out to hinge on — and listed the user display as "amount reclaimed, fee" while Screen 3 renders five rows, among them the "Refund timelock" that V-005 made untrustworthy. Both corrected.
+- **Refund specification omitted the timelock rules and three Screen 3 fields**: `APP_SPECIFICATION.md` documented the Refund leaf shape but neither the CSV operand domain nor the nSequence relationship — the two rules the CSV defect turned out to hinge on — and listed the user display as "amount reclaimed, fee" while Screen 3 renders five rows, among them the "Refund timelock" that the defect made untrustworthy. Both corrected.
 - **Misleading test-vector comments**: three tests described `TEST_INVALID_XONLY_KEY` as `0xFF * 32` and/or `>= secp256k1 prime p`. It is neither — it is `p - 2`, a *canonical* encoding that is simply off-curve, so those tests exercised curve membership and no test covered the field bound at all. Comments corrected and `TEST_NONCANONICAL_XONLY_KEY` (`p + 1`) added alongside (`tests/vault_client.py`, `tests/test_approve_vault_intent.py`)
 - **Integration guide documented a Refund nSequence rule the device never accepted**: `docs/integration-guide.md:407` stated `sequence ≥ csv_value` per BIP-68, but the device has always required equality (masked before this release, exact now) — an integrator following the guide would build a Refund the device rejects. Corrected, with the CSV operand bound and the reason the device is deliberately stricter than BIP-68; the Refund display list there was also two rows short (`docs/integration-guide.md`)
-- **Claim Output 0 described as wholly unconstrained (V-014)**: `APP_SPECIFICATION.md` said Output 0 was "not verified by device (host-provided)". The script is indeed not reconstructed — the WOTS connector tree is outside the device's model — but the read requires exactly 34 bytes, so Output 0 must be a witness-v1 P2TR (P2WPKH and legacy substitutions are rejected), and it is rendered as a bech32m address on Screen 4. Substitution by another P2TR remains possible but is now visible rather than silent, which is the Cerberus V-014/V-016 residual; the row and the Screen 4 field list (which omitted that address) now say so
+- **Claim Output 0 described as wholly unconstrained**: `APP_SPECIFICATION.md` said Output 0 was "not verified by device (host-provided)". The script is indeed not reconstructed — the WOTS connector tree is outside the device's model — but the read requires exactly 34 bytes, so Output 0 must be a witness-v1 P2TR (P2WPKH and legacy substitutions are rejected), and it is rendered as a bech32m address on Screen 4. Substitution by another P2TR remains possible but is now visible rather than silent, which is the accepted residual; the row and the Screen 4 field list (which omitted that address) now say so
 
 
 ## [0.10.0] - Assert leaf bound to the approved intent (F-6 second pass)
@@ -180,7 +196,7 @@ V-013 were genuinely open in embedded code.
 - **PayoutFinalize unmatched group fall-through**: when `VAULT_STATE_INTENT_LOADED`, `_validate_display_payout_finalize` now rejects immediately with `SW_INCORRECT_DATA` if Input 0 PREVIOUS_TXID matches no vault group's computed PegIn TXID (`sign_psbt_validate.c`)
 - **`_validate_display_claim` magic output count**: replaced hardcoded `2` with `st->n_outputs` in both `_read_output` calls; `st->n_outputs == 2` is already enforced above (`sign_psbt_validate.c`)
 
-## [0.9.4] - NAPPS-1466: v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
+## [0.9.4] - v22 HLD alignment — Connection 2 flow, session-state removal, spec discrepancy fixes
 
 Aligns the device application with HLD v22 across twenty tracked discrepancies identified during
 a full spec-vs-code audit.  No wire-format or SW changes for the host; all changes are internal
@@ -333,7 +349,7 @@ security hardening, protocol-correctness fixes, and documentation alignment.
 - `docs/apdu.md`, `APP_SPECIFICATION.md`, and `docs/integration-guide.md` aligned with
   HLD v22 (corrected tags, phase labels, field counts, state names, HTLC value bounds).
 
-## [0.9.3] - NAPPS-1465: v22 per-type signature caps
+## [0.9.3] - v22 per-type signature caps
 
 Implements the per-type signature-count caps introduced in HLD v22 as a sampling
 countermeasure.  Within one approved intent the device now signs at most the expected
@@ -397,7 +413,7 @@ and returns the new `SW_CAP_EXCEEDED` status word.
 
 - Replaced magic numbers with named constants across `src/` and `unit-tests/`.
 
-## [0.9.2] - NAPPS-1464: PayoutFinalize depositor self-claim (Screen 8)
+## [0.9.2] - PayoutFinalize depositor self-claim (Screen 8)
 
 Adds Screen 8 — the depositor reclaims their deposit after the Claim+Assert chain by
 spending the payout leaf (Input 1) of the PayoutFinalize PSBT.  This is the only flow
@@ -443,7 +459,7 @@ where the device signs Input 1 rather than Input 0.
   branch in `parse_payout_leaf_script`; the preceding `script_len <= 68` guard already
   ensures `script_len ≥ 69`.
 
-## [0.9.1] - NAPPS-1463: BIP-322 proof-of-possession signing (Screen 7)
+## [0.9.1] - BIP-322 proof-of-possession signing (Screen 7)
 
 Adds Screen 7 — the depositor proves ownership of their Ethereum address by
 signing a BIP-322 `bip322-simple` to_sign PSBT before registering with the
@@ -461,7 +477,7 @@ Babylon Vault contract.
   and BIP-322 to_spend txid computation (`bip322_compute_to_spend_txid`).
 - Ragger golden-snapshot and error-path tests for Screen 7 (`tests/test_screen7_pop.py`).
 
-## [0.9.0] - NAPPS-1462: depositor-as-claimer NoPayout screens, v22 protocol alignment
+## [0.9.0] - depositor-as-claimer NoPayout screens, v22 protocol alignment
 
 Adds standalone Claim (Screen 4), Assert (Screen 5), and WronglyChallenged (Screen 6) flows
 for the depositor-as-claimer path, and aligns the validator with HLD v22.
@@ -495,7 +511,7 @@ for the depositor-as-claimer path, and aligns the validator with HLD v22.
 - **`TAG_PREPEGIN_MAX_FEE` (0x010F) added** to the intent TLV (13 scalar fields, 128 bytes
   total); the field is now required.
 
-## [0.8.0] - NAPPS-1461: v21 protocol alignment — 2-byte TLV tags, P1 phase swap, P2A constant
+## [0.8.0] - v21 protocol alignment — 2-byte TLV tags, P1 phase swap, P2A constant
 
 Aligns the APPROVE_VAULT_INTENT wire format with HLD v21.
 
@@ -517,13 +533,13 @@ Aligns the APPROVE_VAULT_INTENT wire format with HLD v21.
 
 ---
 
-## [0.7.0] - NAPPS-1442–1445: Multi-vault end-to-end — P1=0x02 approval, script group-indexing, validation, payout & signing
+## [0.7.0] - Multi-vault end-to-end — P1=0x02 approval, script group-indexing, validation, payout & signing
 
 Completes multi-vault support across the full session flow for `vault_count > 1`.
-NAPPS-1442 wired the P1=0x02 handler and streaming display; NAPPS-1443 made all script
-builders group-index-aware; NAPPS-1444 extended Pre-PegIn/PegIn validation over all
-groups; NAPPS-1445 extended payout validation and signing and fixed the
-`vault_group_index` cursor reset at the PegIn→Payout transition.
+The P1=0x02 handler and streaming display were wired up; all script builders became
+group-index-aware; Pre-PegIn/PegIn validation was extended over all groups; and payout
+validation and signing were extended, fixing the `vault_group_index` cursor reset at the
+PegIn→Payout transition.
 
 ### Added
 
@@ -560,7 +576,7 @@ groups; NAPPS-1445 extended payout validation and signing and fixed the
 
 ---
 
-## [0.6.0] - NAPPS-1441: DERIVE_CONTEXT_HASH rev 2.1 — multi-chunk streaming, P2 mode, Screen 1
+## [0.6.0] - DERIVE_CONTEXT_HASH rev 2.1 — multi-chunk streaming, P2 mode, Screen 1
 
 Upgrades `DERIVE_CONTEXT_HASH` (INS `0x81`) to the rev 2.1 wire format: chunked context
 streaming over multiple APDUs, a silent re-derivation mode, and an optional approval screen
@@ -595,55 +611,55 @@ that displays the requesting app name.
   reset-during-streaming, max context (1024 B) correctness, screen snapshot, and user
   rejection.
 
-## [0.5.0] - NAPPS-1376–1422, 1440: Payout validation, signing session, fee-bumpable PegIn, DERIVE_CONTEXT_HASH realignment, signet ticker, v19 data model
+## [0.5.0] - Payout validation, signing session, fee-bumpable PegIn, DERIVE_CONTEXT_HASH realignment, signet ticker, v19 data model
 
 Omnibus release covering all work between 0.4.0 and the v19 data model.
 
-### Added (NAPPS-1376: Payout validation)
+### Added (Payout validation)
 
 - `_validate_payout` in `sign_psbt_validate.c`: validates both Payout PSBT inputs (Vault
   UTXO + Assert:0 Payout) and all outputs; enforces claimer ordering via `payout_index`;
   fee bounded by `base_fee_rate * max_vsize`.
 - Real-world Payout cross-validation unit tests against on-chain signet fixtures.
 
-### Security (NAPPS-1376)
+### Security (Payout validation)
 
 - Fixed missing length guard before `memmove` in `_tap_leaf_script_callback`: oversized
   leaf scripts (> `VAULT_SCRIPT_MAX_LEN`) now set `ambiguous = true` instead of writing
   past the destination buffer.
 - Deferred PegIn state transition (`SESSION2_PEGIN_EXPECTED → SESSION2_PAYOUT_EXPECTED`)
-  from `validate_and_display_transaction` to `sign_custom_inputs` (NAPPS-1377), so the
+  from `validate_and_display_transaction` to `sign_custom_inputs`, so the
   state only advances when the HTLC input is actually signed and the host can retry on
   signing failure.
 - `vault_tlv.c` now rejects `commission_fee < VAULT_DUST_LIMIT` (previously only `0`), so
   the VP commission payout output can no longer be a below-dust P2TR output.
 
-### Added (NAPPS-1377: Signing session)
+### Added (Signing session)
 
 - `sign_custom_inputs.c`: full PSBT signing hook — `read_p2tr_witness_utxo` reads and
   validates the witness UTXO for each custom input, binding the scriptPubKey the sighash
   commits to against the device-reconstructed script from the approved intent; signs the
   vault UTXO input (Assert:0 signing follows from payout validation).
 
-### Added (NAPPS-1415: 32 × 32 transaction test vectors)
+### Added (32 × 32 transaction test vectors)
 
 - Ragger test vectors and fixtures for 32-keeper × 32-challenger intents and
   depositor-as-claimer scenarios; validates the full signing flow at maximum key counts.
 
-### Changed (NAPPS-1416: Signet ticker)
+### Changed (Signet ticker)
 
 - The test build (`COIN=babylon_vault_testnet`) now displays amounts with the **`sBTC`**
   ticker instead of `TEST`.  The base submodule hardcodes `COIN_COINID_SHORT="TEST"`;
   the app Makefile overrides it at compile time.  App name and `BITCOIN_NETWORK` are
   unchanged; golden snapshots updated.
 
-### Added (NAPPS-1419: Skip navigation for long intents)
+### Added (Skip navigation for long intents)
 
 - Skip/fast-forward NBGL navigation callbacks for the vault intent approval screen on
   touch devices (Stax/Flex); allows stepping past key sections when `keeper_count` or
   `challenger_count` is large.  Ragger tests for skip flow and snapshots.
 
-### Added (NAPPS-1421: Fee-bumpable PegIn — P2A anchor)
+### Added (Fee-bumpable PegIn — P2A anchor)
 
 - `vault_intent_t.pegin_anchor_value` (u64, `TAG_PEGIN_ANCHOR_VALUE` 0x12): satoshi value
   of the P2A anchor output (`OP_1 OP_PUSHBYTES_2 0x4e73`) in the PegIn transaction.
@@ -657,7 +673,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
   `#define` at build time to confirm the target network, preventing a silent
   testnet3/4 misconfiguration.
 
-### Changed (NAPPS-1422: DERIVE_CONTEXT_HASH realignment — breaking)
+### Changed (DERIVE_CONTEXT_HASH realignment — breaking)
 
 - `DERIVE_CONTEXT_HASH` now returns the **32-byte root** instead of a hashlock.  The HKDF
   `info` is `SHA256(app_name) || SHA256(canonicalNetworkName) || connectedPubkey[33] || context`;
@@ -668,7 +684,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 - Session context stores `root` (zeroed on invalidation) instead of the HTLC preimage;
   `vault_context_t` gains `auth_anchor_hash`.
 
-### Added (NAPPS-1422)
+### Added (DERIVE_CONTEXT_HASH realignment)
 
 - Pre-PegIn validation requires the shared auth-anchor `OP_RETURN`
   (`0x6A 0x20 || SHA256(authAnchor)`, value 0) and binds it to the value expanded from
@@ -676,13 +692,13 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 - On-device HKDF-Expand commitment helper (`derive_vault_secrets_core.h`) for
   `"hashlock"` and `"auth-anchor"` labels under the `"babylonbtcvault"` domain tag.
 
-### Removed (NAPPS-1422)
+### Removed (DERIVE_CONTEXT_HASH realignment)
 
 - `RELEASE_CONTEXT_SECRET` (INS `0x82`) and the `SESSION2_COMPLETE` custody gating.
   The host holds the root; `SESSION2_COMPLETE` is now a terminal state with no
   secret-release step.
 
-### Added (NAPPS-1440: v19 data model)
+### Added (v19 data model)
 
 - `vault_group_t` struct in `vault_intent.h` holding the 6 per-vault fields: `htlc_vout`,
   `vault_provider_pk`, `vault_amount`, `commission_fee`, `depositor_claim_value`,
@@ -698,7 +714,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
   `vault_group_index`, `derivation_path[VAULT_MAX_PATH_DEPTH]`, and `derivation_path_len`.
 - `docs/apdu.md` updated with the three-phase wire format and both tag tables.
 
-### Changed (NAPPS-1440)
+### Changed (v19 data model)
 
 - `vault_tlv_parse()` (P1=0x00) now rejects old per-vault scalar tags (`0x04`–`0x07`, `0x09`,
   `0x0D`) via a whitelist bitmask (`VAULT_INTENT_ALL_TAGS_MASK`); those fields must be sent
@@ -715,7 +731,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 
 ---
 
-## [0.4.0] - 2026-06-23 — NAPPS-1375: Pre-PegIn, PegIn, and Refund transaction validation
+## [0.4.0] - 2026-06-23 — Pre-PegIn, PegIn, and Refund transaction validation
 
 ### Added
 
@@ -744,7 +760,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 
 ---
 
-## [0.3.0] - 2026-06-18 — NAPPS-1374: Script construction layer
+## [0.3.0] - 2026-06-18 — Script construction layer
 
 ### Added
 
@@ -772,7 +788,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 
 ---
 
-## [0.2.0] - 2026-06-09 — NAPPS-1373: RELEASE_CONTEXT_SECRET and vault intent display
+## [0.2.0] - 2026-06-09 — RELEASE_CONTEXT_SECRET and vault intent display
 
 ### Added
 
@@ -793,7 +809,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 
 ---
 
-## [0.1.0] - 2026-06-04 — NAPPS-1372: APPROVE_VAULT_INTENT
+## [0.1.0] - 2026-06-04 — APPROVE_VAULT_INTENT
 
 ### Added
 
@@ -808,7 +824,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 
 ---
 
-## [0.0.2] - 2026-06-02 — NAPPS-1367: DERIVE_CONTEXT_HASH
+## [0.0.2] - 2026-06-02 — DERIVE_CONTEXT_HASH
 
 ### Added
 
@@ -822,7 +838,7 @@ Omnibus release covering all work between 0.4.0 and the v19 data model.
 
 ---
 
-## [0.0.1] - 2026-05-27 — NAPPS-1366: App scaffold
+## [0.0.1] - 2026-05-27 — App scaffold
 
 ### Added
 

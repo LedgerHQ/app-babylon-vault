@@ -7,15 +7,17 @@ from typing import List, Tuple
 def _vault_intent_key_pages(device: Device, total_keys: int) -> int:
     """Steps the keeper + challenger list contributes to the intent review.
 
-    Derived from the calibrated counts in vault_intent_steps_for_keys, not predicted:
-    `challenger_count` pairs there means 2*challenger_count keys and contributes
-    `challenger_count` steps on touch, i.e. **2 keys per page**.  (Flex fit only 1 key
-    per page while the review carried SKIPPABLE_OPERATION; removing the Skip affordance
-    freed the header space for a second.)  Nano shows one key per screen, 2 clicks each.
+    Calibrated against golden snapshot counts, not predicted: NBGL repacks tag/value
+    pairs whenever the page header changes.  Phase 2 carries SKIPPABLE_OPERATION, and
+    the "Skip" header costs vertical space, so fewer keys fit per page than an
+    unskippable review would take.  Stax's taller screen still fits 2 keys per page;
+    Flex and Apex fit 1.  Nano shows one key per screen, 2 clicks each.
     """
     if device.is_nano:
         return 2 * total_keys
-    return (total_keys + 1) // 2
+    if device.name == "stax":
+        return (total_keys + 1) // 2
+    return total_keys
 
 
 def vault_intent_steps_for_keys(device: Device, total_keys: int, vault_count: int = 1) -> int:
@@ -25,9 +27,12 @@ def vault_intent_steps_for_keys(device: Device, total_keys: int, vault_count: in
                 a single "pairs" figure.
     vault_count: number of vault groups (>= 1).
 
-    On touch the review runs in two phases, neither skippable:
-      Phase 1: intro + params pages + confirm
-      Phase 2: intro + vault-group pages + key pages
+    On touch the review runs in two phases:
+      Phase 1 (mandatory): intro + params pages + confirm
+      Phase 2 (skippable): intro + vault-group pages + key pages
+
+    This counts the full walk through both phases.  For the short path that taps Skip
+    in phase 2, use vault_intent_skip_instructions instead.
 
     Per-device fixed part (everything except the key pages), for vault_count == 1:
       Stax:       5     Flex/Apex:  6     Nano:  14
@@ -73,13 +78,37 @@ def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavI
     )
 
 
-# There is deliberately no skip-navigation helper: the intent review carries no
-# SKIPPABLE_OPERATION in either phase, so no Skip button exists to tap.  Every field in
-# this review is a displayed-and-approved field in the HLD's intent TLV table, and the
-# approval is the only anchor for the silent signing that follows it, so none of it may
-# be bypassed.  A previous `vault_intent_skip_instructions` drove that affordance; if
-# Skip is ever reintroduced for a subset of segments, add it back alongside a test that
-# pins which fields remain mandatory.
+def vault_intent_params_pages(device: Device) -> int:
+    """Content pages the phase-1 scalar params segment occupies on touch.
+
+    The six global fields are fixed, so this does not vary with the intent.
+    """
+    assert not device.is_nano, "phase boundaries are touch-only; nano runs one review"
+    return 1 if device.name == "stax" else 2
+
+
+def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
+    """Navigate params in full (mandatory), then Skip from the first vault group.
+
+    Phase 1 is a non-skippable streaming review and must be paged through.  Once params
+    are confirmed, phase 2 starts with SKIPPABLE_OPERATION armed; tapping Skip on its
+    first vault-group page opens the "Skip review?" modal, and confirming it jumps to
+    the approve/reject page — approval still has to be given explicitly, which is why
+    this list ends with REVIEW_CONFIRM rather than stopping at the skip.
+
+    Skip is touch-only: nano has no skip affordance.
+
+    Touch: RIGHT_HEADER_TAP taps the top-right "Skip" button; USE_CASE_CHOICE_CONFIRM
+           taps "Yes, skip" in the confirmation modal.
+    """
+    assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
+    return (
+        # phase 1 intro + params pages, then the confirm that ends phase 1
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * (1 + vault_intent_params_pages(device))
+        + [NavInsID.SWIPE_CENTER_TO_LEFT]  # phase 2 intro → first vault group
+        + [NavInsID.RIGHT_HEADER_TAP, NavInsID.USE_CASE_CHOICE_CONFIRM]  # skip → approval
+        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+    )
 
 
 def vault_intent_reject_instructions(device: Device, n_steps: int) -> List[NavInsID]:

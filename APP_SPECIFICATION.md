@@ -106,6 +106,60 @@ The key batch must deliver exactly `keeper_count` keeper keys followed by `chall
 - pairwise disjoint with `vault_provider_pk` (per group) and the depositor key
 - sorted in ascending lexicographic order within each group
 
+#### Screen 2 — the intent review is only partly mandatory
+
+On touch devices the review is split into two streaming phases, and only the first is
+mandatory. This is a **known, accepted deviation** from HLD v23 §Safety UX, which is not
+being amended and continues to read:
+
+> Screen 2 "Displays the intent fields marked ✅ in the TLV table. The user must approve
+> before any signing can proceed."
+
+| Phase | Rows displayed | Skippable |
+|---|---|---|
+| 1 | The global scalars: app name, base fee rate, PegIn timelock, Payout timelock, Refund timelock, max Pre-PegIn fee | No |
+| 2 | Per-vault groups (VP key, vault amount, commission fee, depositor claim, max PegIn fee), repeated `vault_count` times, then the full keeper/challenger key list | **Yes** |
+
+Of those six rows, the app name comes from the session context established by
+`DERIVE_CONTEXT_HASH` (so it is shown even when P2=`0x01` suppressed Screen 1) and the other
+five are scalar `P1=0x00` fields. The remaining scalar TLV fields are validated without
+being displayed, which this deviation does not change.
+
+Every phase-2 row is marked ✅ in the HLD's TLV table, so the deviation is precisely that
+the VP key, all per-vault amounts and the entire participant set may be bypassed. Nano
+devices are unaffected — the SDK offers no skip affordance there, so the whole review is
+mandatory.
+
+Approval itself is never bypassed: Skip lands on the approve/reject page, so "chose not to
+read the details" stays distinct from "never approved". The split into two streaming reviews
+exists solely to keep this boundary enforceable — NBGL arms `SKIPPABLE_OPERATION` for a
+whole streaming review and excludes per-page narrowing for `STREAMING_NAV`.
+
+What the boundary preserves: `prepegin_max_fee` is a phase-1 row, so the fee bound governing
+the *silent* Pre-PegIn signing that follows approval is still guaranteed to have been shown.
+The timelocks and base fee rate, which likewise constrain later silent signing, are phase-1
+rows too. What phase 2 gives up is the per-vault amounts and the participant set.
+
+**This reverses an earlier audit fix** (S-01 / Govard #5 / D7), which removed the affordance
+on the grounds that Screen 2 is the sole anchor for the *silent* signing that follows it —
+Pre-PegIn signs with no further screen. Restoring it was requested by Babylon (Jerome Wang,
+option 1 of two proposed boundaries) for usability on large intents, where the key list can
+run to 64 entries.
+
+> ⚠️ **Residual risk acknowledgement: PENDING.** This entry must cite a written Donjon
+> sign-off (Baptistin Boilot) by name and date; none has been recorded on
+> [NAPPS-1483](https://ledgerhq.atlassian.net/browse/NAPPS-1483) at the time of writing.
+> Until it is, the deviation is undocumented in the sense that matters — the next audit
+> finds a reopened finding with no paper trail.
+
+**Interaction with Assert.** The Assert leaf binding is session-scoped, and the note under
+[Assert](#7-assert-standalone) identifies the user's review of the key list on Screen 2 as
+what prevents a substituted challenger set. That review is now skippable, so a user who
+skips phase 2 loses that protection. The binding still holds against the intent loaded in
+the session; what weakens is the assurance that the loaded intent is the funded one.
+Displaying the challenger set on Screen 5 would remove the dependency on phase 2 entirely;
+it is not implemented.
+
 ---
 
 ## Transaction Types
@@ -325,6 +379,11 @@ alone only binds the leaf to the output being spent.
 > host supplies a fresh intent and could substitute the challenger set. The user's review of the key
 > list on Screen 2 is what prevents that, and is therefore load-bearing for Assert safety rather
 > than informational.
+>
+> **That review can be skipped.** The key list sits in Screen 2's skippable phase 2 (see
+> [Screen 2](#screen-2--the-intent-review-is-only-partly-mandatory)), so this protection is
+> contingent on the user not skipping it. Nano devices offer no skip affordance and always
+> review it in full.
 
 Real leaf size is **11,526–13,636 bytes** (11,662 for the 3 local / 3 universal challenger
 configuration in `tests/vectors/depositor-as-claimer/assert.txt`). The body is fixed at compile

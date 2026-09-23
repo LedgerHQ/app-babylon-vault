@@ -8,9 +8,10 @@ On first run use --golden_run to generate the reference snapshots:
 
 Subsequent runs compare against those goldens automatically.
 
-Two flows are covered:
+Flows covered:
   - Approval  (all content pages → confirm)
   - Rejection (first content page → reject)
+  - Skip      (params in full, then Skip from phase 2 → approval)
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import pytest
 
 from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
-from ragger.navigator import Navigator
+from ragger.navigator import NavInsID, Navigator
 
 from .vault_client import (
     CLA_VAULT,
@@ -47,7 +48,9 @@ from .vault_client import (
 )
 from .instructions import (
     vault_intent_approve_instructions,
+    vault_intent_params_pages,
     vault_intent_reject_instructions,
+    vault_intent_skip_instructions,
     vault_intent_steps,
     vault_intent_steps_for_keys,
 )
@@ -189,23 +192,19 @@ def _scalars_4k3c(bitcoin_network: str) -> bytes:
 
 def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navigator: Navigator,
                                                    device: Device, bitcoin_network: str):
-    """The intent review must be paged through in full — there is no Skip affordance.
+    """Paging phase 2 through in full still shows every field, Skip notwithstanding.
 
-    Was `test_skip_intent_screen`, which navigated intro → first params page → Skip →
-    Skip → approve and captured that short path as goldens.  The Skip affordance has
-    since been removed from both phases of the intent review: every field shown here is
-    a displayed-and-approved field in the HLD's intent TLV table, and this approval is
-    the only anchor for the silent signing that follows it (Pre-PegIn signs with no
-    further screen), so none of it may be bypassed.  NBGL arms Skip for a whole
-    streaming review, so it could not be limited to the vault-group segments while
-    keeping the keeper/challenger key list mandatory.
+    Phase 2 is skippable, but nothing forces the user to skip it: this walks every page
+    of both phases and approves, which is the counterpart to test_skip_intent_screen's
+    short path.  It also pins the page packing that SKIPPABLE_OPERATION's header changes
+    — see _vault_intent_key_pages.
 
-    The asymmetric 4-keeper / 3-challenger fixture is kept: it is the only intent test
-    with unequal counts, so it is the only one that must call vault_intent_steps_for_keys
-    directly.  vault_intent_steps is a thin wrapper over that same function for the
-    symmetric case, so both share one calibrated step count — an odd key total also makes
-    this the only test that exercises the round-up in the keys-per-page division.
-    Approval returns SW_OK, so no exception is expected.
+    The asymmetric 4-keeper / 3-challenger fixture is the only intent test with unequal
+    counts, so it is the only one that must call vault_intent_steps_for_keys directly.
+    vault_intent_steps is a thin wrapper over that same function for the symmetric case,
+    so both share one calibrated step count — an odd key total also makes this the only
+    test that exercises the round-up in the keys-per-page division.  Approval returns
+    SW_OK, so no exception is expected.
     """
     derive_for_intent(client, navigator, device, bitcoin_network)
     client.transport_client.exchange(
@@ -241,4 +240,119 @@ def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navig
                 ),
             ),
             screen_change_before_first_instruction=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Skip affordance (phase 2 skippable, phase 1 mandatory)
+# ---------------------------------------------------------------------------
+
+def _skip_offered(client: "RaggerClient") -> bool:
+    """True when the current screen shows the NBGL "Skip" header button."""
+    content = client.transport_client.get_current_screen_content()
+    return any(event.get("text") == "Skip" for event in content.get("events", []))
+
+
+def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
+                            device: Device, bitcoin_network: str):
+    """Skip from the first vault group jumps to approval, bypassing groups and keys.
+
+    Phase 2 carries SKIPPABLE_OPERATION, so the per-vault groups and the whole
+    keeper/challenger key list can be bypassed.  The 4-keeper / 3-challenger fixture
+    makes that visible: the skipped path is a handful of pages where the full review is
+    more than twice as long.
+
+    Skip lands on the approve/reject page, not on a signature — the captured goldens end
+    with an explicit approval, which is the property that keeps "did not read the
+    details" distinct from "did not approve".  Approval returns SW_OK, so no exception
+    is expected.
+
+    Skip is touch-only: on nano the review is a single mandatory streaming review.
+    """
+    if device.is_nano:
+        pytest.skip("skip affordance is touch-only; nano uses the full review")
+
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    client.transport_client.exchange(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_SCALARS,
+        p2=P2_UNUSED,
+        data=_scalars_4k3c(bitcoin_network),
+    )
+    client.transport_client.exchange(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_GROUP,
+        p2=P2_UNUSED,
+        data=_group(),
+    )
+
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=(b"".join(_ktlv(TAG_KEEPER_PK, k) for k in _ASYM_KEEPERS) +
+              b"".join(_ktlv(TAG_CHALLENGER_PK, k) for k in _ASYM_CHALLENGERS)),
+    ):
+        navigator.navigate_and_compare(
+            path=ROOT_SCREENSHOT_PATH,
+            test_case_name="screen2_vault_intent/skip_" + bitcoin_network,
+            instructions=vault_intent_skip_instructions(device),
+            screen_change_before_first_instruction=True,
+        )
+
+
+def test_phase1_params_not_skippable(client: "RaggerClient", navigator: Navigator,
+                                     device: Device, bitcoin_network: str):
+    """The scalar params segment offers no Skip; the vault groups that follow do.
+
+    Phase 1 and phase 2 are separate streaming reviews precisely so SKIPPABLE_OPERATION
+    can arm one without the other.  This reads the header off the live screens rather
+    than inferring the boundary from a page count, so it fails if the flag ever widens
+    to cover the params segment.
+    """
+    if device.is_nano:
+        pytest.skip("skip affordance is touch-only; nano runs one mandatory review")
+
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    _send_scalars_and_group(client, bitcoin_network)
+
+    with client.transport_client.exchange_async(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_KEY_BATCH,
+        p2=P2_UNUSED,
+        data=_ktlv(TAG_KEEPER_PK, _KEY_A) + _ktlv(TAG_CHALLENGER_PK, _KEY_B),
+    ):
+        # Only the first navigate() waits for the review to appear; afterwards the screen
+        # is already settled, so waiting again before swiping would time out.
+        def swipe(first: bool = False) -> None:
+            navigator.navigate([NavInsID.SWIPE_CENTER_TO_LEFT],
+                               screen_change_before_first_instruction=first)
+
+        # Phase 1 intro → first params page.
+        swipe(first=True)
+
+        # Every params page must be free of the Skip header.  Swiping past the last one
+        # confirms phase 1 and starts phase 2, landing on its intro.
+        for page in range(vault_intent_params_pages(device)):
+            assert not _skip_offered(client), \
+                f"phase 1 params page {page} must not offer Skip"
+            swipe()
+
+        # Phase 2 intro → first vault group, where Skip is armed.
+        swipe()
+        assert _skip_offered(client), "phase 2 vault groups must offer Skip"
+
+        # Complete the flow so the pending APDU gets its response.
+        navigator.navigate(
+            [
+                NavInsID.RIGHT_HEADER_TAP,
+                NavInsID.USE_CASE_CHOICE_CONFIRM,
+                NavInsID.USE_CASE_REVIEW_CONFIRM,
+                NavInsID.USE_CASE_STATUS_DISMISS,
+            ],
+            screen_change_before_first_instruction=False,
         )
