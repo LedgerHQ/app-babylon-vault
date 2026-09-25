@@ -10,6 +10,7 @@
 |--------|--------------------------|---------------|
 | `0x80` | `APPROVE_VAULT_INTENT`   | Three-phase: P1=0x00 scalar TLV (13 fields), P1=0x01 per-vault group TLV (6 fields × vault_count), P1=0x02 TLV key batch; show approval screen; transition to `INTENT_LOADED`. |
 | `0x81` | `DERIVE_CONTEXT_HASH`    | Derive the 32-byte root via HKDF-SHA-256 at `m/73681862'` over `info = SHA256(appName) ‖ SHA256(networkName) ‖ connectedPubkey ‖ context`; optional Screen 1 (P2=0x00); chunked context up to 1024 B. |
+| `0x82` | `GET_VAULT_STATE`        | Read-only, silent query: returns 4-byte fingerprints of the loaded intent and of the context root, so a host can resume a session still in device memory instead of re-deriving and re-approving. |
 
 ---
 
@@ -236,6 +237,100 @@ Implementation: `src/handler/derive_context_hash_core.h` (static inline, unit-te
 Upstream specs (captured in `docs/specs/`):
 [derive-context-hash.md](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-context-hash.md),
 [derive-vault-secrets.md](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-vault-secrets.md)
+
+---
+
+## INS 0x82 — GET_VAULT_STATE — Wire Format
+
+Read-only session query (ADR-001). It needs no user presence, shows no screen, and changes
+no state: the session, the signature counters and the dedup masks are untouched, and
+repeated queries return identical bytes.
+
+### Command
+
+| CLA    | INS    | P1     | P2     | CData |
+|--------|--------|--------|--------|-------|
+| `0xE1` | `0x82` | `0x00` | `0x00` | empty |
+
+### Response
+
+```
+[ len_i: 1 B ][ intent_fp: len_i B ][ len_r: 1 B ][ context_fp: len_r B ]
+```
+
+Each length byte is `0x00` (not held; the fingerprint that follows is absent) or `0x04`.
+SW is `0x9000` for every well-formed call. What is reported depends on the session state
+alone:
+
+| Session state | Reached by | Response |
+|---------------|------------|----------|
+| `IDLE` | fresh start, or any invalidation (signing error, cap exceeded, an `APPROVE_VAULT_INTENT` that fails validation or that the user rejects, a new `DERIVE_CONTEXT_HASH` stream) | `00 00` |
+| `HASH_DERIVED` | `DERIVE_CONTEXT_HASH` complete (P2=`0x00` or `0x01`), including while an `APPROVE_VAULT_INTENT` is in flight | `00 04 <context_fp>` |
+| `INTENT_LOADED` | `APPROVE_VAULT_INTENT` approved by the user | `04 <intent_fp> 04 <context_fp>` |
+
+An intent that is still streaming, or that is on the review screen, is not reported: the
+intent fingerprint appears only once the user has approved it.
+
+An `APPROVE_VAULT_INTENT` APDU refused as out of sequence (`0xB007` — e.g. P1=`0x00` while an
+intent is already loaded) does not invalidate the session, so the loaded intent is still
+reported afterwards. Replacing an intent takes a new `DERIVE_CONTEXT_HASH`, which does
+invalidate.
+
+### Fingerprint definitions
+
+Both fingerprints are the **last 4 bytes** (bytes 28..31) of a SHA-256 digest.
+
+- **`context_fp` = `SHA-256(context_root)[28..32]`**, where `context_root` is the 32-byte
+  root `DERIVE_CONTEXT_HASH` P2=`0x00` returns. P2=`0x01` returns no root, but for the same
+  inputs it derives the same root and so reports the same fingerprint.
+- **`intent_fp` = `SHA-256(CData₀ ‖ CData₁ ‖ … ‖ CDataₙ)[28..32]`**: the CData of every
+  `APPROVE_VAULT_INTENT` APDU of the approved intent, concatenated in the order sent — the
+  P1=`0x00` scalars, then each P1=`0x01` group APDU, then each P1=`0x02` key batch. The CLA,
+  INS, P1, P2 and Lc bytes are not included, and an empty CData contributes nothing.
+
+Because only the concatenation is hashed, the fingerprint does not depend on how the host
+splits the groups or keys across APDUs. It does depend on every byte sent, including the
+TLV order the host chose for the scalar fields, so the host must hash exactly the bytes it
+sent. It is not a hash of the device's parsed intent, which holds padding and device-derived
+fields (`depositor_pk`) the host cannot reproduce.
+
+Worked example (mainnet): the 1-keeper / 1-challenger intent built by the Ragger suite
+(`tests/test_approve_vault_intent.py` `_make_scalars` and `_make_group`, keys
+`TEST_VALID_KEYS[0]` and `[1]`) has `intent_fp = 44 a9 9b 57`; the root
+`f82ced3b…455df008` of derive-context-hash §4.2 has `context_fp = d1 f8 ec da`. Both are
+pinned in `unit-tests/test_vault_context.c`.
+
+**Why the context fingerprint is captured at derivation.** The device zeroes the root as
+soon as `APPROVE_VAULT_INTENT` has derived `htlc_hashlock` and `auth_anchor_hash` from it,
+so in `INTENT_LOADED` there is no root left to hash. `context_fp` is therefore computed in
+`DERIVE_CONTEXT_HASH` when the root is produced and kept alongside the session (see the
+`context_root` lifetime note in [`APP_SPECIFICATION.md`](../APP_SPECIFICATION.md)).
+
+### Malformed calls
+
+ADR-001's "no failure mode" covers the well-formed call only. A malformed call is rejected
+with a status word, returns no data, and leaves the session exactly as it was:
+
+| SW | Condition |
+|----|-----------|
+| `0x6A86` | P1 ≠ `0x00` or P2 ≠ `0x00` (checked first) |
+| `0x6A87` | CData not empty |
+
+Rejecting rather than answering follows the app's fail-closed rule, and it keeps the command
+extensible: a later revision can assign a meaning to a non-zero P1 or P2, and a host that
+uses it against this version gets `0x6A86` instead of an answer it would misread.
+
+Unreachable in practice: if the session state were ever outside the three values above the
+device returns `0xB007` rather than guess an answer.
+
+### Security
+
+The caller is unauthenticated and needs no approval, so any host can poll this command. It
+learns whether a session exists and two 4-byte truncated SHA-256 values. The legitimate host
+already holds both preimages — it received the root from `DERIVE_CONTEXT_HASH` P2=`0x00` and
+sent the intent bytes itself — so the fingerprints disclose nothing it did not have and
+serve only as a check value. Signature counters are deliberately not returned (ADR-001
+Option 3). See [`APP_SPECIFICATION.md`](../APP_SPECIFICATION.md) for the full note.
 
 ---
 

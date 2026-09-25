@@ -10,9 +10,10 @@ The app is a dedicated btcext extension for the [Babylon protocol](https://babyl
 
 - Derive a 32-byte session root and bind it to on-chain commitments (`DERIVE_CONTEXT_HASH`)
 - Review and approve vault parameters and participant keys (`APPROVE_VAULT_INTENT`)
+- Report whether that session is still in device memory, so the host can resume it (`GET_VAULT_STATE`)
 - Sign eight Bitcoin transaction types: Pre-PegIn, PegIn, Payout, Refund, Claim, Assert, Wrongly-Challenged (WC), NoPayout
 
-The app extends [app-btcext-boilerplate](https://github.com/LedgerHQ/app-btcext-boilerplate). Standard btcext APDUs (e.g. `GET_EXTENDED_PUBKEY`, `SIGN_PSBT`) are handled by the base app. Only the two custom INS codes below are specific to this app.
+The app extends [app-btcext-boilerplate](https://github.com/LedgerHQ/app-btcext-boilerplate). Standard btcext APDUs (e.g. `GET_EXTENDED_PUBKEY`, `SIGN_PSBT`) are handled by the base app. Only the three custom INS codes below are specific to this app.
 
 For full wire-format details see [`docs/apdu.md`](docs/apdu.md).
 
@@ -26,6 +27,7 @@ All custom APDUs use **CLA `0xE1`**.
 |--------|-------------------------|-------------|
 | `0x80` | `APPROVE_VAULT_INTENT`  | Three-phase APDU. **P1=`0x00`**: parse and validate 13 scalar TLV fields. **P1=`0x01`**: receive per-vault group TLV (6 fields per vault group, repeated `vault_count` times). **P1=`0x02`**: stream keeper then challenger x-only public keys (TLV-wrapped; tag `2B` + length `1B` + 32-byte key). After all keys are received the device displays the vault parameters for user approval and, on confirmation, transitions the session to `INTENT_LOADED`. |
 | `0x81` | `DERIVE_CONTEXT_HASH`   | Chunked streaming APDU (**P1=`0x00`** initial chunk, **P1=`0x01`** continuation). Derives a 32-byte context root from the device's BIP-32 key at `m/73681862'` via HKDF-SHA-256 and stores it in the session context. **P2=`0x00`**: shows a user approval screen ("Allow derivation?") and, on confirmation, returns the raw 32-byte root to the host. **P2=`0x01`**: silent re-derivation; returns `SW_OK` with no data. |
+| `0x82` | `GET_VAULT_STATE`       | Read-only and silent (ADR-001). **P1=P2=`0x00`**, empty CData. Returns `len_i ‖ intent_fp ‖ len_r ‖ context_fp`, each length `0` (not held) or `4`: `00 00` in `IDLE`, `00 04 <context_fp>` in `HASH_DERIVED`, `04 <intent_fp> 04 <context_fp>` in `INTENT_LOADED`. `context_fp` is the last 4 bytes of `SHA-256(context_root)`; `intent_fp` the last 4 bytes of SHA-256 over the concatenated CData of every `APPROVE_VAULT_INTENT` APDU. No user presence, no screen, no state change. A malformed call gets `0x6A86` (P1/P2 ≠ `0x00`) or `0x6A87` (CData not empty). Wire format and fingerprint definitions: [`docs/apdu.md`](docs/apdu.md#ins-0x82--get_vault_state--wire-format). |
 
 #### DERIVE_CONTEXT_HASH — caller identity is not authenticated
 
@@ -59,6 +61,46 @@ display the connected public key (or a short fingerprint of it) and a digest of 
 context, and reword the prompt to state that a secret root will be exported. That changes
 Screen 1, so it requires HLD sign-off and golden-snapshot regeneration across all five
 devices and both networks; it is not implemented.
+
+#### GET_VAULT_STATE — answers an unauthenticated caller
+
+`GET_VAULT_STATE` answers any host, with no user interaction and no screen, so a host can
+poll it at will. This is **accepted by design** (ADR-001) rather than a deviation, and is
+recorded here for the same reason as the Screen 1 entry above: the next reviewer should find
+the reasoning next to the command, not reconstruct it.
+
+What an arbitrary caller learns:
+
+- Whether a session exists, and whether it has reached `HASH_DERIVED` or `INTENT_LOADED`.
+- `context_fp`, 4 bytes of `SHA-256(context_root)`. The full `context_root` is already
+  handed to the host by `DERIVE_CONTEXT_HASH` P2=`0x00`, so the host that ran the session
+  learns nothing new. A different caller gets a 32-bit truncated hash of a 256-bit secret:
+  it cannot be inverted, and it confirms a guess only for a caller that already has the root.
+- `intent_fp`, 4 bytes of SHA-256 over bytes the legitimate host sent. Same reasoning: it
+  confirms knowledge of the intent, it does not reveal it.
+
+Signature counters are not returned (ADR-001 Option 3): without the host's own record of
+what it signed they give no aid, and they would tell a polling caller how far the vault
+flow has progressed.
+
+The fingerprints are an aid to resumption, not an authenticator. A match means the host may
+skip re-derivation and re-approval; it grants nothing the loaded session did not already
+allow, and every signature remains bound to the approved intent and its caps.
+
+#### `context_root` lifetime — divergence from HLD v23
+
+HLD v23 describes the root as held in session memory for the whole session: "The device
+stores the context_root in session memory and derives the following from it", with the
+Pre-PegIn and PegIn checks "recomputed by the device from the `context_root`", and the
+invalidation list nullifying "the stored secret `context_root`". The app is stricter. It
+zeroes the root as soon as `APPROVE_VAULT_INTENT` has derived the two on-chain commitments
+(`htlc_hashlock` per vault, `auth_anchor_hash`), and the signing checks compare against those
+commitments. In `INTENT_LOADED` no root is held.
+
+This is why `GET_VAULT_STATE` cannot compute `context_fp` on demand: the fingerprint is
+captured in `DERIVE_CONTEXT_HASH` at the moment the root is produced, and carried across the
+`APPROVE_VAULT_INTENT` reset alongside the root it describes. The hardening is kept; the HLD
+is not being amended.
 
 ### APPROVE_VAULT_INTENT — intent fields
 
@@ -467,6 +509,8 @@ The depositor reclaims funds from a wrongly-challenged vault by spending the Cha
 | `0x9000` | `SW_OK`             | Success |
 | `0x6985` | `SW_DENY`           | User rejected on device |
 | `0x6A80` | `SW_INCORRECT_DATA` | Invalid APDU data or validation failure |
+| `0x6A86` | `SW_WRONG_P1P2`     | P1 or P2 not valid for this command |
+| `0x6A87` | `SW_WRONG_DATA_LENGTH` | Lc not valid for this command |
 | `0x6D00` | `SW_INS_NOT_SUPPORTED` | Unknown INS for CLA `0xE1` |
 | `0x6E00` | `SW_CLA_NOT_SUPPORTED` | Unknown CLA |
 | `0xB007` | `SW_BAD_STATE`      | Command not allowed in current session state |

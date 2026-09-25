@@ -17,7 +17,7 @@ import hashlib
 import hmac
 import types
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
     from ragger.navigator import Navigator
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 CLA_VAULT                    = 0xE1
 INS_DERIVE_CONTEXT_HASH      = 0x81
 INS_APPROVE_VAULT_INTENT     = 0x80
+INS_GET_VAULT_STATE          = 0x82
 
 P1_INITIAL   = 0x00
 P1_CONTINUE  = 0x01
@@ -429,6 +430,7 @@ def approve_vault_intent_with_nav(
     path: Optional[Path] = None,
     test_case_name: Optional[Union[Path, str]] = None,
     n_swipes: Optional[int] = None,
+    keys_per_batch: int = _KEYS_PER_BATCH,
 ) -> None:
     """Send APPROVE_VAULT_INTENT APDUs and navigate the approval screen.
 
@@ -436,8 +438,11 @@ def approve_vault_intent_with_nav(
     The final batch triggers the display; it is sent asynchronously while the navigator
     confirms the review screen.
 
-    groups: list of pre-built P1=0x01 group TLV payloads (one per vault).  When
-    provided they are sent between the P1=0x00 scalars and the P1=0x02 key batches.
+    groups: list of P1=0x01 payloads, one APDU each.  An entry may hold one group TLV or
+    several concatenated.  When provided they are sent between the P1=0x00 scalars and
+    the P1=0x02 key batches.
+
+    keys_per_batch: keys per P1=0x02 APDU (at most _KEYS_PER_BATCH to fit 255 bytes).
 
     When path and test_case_name are provided, snapshot comparison is performed:
       - If n_swipes is given, navigate_and_compare is used with an explicit instruction
@@ -456,7 +461,8 @@ def approve_vault_intent_with_nav(
     all_keys_tlv = ([_tlv_bytes(TAG_KEEPER_PK, k) for k in keeper_pks] +
                     [_tlv_bytes(TAG_CHALLENGER_PK, k) for k in challenger_pks])
     assert len(all_keys_tlv) > 0, "keeper_pks + challenger_pks must not be empty"
-    batches = [all_keys_tlv[i : i + _KEYS_PER_BATCH] for i in range(0, len(all_keys_tlv), _KEYS_PER_BATCH)]
+    assert 1 <= keys_per_batch <= _KEYS_PER_BATCH, "a key batch must fit one 255-byte APDU"
+    batches = [all_keys_tlv[i : i + keys_per_batch] for i in range(0, len(all_keys_tlv), keys_per_batch)]
 
     for batch in batches[:-1]:
         _approve_exchange(client, P1_KEY_BATCH, b"".join(batch))
@@ -527,6 +533,75 @@ def approve_vault_intent(
     for i in range(0, len(all_keys_tlv), _KEYS_PER_BATCH):
         batch = all_keys_tlv[i : i + _KEYS_PER_BATCH]
         _approve_exchange(client, P1_KEY_BATCH, b"".join(batch))
+
+
+# ---------------------------------------------------------------------------
+# GET_VAULT_STATE helpers
+# ---------------------------------------------------------------------------
+
+FINGERPRINT_LEN = 4
+
+
+def fingerprint(data: bytes) -> bytes:
+    """GET_VAULT_STATE fingerprint: the last 4 bytes of SHA-256(data)."""
+    return hashlib.sha256(data).digest()[-FINGERPRINT_LEN:]
+
+
+def context_fingerprint(root: bytes) -> bytes:
+    """Context-root fingerprint of the 32-byte root DERIVE_CONTEXT_HASH P2=0x00 returned."""
+    assert len(root) == 32
+    return fingerprint(root)
+
+
+def intent_fingerprint(scalars_tlv: bytes,
+                       groups: List[bytes],
+                       keeper_pks: List[bytes],
+                       challenger_pks: List[bytes]) -> bytes:
+    """Intent fingerprint over the APPROVE_VAULT_INTENT CData, concatenated in send order.
+
+    Takes no batch size: the concatenation is the same however the P1=0x01 groups and
+    P1=0x02 keys are split across APDUs, which is the property the device must honour.
+    """
+    keys_tlv = ([_tlv_bytes(TAG_KEEPER_PK, k) for k in keeper_pks] +
+                [_tlv_bytes(TAG_CHALLENGER_PK, k) for k in challenger_pks])
+    return fingerprint(scalars_tlv + b"".join(groups) + b"".join(keys_tlv))
+
+
+def get_vault_state_raw(client: "RaggerClient", p1: int = 0x00, p2: int = 0x00,
+                        data: bytes = b"") -> bytes:
+    """Send one GET_VAULT_STATE APDU; return the response data (exact SW_OK required)."""
+    response = client.transport_client.exchange(
+        cla=CLA_VAULT,
+        ins=INS_GET_VAULT_STATE,
+        p1=p1,
+        p2=p2,
+        data=data,
+    )
+    return _require_sw_ok(response, "GET_VAULT_STATE")
+
+
+def parse_vault_state(response: bytes) -> Tuple[Optional[bytes], Optional[bytes]]:
+    """Parse len_i || intent_fp || len_r || context_fp into (intent_fp, context_fp).
+
+    A fingerprint whose length byte is 0 is returned as None.  Any other length, or bytes
+    left over, is a wire-format violation.
+    """
+    fps: List[Optional[bytes]] = []
+    pos = 0
+    for _ in range(2):
+        assert pos < len(response), f"GET_VAULT_STATE response truncated: {response.hex()}"
+        n = response[pos]
+        pos += 1
+        assert n in (0, FINGERPRINT_LEN), f"fingerprint length {n} not in (0, 4)"
+        fps.append(response[pos:pos + n] if n else None)
+        pos += n
+    assert pos == len(response), f"trailing bytes in GET_VAULT_STATE response: {response.hex()}"
+    return fps[0], fps[1]
+
+
+def get_vault_state(client: "RaggerClient") -> Tuple[Optional[bytes], Optional[bytes]]:
+    """Query GET_VAULT_STATE and return (intent_fp, context_fp), None for 'not held'."""
+    return parse_vault_state(get_vault_state_raw(client))
 
 
 # ---------------------------------------------------------------------------

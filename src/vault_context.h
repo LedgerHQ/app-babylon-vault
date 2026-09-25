@@ -1,12 +1,21 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+#include "cx.h"
 
 #include "vault_intent.h"
 
 /** Bytes needed to hold @p n bits. */
 #define VAULT_BITMASK_BYTES(n) (((n) + 7u) / 8u)
+
+/** GET_VAULT_STATE fingerprint length: the trailing bytes of a SHA-256 digest. */
+#define VAULT_FINGERPRINT_LEN 4u
+
+/** GET_VAULT_STATE response: len_i || intent_fp || len_r || context_fp, both present. */
+#define VAULT_STATE_RESPONSE_MAX_LEN (2u * (1u + VAULT_FINGERPRINT_LEN))
 
 /**
  * Dedup-bitmask slot counts.
@@ -179,6 +188,20 @@ typedef struct {
     /** Number of bytes in app_name (0 if DERIVE_CONTEXT_HASH not yet called). */
     uint8_t app_name_len;
 
+    /**
+     * Context-root fingerprint: last VAULT_FINGERPRINT_LEN bytes of SHA-256(root).
+     * Captured by DERIVE_CONTEXT_HASH when the root is produced, because the root itself
+     * does not outlive APPROVE_VAULT_INTENT. Meaningful while state != IDLE.
+     */
+    uint8_t context_fp[VAULT_FINGERPRINT_LEN];
+
+    /**
+     * Intent fingerprint: last VAULT_FINGERPRINT_LEN bytes of SHA-256 over the CData of every
+     * APPROVE_VAULT_INTENT APDU, concatenated in arrival order, so it does not depend on how
+     * the host batched them. Meaningful only while state == INTENT_LOADED.
+     */
+    uint8_t intent_fp[VAULT_FINGERPRINT_LEN];
+
 } vault_context_t;
 
 // ---------------------------------------------------------------------------
@@ -217,3 +240,40 @@ void vault_context_invalidate(vault_context_t *ctx);
  * SW_BAD_STATE to the host.
  */
 bool vault_context_transition(vault_context_t *ctx, vault_state_t from, vault_state_t to);
+
+/**
+ * @brief Encode the GET_VAULT_STATE response for @p ctx.
+ *
+ * Writes len_i || intent_fp || len_r || context_fp, each length 0 or VAULT_FINGERPRINT_LEN
+ * and each fingerprint present only when its length is non-zero. Which fingerprints are
+ * reported follows from the state alone:
+ *   IDLE          → 00 00
+ *   HASH_DERIVED  → 00 04 context_fp
+ *   INTENT_LOADED → 04 intent_fp 04 context_fp
+ *
+ * @return Bytes written (2, 6 or 10); 0 if ctx->state is not a vault_state_t value.
+ */
+size_t vault_context_encode_state(const vault_context_t *ctx,
+                                  uint8_t out[VAULT_STATE_RESPONSE_MAX_LEN]);
+
+// ---------------------------------------------------------------------------
+// Fingerprints (defined in vault_context.c)
+//
+// fingerprint(data) = last VAULT_FINGERPRINT_LEN bytes of SHA-256(data). The streaming form
+// hashes the concatenation of every update, so the chunking does not affect the result.
+// ---------------------------------------------------------------------------
+
+/** @brief One-shot fingerprint of @p data. @return false on a hash failure. */
+bool vault_fingerprint(const uint8_t *data, size_t len, uint8_t fp_out[VAULT_FINGERPRINT_LEN]);
+
+/** @brief Start a streaming fingerprint. */
+void vault_fingerprint_init(cx_sha256_t *hash);
+
+/** @brief Absorb @p len bytes into a streaming fingerprint. @return false on a hash failure. */
+bool vault_fingerprint_update(cx_sha256_t *hash, const uint8_t *data, size_t len);
+
+/**
+ * @brief Finish a streaming fingerprint into @p fp_out and wipe @p hash.
+ * @return false on a hash failure; @p fp_out is then left unwritten.
+ */
+bool vault_fingerprint_final(cx_sha256_t *hash, uint8_t fp_out[VAULT_FINGERPRINT_LEN]);
