@@ -14,12 +14,12 @@
  * non-empty CData) is rejected with a status word and leaves the session untouched.
  *
  * Security: the caller is unauthenticated and needs no approval, so any host may poll this.
- * What it learns is that a session exists and two 4-byte truncated SHA-256 values. The
- * context fingerprint is over a root the host already received from DERIVE_CONTEXT_HASH
- * P2=0x00, and the intent fingerprint over APDUs the host itself sent, so both are only a
- * check value for data the legitimate host holds; neither can be inverted to recover the
- * root or the intent. Accepted in ADR-001, like the unauthenticated caller of Screen 1
- * (Cerberus V-012); see APP_SPECIFICATION.md.
+ * It learns that a session exists and two 4-byte truncated SHA-256 values: check values for
+ * a root and intent bytes the legitimate host already holds. A host with no approval can
+ * still read context_fp for a root it derived silently (DERIVE_CONTEXT_HASH P2=0x01, inputs
+ * of its choosing) — 32 bits of a hash of a 256-bit secret, not invertible and not used
+ * elsewhere. Accepted in ADR-001, like the unauthenticated caller of Screen 1 (Cerberus
+ * V-012); see APP_SPECIFICATION.md.
  *
  * @param dc   Dispatcher context.
  * @param cmd  Parsed APDU command.

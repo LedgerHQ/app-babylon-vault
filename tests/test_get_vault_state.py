@@ -22,7 +22,7 @@ from ragger.backend.interface import BackendInterface
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
-from .instructions import vault_intent_reject_nav
+from .instructions import derive_context_hash_reject_nav, vault_intent_reject_nav
 from .test_approve_vault_intent import _make_group, _make_scalars
 from .test_sign_psbt_validate import (
     _DERIVE_CONTEXT,
@@ -43,11 +43,13 @@ from .vault_client import (
     CLA_VAULT,
     FINGERPRINT_LEN,
     INS_APPROVE_VAULT_INTENT,
+    INS_DERIVE_CONTEXT_HASH,
     P1_CONTINUE,
     P1_GROUP,
     P1_INITIAL,
     P1_KEY_BATCH,
     P1_SCALARS,
+    P2_SHOW,
     P2_SILENT,
     P2_UNUSED,
     SW_BAD_STATE,
@@ -141,10 +143,18 @@ def test_derive_reports_context_fingerprint(client: "RaggerClient", navigator: N
 
 def test_silent_derive_reports_context_fingerprint(client: "RaggerClient", navigator: Navigator,
                                                    device: Device, bitcoin_network: str):
-    """P2=0x01 returns no root, yet captures the fingerprint of the same deterministic root."""
-    root = derive_for_intent(client, navigator, device, bitcoin_network)
+    """P2=0x01 returns no root and needs no approval, yet its fingerprint is readable at once.
+
+    This is the case the security note in docs/apdu.md covers: the fingerprint is reported
+    before any Screen 1 approval, and it matches the root a later approval releases.
+    """
     _derive_silent(client, bitcoin_network)
-    assert get_vault_state(client) == (None, context_fingerprint(root))
+    _, silent_fp = get_vault_state(client)
+    assert silent_fp is not None
+
+    root = derive_for_intent(client, navigator, device, bitcoin_network)
+    assert silent_fp == context_fingerprint(root)
+    assert get_vault_state(client) == (None, silent_fp)
 
 
 def test_approved_intent_reports_both_fingerprints(client: "RaggerClient", navigator: Navigator,
@@ -349,6 +359,62 @@ def test_new_derivation_clears_loaded_intent(client: "RaggerClient", navigator: 
 
     _dch_exchange(client, P1_CONTINUE, P2_SILENT, _DEFAULT_CONTEXT[split:])
     assert get_vault_state(client) == (None, context_fingerprint(root))
+
+
+def test_rejected_derivation_clears_loaded_intent(client: "RaggerClient", navigator: Navigator,
+                                                  device: Device, bitcoin_network: str):
+    """Declining a new Screen 1 while an intent is loaded leaves no session → 00 00."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars, groups, keepers, challengers = _intent_1k1c(bitcoin_network)
+    approve_vault_intent_with_nav(client, navigator, device, scalars, keepers, challengers,
+                                  groups=groups)
+    assert get_vault_state(client)[0] is not None
+
+    payload = (bytes([len(VAULT_APP_NAME)]) + VAULT_APP_NAME
+               + _encode_bip32_path(depositor_path(_coin_type(bitcoin_network)))
+               + len(_DEFAULT_CONTEXT).to_bytes(2, "big") + _DEFAULT_CONTEXT)
+    nav_instr, reject_instrs, search_text = derive_context_hash_reject_nav(device)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        with client.transport_client.exchange_async(
+            cla=CLA_VAULT,
+            ins=INS_DERIVE_CONTEXT_HASH,
+            p1=P1_INITIAL,
+            p2=P2_SHOW,
+            data=payload,
+        ):
+            navigator.navigate_until_text(
+                navigate_instruction=nav_instr,
+                validation_instructions=reject_instrs,
+                text=search_text,
+                screen_change_before_first_instruction=False,
+            )
+    assert exc.value.status == SW_DENY
+    assert get_vault_state_raw(client) == _NOTHING_HELD
+
+
+def test_invalid_scalars_clear_derived_root(client: "RaggerClient", navigator: Navigator,
+                                            device: Device, bitcoin_network: str):
+    """A P1=0x00 that fails validation drops the derived root too → 00 00."""
+    derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars = _make_scalars(bitcoin_network, keeper_count=0)
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _approve_exchange(client, P1_SCALARS, scalars)
+    assert exc.value.status == SW_INCORRECT_DATA
+    assert get_vault_state_raw(client) == _NOTHING_HELD
+
+
+def test_bad_p1_mid_load_keeps_session(client: "RaggerClient", navigator: Navigator,
+                                       device: Device, bitcoin_network: str):
+    """SW_WRONG_P1P2 in the middle of an intent load invalidates nothing; the load continues."""
+    root = derive_for_intent(client, navigator, device, bitcoin_network)
+    scalars, groups, _, _ = _intent_1k1c(bitcoin_network)
+    _approve_exchange(client, P1_SCALARS, scalars)
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        _approve_exchange(client, P1_KEY_BATCH + 1, groups[0])
+    assert exc.value.status == SW_WRONG_P1P2
+    assert get_vault_state(client) == (None, context_fingerprint(root))
+    _approve_exchange(client, P1_GROUP, groups[0])
 
 
 def test_out_of_sequence_intent_apdu_keeps_session(client: "RaggerClient", navigator: Navigator,

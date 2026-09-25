@@ -48,9 +48,14 @@
  * there is no inter-transaction ordering requirement (v22).
  *
  * Invalidation triggers (any of these → explicit_bzero(root) + IDLE):
- *   - Signing error in any hook
- *   - APPROVE_VAULT_INTENT while intent already loaded (state != IDLE and state != HASH_DERIVED)
- *   - DERIVE_CONTEXT_HASH while intent is loaded
+ *   - A signature cap exceeded or a signature replayed (SW_CAP_EXCEEDED), or an error while
+ *     signing a Payout or NoPayout; other SIGN_PSBT rejections keep the session
+ *   - APPROVE_VAULT_INTENT: a P1=0x00 failing validation, then any rejection later in the same
+ *     load (validation, ordering, BIP-32 failure, the user declining the review)
+ *   - DERIVE_CONTEXT_HASH P1=0x00 in any state other than IDLE
+ *
+ * While an intent is loaded, APPROVE_VAULT_INTENT is refused with SW_BAD_STATE and the
+ * session is kept; replacing the intent starts with DERIVE_CONTEXT_HASH.
  */
 typedef enum {
     VAULT_STATE_IDLE = 0,

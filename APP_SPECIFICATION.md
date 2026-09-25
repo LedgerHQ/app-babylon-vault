@@ -72,12 +72,19 @@ the reasoning next to the command, not reconstruct it.
 What an arbitrary caller learns:
 
 - Whether a session exists, and whether it has reached `HASH_DERIVED` or `INTENT_LOADED`.
-- `context_fp`, 4 bytes of `SHA-256(context_root)`. The full `context_root` is already
-  handed to the host by `DERIVE_CONTEXT_HASH` P2=`0x00`, so the host that ran the session
-  learns nothing new. A different caller gets a 32-bit truncated hash of a 256-bit secret:
-  it cannot be inverted, and it confirms a guess only for a caller that already has the root.
-- `intent_fp`, 4 bytes of SHA-256 over bytes the legitimate host sent. Same reasoning: it
-  confirms knowledge of the intent, it does not reveal it.
+- `context_fp`, 4 bytes of `SHA-256(context_root)`. The host that ran the session received
+  the full root from `DERIVE_CONTEXT_HASH` P2=`0x00`, so it learns nothing new.
+- `intent_fp`, 4 bytes of SHA-256 over bytes the legitimate host sent. It confirms knowledge
+  of the intent, it does not reveal it.
+
+**A host with no approval at all can read a root-derived value.** `DERIVE_CONTEXT_HASH`
+P2=`0x01` derives a root silently, from an app name, path and context the host chooses,
+and `GET_VAULT_STATE` then returns `SHA-256(root)[28..32]` for it — before, a silent
+derivation returned nothing. This is accepted: it is 32 bits of a hash of a 256-bit secret,
+it cannot be inverted, and `SHA-256(root)` is used nowhere else (the on-chain commitments are
+`SHA-256(Expand(root, …))`), so it confirms nothing a host could act on. As a per-seed tag it
+adds no linkability beyond the silent `GET_EXTENDED_PUBKEY` the base app already allows.
+ADR-001's "not a new disclosure" holds only for the P2=`0x00` case.
 
 Signature counters are not returned (ADR-001 Option 3): without the host's own record of
 what it signed they give no aid, and they would tell a polling caller how far the vault
@@ -85,7 +92,31 @@ flow has progressed.
 
 The fingerprints are an aid to resumption, not an authenticator. A match means the host may
 skip re-derivation and re-approval; it grants nothing the loaded session did not already
-allow, and every signature remains bound to the approved intent and its caps.
+allow, and every signature remains bound to the approved intent and its caps. At 32 bits a
+hostile host can grind an intent with a colliding fingerprint in about 2³² hashes, so a match
+tells a host that the device holds an intent with that fingerprint, not that it holds the
+host's own.
+
+#### Session lifetime across a disconnection — open divergence from HLD v23
+
+HLD v23 §Safety UX nullifies the intent, the root, the counters and the state machine when
+"the device connection is lost (app switch, unplug, power-off)", and requires that "a new
+connection requires re-derivation and a fresh intent approval". The app nullifies only when
+the app exits or the device loses power. Nothing handles a USB or BLE disconnection, so on a
+battery-powered device (Nano X, Stax, Flex, Apex P) left in the app the session survives an
+unplug. A Nano S+ loses power when unplugged, so there the HLD holds.
+
+ADR-001 depends on exactly this: `GET_VAULT_STATE` exists so a host can resume after "the USB
+connection returns while the application still runs". It also lets any host that connects
+next see that a session is live. That host can then sign silently within the remaining caps
+of the approved intent, without the fresh approval the HLD requires. The signatures stay
+bound to the intent the user approved, so funds cannot be redirected; what is lost is the
+HLD's second bound on silent signing, "the intent approval on the same connection".
+
+> ⚠️ **Decision: PENDING.** Either this divergence is accepted — citing Arch (Pierre Pollastri)
+> and Donjon (Baptistin Boilot) sign-off here by name and date — or the app nullifies the
+> session on transport loss, which leaves `GET_VAULT_STATE` useful only after an auto-lock.
+> The behaviour predates `GET_VAULT_STATE`; the command makes it load-bearing.
 
 #### `context_root` lifetime — divergence from HLD v23
 
