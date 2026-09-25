@@ -238,24 +238,31 @@ def test_one_changed_byte_changes_intent_fingerprint(client: "RaggerClient", nav
 # Read-only: no state change, no signature slot consumed
 # ---------------------------------------------------------------------------
 
-def _approve_prepegin_intent(client: "RaggerClient", navigator: Navigator, device: Device,
-                             bitcoin_network: str):
-    """Derive and approve an intent bound to a signable Pre-PegIn; return (psbt, wallet)."""
+def _prepegin_psbt(client: "RaggerClient", root: bytes, bitcoin_network: str, locktime: int = 0):
+    """A Pre-PegIn PSBT the device can sign for the root; locktime varies its txid."""
     coin_type = _coin_type(bitcoin_network)
-    root = derive_context_hash(client, VAULT_APP_NAME, depositor_path(coin_type),
-                               _DERIVE_CONTEXT, navigator, device)
     _, _, _, _, htlc_spk = _htlc_output(
         _depositor_pk(bitcoin_network), TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
         _HTLC_REFUND_TIMELOCK, vault_hashlock(root, _HTLC_VOUT),
     )
     fingerprint, input_key = _prepegin_input_key(client, coin_type)
-    psbt = _build_prepegin_psbt(
+    return _build_prepegin_psbt(
         htlc_spk,
+        locktime=locktime,
         input_internal_key=input_key,
         input_fingerprint=fingerprint,
         input_coin_type=coin_type,
         auth_anchor=vault_auth_anchor(root),
     )
+
+
+def _approve_prepegin_intent(client: "RaggerClient", navigator: Navigator, device: Device,
+                             bitcoin_network: str):
+    """Derive and approve an intent bound to a signable Pre-PegIn; return (psbt, wallet, root)."""
+    coin_type = _coin_type(bitcoin_network)
+    root = derive_context_hash(client, VAULT_APP_NAME, depositor_path(coin_type),
+                               _DERIVE_CONTEXT, navigator, device)
+    psbt = _prepegin_psbt(client, root, bitcoin_network)
     scalars = _build_intent_tlv_for_test(coin_type, _hash256(psbt.tx.serialize_without_witness()))
     groups = [_build_group_for_test()]
     approve_vault_intent_with_nav(client, navigator, device, scalars,
@@ -266,7 +273,7 @@ def _approve_prepegin_intent(client: "RaggerClient", navigator: Navigator, devic
         context_fingerprint(root),
     )
     assert get_vault_state_raw(client) == expected
-    return psbt, _standard_taproot_wallet(client, coin_type)
+    return psbt, _standard_taproot_wallet(client, coin_type), root
 
 
 def test_repeated_queries_consume_no_signature(client: "RaggerClient", navigator: Navigator,
@@ -276,13 +283,35 @@ def test_repeated_queries_consume_no_signature(client: "RaggerClient", navigator
     The Pre-PegIn cap is 1: if any query had consumed a slot, the signature after them
     would be refused.  A successful signature leaves the session, and so the answer, as is.
     """
-    psbt, wallet = _approve_prepegin_intent(client, navigator, device, bitcoin_network)
+    psbt, wallet, _ = _approve_prepegin_intent(client, navigator, device, bitcoin_network)
     first = get_vault_state_raw(client)
     for _ in range(5):
         assert get_vault_state_raw(client) == first
 
     assert len(client.sign_psbt(psbt, wallet, None)) == 1
     assert get_vault_state_raw(client) == first
+
+
+def test_rejected_psbt_keeps_session(client: "RaggerClient", navigator: Navigator,
+                                     device: Device, bitcoin_network: str):
+    """A SIGN_PSBT that fails validation is refused without touching the session.
+
+    The rejected Pre-PegIn differs from the approved one only in locktime, so its txid does
+    not match the intent.  The approved one still signs afterwards, which shows the rejection
+    spent neither the session nor the single Pre-PegIn slot.
+    """
+    psbt, wallet, root = _approve_prepegin_intent(client, navigator, device, bitcoin_network)
+    loaded = get_vault_state_raw(client)
+
+    unbound = _prepegin_psbt(client, root, bitcoin_network, locktime=1)
+    assert unbound.tx.serialize_without_witness() != psbt.tx.serialize_without_witness()
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(unbound, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+    assert get_vault_state_raw(client) == loaded
+
+    assert len(client.sign_psbt(psbt, wallet, None)) == 1
+    assert get_vault_state_raw(client) == loaded
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +321,7 @@ def test_repeated_queries_consume_no_signature(client: "RaggerClient", navigator
 def test_cap_exceeded_clears_state(client: "RaggerClient", navigator: Navigator,
                                    device: Device, bitcoin_network: str):
     """A SIGN_PSBT that exceeds a signature cap nullifies the session → 00 00."""
-    psbt, wallet = _approve_prepegin_intent(client, navigator, device, bitcoin_network)
+    psbt, wallet, _ = _approve_prepegin_intent(client, navigator, device, bitcoin_network)
     client.sign_psbt(psbt, wallet, None)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
