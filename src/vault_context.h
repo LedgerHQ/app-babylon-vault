@@ -49,7 +49,7 @@
  *
  * Invalidation triggers (any of these → explicit_bzero(root) + IDLE):
  *   - A signature cap exceeded or a signature replayed (SW_CAP_EXCEEDED), or an error while
- *     signing a Payout or NoPayout; other SIGN_PSBT rejections keep the session
+ *     signing a PegIn, Payout or NoPayout; other SIGN_PSBT rejections keep the session
  *   - APPROVE_VAULT_INTENT: a P1=0x00 failing validation, then any rejection later in the same
  *     load (validation, ordering, BIP-32 failure, the user declining the review)
  *   - DERIVE_CONTEXT_HASH P1=0x00 in any state other than IDLE

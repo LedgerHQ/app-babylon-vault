@@ -477,6 +477,13 @@ def test_out_of_sequence_intent_apdu_keeps_session(client: "RaggerClient", navig
     (0x01, 0x00, b"\x00", SW_WRONG_P1P2),   # P1/P2 are checked before the length
     (0x00, 0x00, b"\x00", SW_WRONG_DATA_LENGTH),
     (0x00, 0x00, bytes(255), SW_WRONG_DATA_LENGTH),
+], ids=[
+    "bad_p1",
+    "bad_p2",
+    "bad_p1_and_p2",
+    "bad_p1_with_cdata",
+    "one_byte_cdata",
+    "255_byte_cdata",
 ])
 def test_malformed_call_rejected_state_kept(client: "RaggerClient", navigator: Navigator,
                                             device: Device, bitcoin_network: str,
