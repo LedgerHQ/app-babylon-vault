@@ -2714,7 +2714,11 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
         return false;
     }
 
-    return display_reclaim_transaction(dc, out_value, fee, pegin_txid, G_scratch.display_tx.addr_str);
+    return display_reclaim_transaction(dc,
+                                       out_value,
+                                       fee,
+                                       pegin_txid,
+                                       G_scratch.display_tx.addr_str);
 }
 
 /* -------------------------------------------------------------------------
