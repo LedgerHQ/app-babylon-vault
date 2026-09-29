@@ -231,3 +231,23 @@ bool leaf_has_assert_shape(int script_len, const uint8_t *prefix, uint8_t last_b
     /* Terminal OP_TRUE excludes the Vault UTXO and Refund leaves, which end <t> OP_CSV. */
     return last_byte == (uint8_t) OP_TRUE;
 }
+
+bool parse_claim_leaf_script(const uint8_t *script,
+                             int script_len,
+                             uint8_t d_key_out[VAULT_XONLY_PUBKEY_LEN]) {
+    if (script_len != (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN) return false;
+    if (script[0] != OP_PUSHBYTES_32) return false;
+    if ((uint8_t) script[VAULT_DEPOSITOR_CLAIM_LEAF_LEN - 1] != (uint8_t) OP_CHECKSIG) return false;
+    memcpy(d_key_out, script + 1, VAULT_XONLY_PUBKEY_LEN);
+    return true;
+}
+
+bool reclaim_sequence_ok(bool present, uint32_t seq) {
+    return present && seq == RECLAIM_SEQUENCE;
+}
+
+bool reclaim_fee_ok(uint64_t in_value, uint64_t out_value, uint64_t *fee_out) {
+    if (out_value >= in_value) return false;
+    *fee_out = in_value - out_value;
+    return true;
+}

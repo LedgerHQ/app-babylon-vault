@@ -11,7 +11,7 @@ The app is a dedicated btcext extension for the [Babylon protocol](https://babyl
 - Derive a 32-byte session root and bind it to on-chain commitments (`DERIVE_CONTEXT_HASH`)
 - Review and approve vault parameters and participant keys (`APPROVE_VAULT_INTENT`)
 - Report whether that session is still in device memory, so the host can resume it (`GET_VAULT_STATE`)
-- Sign eight Bitcoin transaction types: Pre-PegIn, PegIn, Payout, Refund, Claim, Assert, Wrongly-Challenged (WC), NoPayout
+- Sign ten Bitcoin transaction types: Pre-PegIn, PegIn, Payout, PayoutFinalize, Refund, Claim, Reclaim, Assert, Wrongly-Challenged (WC), NoPayout
 
 The app extends [app-btcext-boilerplate](https://github.com/LedgerHQ/app-btcext-boilerplate). Standard btcext APDUs (e.g. `GET_EXTENDED_PUBKEY`, `SIGN_PSBT`) are handled by the base app. Only the three custom INS codes below are specific to this app.
 
@@ -237,7 +237,9 @@ it is not implemented.
 
 ## Transaction Types
 
-The app recognises eight Bitcoin transaction types via the `SIGN_PSBT` hook. The device independently reconstructs the expected scripts from the loaded `vault_intent_t` and rejects any PSBT whose scripts do not match.
+The app recognises ten Bitcoin transaction types via the `SIGN_PSBT` hook. The device independently reconstructs the expected scripts from the loaded `vault_intent_t` and rejects any PSBT whose scripts do not match.
+
+For the standalone flows (no wallet policy), the leaf script alone does not always pick a unique pattern: Claim and Reclaim share the exact same 34-byte `<D> OP_CHECKSIG` leaf. Where that happens, the dispatch rule is stated on the pair (leaf script, output count), not on the leaf script alone — see Claim and Reclaim below.
 
 ### 1. Pre-PegIn
 
@@ -376,7 +378,7 @@ The depositor pre-signs a NoPayout leaf for a specific challenger, authorising t
 
 The depositor spends the Depositor Claim UTXO created by the PegIn transaction.
 
-**Requires:** any state (including `IDLE`); no wallet policy; 34-byte leaf `<D> OP_CHECKSIG`.
+**Requires:** any state (including `IDLE`); no wallet policy; 34-byte leaf `<D> OP_CHECKSIG` with exactly 2 outputs. The same leaf with exactly 1 output is Reclaim (below) instead; any other output count matches neither pattern and is rejected.
 
 **PSBT requirements:**
 
@@ -530,6 +532,54 @@ The depositor reclaims funds from a wrongly-challenged vault by spending the Cha
 `<D> OP_CHECKSIGVERIFY OP_SIZE OP_PUSHBYTES_1 0x20 OP_EQUALVERIFY OP_SHA256 <output_label_hash>(32B) OP_EQUAL`
 
 **User display:** amount reclaimed (Output 0 value), wallet inputs amount (sum of Inputs 1+ values), fee, depositor address (bech32m of BIP-86 P2TR(`<D>`)).
+
+---
+
+### 9. Reclaim (standalone)
+
+Reclaim sweeps the depositor claim reserve (PegIn Output 1) back to the depositor once the
+vault is redeemed and the reserve would otherwise be lost. It shares its leaf byte-for-byte
+with Claim; the dispatcher tells them apart by output count alone.
+
+**Consent, not validation.** The device cannot know whether PegIn Output 0 has been spent, so
+it cannot establish that the sweep is safe — reclaiming early permanently kills the
+depositor's self-claim path. The review screen carries that risk to the user; the device
+guarantees only that the funds go to the depositor's own proven key.
+
+**Requires:** any state (including `IDLE`); no wallet policy; 34-byte leaf `<D> OP_CHECKSIG`
+with exactly 1 output. The same leaf with exactly 2 outputs is Claim instead; any other
+output count matches neither pattern and is rejected.
+
+**PSBT requirements:**
+
+| Field | Rule |
+|---|---|
+| Input count | Exactly 1 |
+| Output count | Exactly 1 |
+| Version / locktime | ≥ 2 / 0 — the PegIn is deeply confirmed by reclaim time, so the TRUC constraints on PegIn do not apply |
+| Input 0 leaf shape | 34 bytes: `<D>(32B) OP_CHECKSIG` — byte-identical to Claim's leaf |
+| Internal key | NUMS (single-leaf P2TR) |
+| `<D>` key | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path; derived key must match leaf key |
+| Taproot commitment | Control block must produce a valid commitment to the leaf |
+| Input 0 sequence | Exactly `0xFFFFFFFD` (unmasked equality); the field **must be present** — an absent `PSBT_IN_SEQUENCE` decodes as `0xFFFFFFFF`, which is not replaceable |
+| Input 0 value | Plausibility only: `WITNESS_UTXO` value strictly above `VAULT_DUST_LIMIT`. `SIGHASH_DEFAULT` commits it, so a false value only yields an unusable signature (DoS, no fund redirection) |
+| Output 0 | BIP-86 P2TR, proven by its own `TAP_BIP32_DERIVATION` — the same latitude Refund gives its own output; need not equal `<D>` |
+| Fee | `input_value − output_value > 0` (checked subtraction; rejects on underflow) |
+| Prevout binding | **Not enforced** — without an intent the device cannot compute the expected PegIn txid. Displayed on the review screen for the user to check by eye |
+| Sighash | `SIGHASH_DEFAULT` only |
+| Signing cap | None — standalone flows are uncapped; Bitcoin consensus makes the spend a one-time event |
+
+**Sequence policy note.** Reclaim is the first accepted pattern with an RBF sequence
+(`0xFFFFFFFD`). Claim keeps `0xFFFFFFFF` (`SEQUENCE_FINAL`) for the very same leaf shape, per
+the Babylon rule for graph transactions — both are correct for their own pattern, and neither
+bound relaxes the other.
+
+**Depositor Claim / Reclaim leaf script:**
+`<D> OP_CHECKSIG`
+
+**User display:** not yet implemented. The device fully validates a Reclaim PSBT against
+every rule above and then refuses — a Reclaim transaction is never signed without a review
+screen the user has actually seen.
 
 ---
 
