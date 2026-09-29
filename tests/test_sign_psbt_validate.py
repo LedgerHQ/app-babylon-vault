@@ -1,7 +1,9 @@
 """
-Silent-flow validation tests for SIGN_PSBT (NAPPS-1375/1376/1462).
+Silent-flow validation tests for SIGN_PSBT (NAPPS-1375/1376/1462/1481).
 
-Covers Pre-PegIn, PegIn, Payout, NoPayout, and Refund validation (no display).
+Covers Pre-PegIn, PegIn, Payout, NoPayout, Refund, and Reclaim validation (no display).
+Reclaim (NAPPS-1481) has no screen yet — display_reclaim_transaction always refuses, so
+even a fully-valid Reclaim PSBT ends in SW_DENY; that refusal is what these tests check.
 Screen-capture tests live in the corresponding test_screen*.py files:
   test_screen3_refund.py  — Screen 3 (Refund)
   test_screen4_claim.py  — Screen 4 (Claim)
@@ -41,6 +43,7 @@ from .vault_client import (
     SW_BAD_STATE,
     SW_BAD_CPFP_ANCHOR,
     SW_CAP_EXCEEDED,
+    SW_DENY,
     SW_INCORRECT_DATA,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
@@ -1649,6 +1652,393 @@ def test_sign_psbt_refund_nonzero_locktime(
     psbt.tx.nLockTime = 1
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
 
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ===========================================================================
+# Reclaim transaction validation (NAPPS-1481, Screen 9)
+#
+# Reclaim shares its leaf shape byte-for-byte with Claim (<D> OP_CHECKSIG, 34 bytes);
+# the dispatcher tells them apart by output count alone (2 outputs -> Claim, 1 -> Reclaim).
+# display_reclaim_transaction is not implemented yet (NAPPS-1482) and always refuses, so a
+# fully-valid Reclaim PSBT still ends in SW_DENY -- that is the "reaches the terminal
+# refusal" acceptance criterion, and is how these tests tell a validation pass from a
+# validation failure (SW_INCORRECT_DATA).
+# ===========================================================================
+
+_RECLAIM_SEQUENCE = 0xFFFFFFFD
+
+
+def _build_reclaim_psbt(
+    fingerprint: bytes,
+    leaf_key: bytes,
+    out_key: bytes,
+    coin_type: int,
+    input_value: int = 1_200_000,
+    reclaimed_value: int = 1_199_000,
+    nsequence: int = _RECLAIM_SEQUENCE,
+    leaf_key_index: int = 0,
+    out_key_index: int = 1,
+) -> PSBT:
+    """Build a Reclaim PSBTv0 (Screen 9).
+
+    Input 0: PegIn Output 1 (depositor claim reserve) -- leaf <D> OP_CHECKSIG (34 bytes),
+             byte-identical to Claim; single-leaf P2TR with NUMS internal key.  D is
+             proven via the input's own TAP_BIP32_DERIVATION.
+    Output 0: a BIP-86 P2TR proven by its own TAP_BIP32_DERIVATION -- need not equal D,
+              the same latitude the device gives Refund's output.
+    """
+    reclaim_leaf = _depositor_claim_leaf(leaf_key)  # <D> OP_CHECKSIG, 34 bytes
+    leaf_hash = _tapleaf_hash(reclaim_leaf)
+    parity, tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
+    in_spk = bytes([0x51, 0x20]) + tweaked
+    control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY
+
+    _, bip86_out_key = taproot_tweak_pubkey(out_key, b'')
+    out_script = bytes([0x51, 0x20]) + bip86_out_key
+
+    tx = CTransaction()
+    tx.nVersion = 2
+    tx.nLockTime = 0
+    tx.vin = [CTxIn()]
+    tx.vin[0].prevout = COutPoint(int.from_bytes(b'\x99' * 32, 'little'), 0)
+    tx.vin[0].nSequence = nsequence
+    tx.vout = [CTxOut(reclaimed_value, out_script)]
+    tx.wit = CTxWitness()
+
+    psbt = PSBT()
+    psbt.version = 0
+    psbt.tx = tx
+    psbt.inputs = [PartiallySignedInput(0)]
+    psbt.outputs = [PartiallySignedOutput(0)]
+
+    psbt.inputs[0].witness_utxo = CTxOut(input_value, in_spk)
+    psbt.inputs[0].tap_scripts[(reclaim_leaf, 0xC0)] = {control_block}
+    psbt.inputs[0].tap_bip32_paths[leaf_key] = (
+        {leaf_hash},
+        KeyOriginInfo(
+            fingerprint,
+            [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, leaf_key_index],
+        ),
+    )
+
+    psbt.outputs[0].tap_bip32_paths[bip86_out_key] = (
+        set(),
+        KeyOriginInfo(
+            fingerprint,
+            [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, out_key_index],
+        ),
+    )
+
+    return psbt
+
+
+def _reclaim_keys(client: "RaggerClient", bitcoin_network: str):
+    """Return (fingerprint, leaf_key, out_key, coin_type) for the standard Reclaim keys."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    fingerprint = client.get_master_fingerprint()
+    leaf_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+    ).pubkey[1:]
+    out_key = ExtendedKey.deserialize(
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/1", display=False)
+    ).pubkey[1:]
+    return fingerprint, leaf_key, out_key, coin_type
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher: (leaf script, output count) pattern rule
+# ---------------------------------------------------------------------------
+
+def test_sign_psbt_reclaim_dispatch_extra_outputs_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A Claim/Reclaim-shaped leaf (34 bytes, <D> OP_CHECKSIG) with 3+ outputs matches
+    neither pattern and is rejected -- it must not silently fall through to either
+    validator."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    extra_spk = bytes([0x51, 0x20]) + bytes(32)
+    psbt.tx.vout.append(CTxOut(1000, extra_spk))
+    psbt.outputs.append(PartiallySignedOutput(0))
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_dispatch_wrong_leaf_shape(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A single-output PSBT whose Input 0 leaf is not exactly <D> OP_CHECKSIG (e.g. the
+    terminal opcode is OP_CHECKSIGVERIFY instead) matches no dispatch pattern."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    (orig_leaf, leaf_ver), control_blocks = next(iter(psbt.inputs[0].tap_scripts.items()))
+    wrong_leaf = orig_leaf[:33] + bytes([0xAD])  # OP_CHECKSIG (0xAC) -> OP_CHECKSIGVERIFY
+    psbt.inputs[0].tap_scripts = {(wrong_leaf, leaf_ver): control_blocks}
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+# ---------------------------------------------------------------------------
+# Validator: a well-formed Reclaim PSBT passes every rule and reaches the
+# terminal refusal (Screen 9 is not implemented in this ticket).
+# ---------------------------------------------------------------------------
+
+def test_sign_psbt_reclaim_valid_reaches_terminal_refusal(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A well-formed Reclaim PSBT passes validation and is refused only at the
+    (unimplemented) display step -- proving the full validation path executed."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_DENY
+
+
+# ---------------------------------------------------------------------------
+# Validator: negative tests -- each must fail with SW_INCORRECT_DATA, i.e.
+# before reaching (and being refused by) the display step.
+# ---------------------------------------------------------------------------
+
+def test_sign_psbt_reclaim_wrong_version(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when nVersion < 2."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt.tx.nVersion = 1
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_nonzero_locktime(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when nLockTime != 0."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt.tx.nLockTime = 1
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_extra_input(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when n_inputs != 1."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt.tx.vin.append(CTxIn())
+    psbt.inputs.append(PartiallySignedInput(0))
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_wrong_sighash(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when PSBT_IN_SIGHASH_TYPE is set to SIGHASH_ALL (1); only DEFAULT
+    is accepted."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt.inputs[0].sighash = 1  # SIGHASH_ALL
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.parametrize("nsequence", [0, 1, 144, 0x0040_0090, 0xFFFF_FFFB,
+                                       0xFFFF_FFFE, 0xFFFF_FFFF])
+def test_sign_psbt_reclaim_wrong_nsequence(
+    client: "RaggerClient",
+    bitcoin_network: str,
+    nsequence: int,
+) -> None:
+    """Reclaim requires Input 0 nSequence == 0xFFFFFFFD exactly and rejects everything
+    else, including the SEQUENCE_FINAL that Claim requires for the very same leaf shape."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type, nsequence=nsequence)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_input_value_at_dust_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Input 0's WITNESS_UTXO value is not strictly above dust."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(
+        fingerprint, leaf_key, out_key, coin_type,
+        input_value=VAULT_DUST_LIMIT, reclaimed_value=VAULT_DUST_LIMIT - 1,
+    )
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_tampered_control_block(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the control block internal key is not VAULT_NUMS_XONLY
+    (taproot commitment mismatch)."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    (leaf_bytes, leaf_ver), _ = next(iter(psbt.inputs[0].tap_scripts.items()))
+    wrong_cb = bytes([0xC0]) + bytes([0x01] * 32)
+    psbt.inputs[0].tap_scripts = {(leaf_bytes, leaf_ver): {wrong_cb}}
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_wrong_fingerprint(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Input 0's TAP_BIP32_DERIVATION fingerprint belongs to a
+    foreign device."""
+    _, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    wrong_fingerprint = b'\xff\xff\xff\xff'
+    psbt = _build_reclaim_psbt(wrong_fingerprint, leaf_key, out_key, coin_type)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_foreign_key(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the leaf's D key is not derived from this device's seed."""
+    fingerprint, _, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    foreign_key = TEST_VALID_KEYS[0]  # valid EC point, not derived from this device
+    psbt = _build_reclaim_psbt(fingerprint, foreign_key, out_key, coin_type)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_output_wrong_fingerprint(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Output 0's TAP_BIP32_DERIVATION fingerprint belongs to a
+    foreign device."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    (bip86_out_key, (leaf_hashes, _)) = next(iter(psbt.outputs[0].tap_bip32_paths.items()))
+    psbt.outputs[0].tap_bip32_paths = {
+        bip86_out_key: (
+            leaf_hashes,
+            KeyOriginInfo(b'\xff\xff\xff\xff',
+                         [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 1]),
+        )
+    }
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_output_non_bip86_path(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Output 0's derivation path is not BIP-86 (m/44' instead of
+    m/86')."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    (bip86_out_key, (leaf_hashes, _)) = next(iter(psbt.outputs[0].tap_bip32_paths.items()))
+    psbt.outputs[0].tap_bip32_paths = {
+        bip86_out_key: (
+            leaf_hashes,
+            KeyOriginInfo(fingerprint,
+                         [HARDENED | 44, HARDENED | coin_type, HARDENED | 0, 0, 1]),
+        )
+    }
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_output_no_derivation(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Output 0 carries no TAP_BIP32_DERIVATION at all."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    psbt.outputs[0].tap_bip32_paths = {}
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_zero_fee_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the output value equals the input value (zero fee)."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    input_value = 1_000_000
+    psbt = _build_reclaim_psbt(
+        fingerprint, leaf_key, out_key, coin_type,
+        input_value=input_value, reclaimed_value=input_value,
+    )
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, dummy_wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_reclaim_output_exceeds_input_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the output value exceeds the input value (fee would
+    underflow)."""
+    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    input_value = 1_000_000
+    psbt = _build_reclaim_psbt(
+        fingerprint, leaf_key, out_key, coin_type,
+        input_value=input_value, reclaimed_value=input_value + 1,
+    )
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, dummy_wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA

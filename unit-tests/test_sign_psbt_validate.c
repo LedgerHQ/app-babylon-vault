@@ -1,10 +1,13 @@
 /**
- * Unit tests for sign_psbt_validate_helpers.c — the three pure helper
- * functions extracted from the PSBT validation layer:
+ * Unit tests for sign_psbt_validate_helpers.c — the pure helper functions
+ * extracted from the PSBT validation layer:
  *
  *   check_bip86_path              — BIP-86 derivation path shape check
  *   parse_tap_bip32_deriv_value   — TAP_BIP32_DERIVATION value parser
  *   parse_refund_leaf_script      — Refund HTLC leaf script shape checker
+ *   parse_claim_leaf_script       — Claim/Reclaim leaf script shape checker
+ *   reclaim_sequence_ok           — Reclaim Input 0 nSequence rule
+ *   reclaim_fee_ok                — Reclaim fee arithmetic (checked subtraction)
  *
  * Tests verify both acceptance of valid inputs and rejection of every
  * distinct invalid shape. BIP44_COIN_TYPE=1 is set via CMake compile def.
@@ -868,6 +871,156 @@ static void test_pegin_fee_sum_overflow_guards(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — helpers
+ * ------------------------------------------------------------------------- */
+
+/* Build script: OP_PUSHBYTES_32 <key[32]> <last_op> */
+static int build_claim_script(uint8_t *buf, size_t buf_len,
+                              const uint8_t key[32], uint8_t first_op, uint8_t last_op) {
+    int total = 1 + 32 + 1;
+    if ((size_t) total > buf_len) return -1;
+    int pos = 0;
+    buf[pos++] = first_op;
+    memcpy(buf + pos, key, 32); pos += 32;
+    buf[pos++] = last_op;
+    return total;
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+static void test_claim_valid_34_bytes(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    assert_int_equal(len, (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN);
+
+    uint8_t d_key[32];
+    assert_true(parse_claim_leaf_script(script, len, d_key));
+    assert_memory_equal(d_key, key, 32);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_claim_reject_33_bytes(void **state) {
+    (void) state;
+    /* One byte short of the required 34; content is irrelevant, only length matters. */
+    uint8_t key[32];
+    memset(key, 0xDD, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len - 1, d_key));
+}
+
+static void test_claim_reject_35_bytes(void **state) {
+    (void) state;
+    /* One byte past the required 34; content is irrelevant, only length matters. */
+    uint8_t key[32];
+    memset(key, 0xEE, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    script[len] = OP_CHECKSIG; /* trailing byte */
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len + 1, d_key));
+}
+
+static void test_claim_reject_wrong_first_opcode(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xBB, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_33, OP_CHECKSIG);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len, d_key));
+}
+
+static void test_claim_reject_wrong_terminal_opcode(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xCC, 32);
+    uint8_t script[64];
+    int len =
+        build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIGVERIFY);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len, d_key));
+}
+
+/* ---------------------------------------------------------------------------
+ * reclaim_sequence_ok
+ * ------------------------------------------------------------------------- */
+
+static void test_reclaim_sequence_accept_rbf_signal(void **state) {
+    (void) state;
+    assert_true(reclaim_sequence_ok(true, 0xFFFFFFFDu));
+}
+
+static void test_reclaim_sequence_reject_locktime_enabling(void **state) {
+    (void) state;
+    /* 0xFFFFFFFE enables nLockTime; not the Reclaim RBF signal. */
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFEu));
+}
+
+static void test_reclaim_sequence_reject_off_by_two(void **state) {
+    (void) state;
+    /* 0xFFFFFFFB is another RBF-signaling value one bit away from the accepted one;
+     * only exact equality to 0xFFFFFFFD is accepted, not "close enough". */
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFBu));
+}
+
+static void test_reclaim_sequence_reject_sequence_final(void **state) {
+    (void) state;
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFFu));
+}
+
+static void test_reclaim_sequence_reject_zero(void **state) {
+    (void) state;
+    assert_false(reclaim_sequence_ok(true, 0x00000000u));
+}
+
+static void test_reclaim_sequence_reject_absent_field(void **state) {
+    (void) state;
+    /* Field absent: even though 0xFFFFFFFD is the value that would decode by default
+     * elsewhere, present=false must be rejected regardless of seq. */
+    assert_false(reclaim_sequence_ok(false, 0xFFFFFFFDu));
+}
+
+/* ---------------------------------------------------------------------------
+ * reclaim_fee_ok
+ * ------------------------------------------------------------------------- */
+
+static void test_reclaim_fee_accept_positive(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_true(reclaim_fee_ok(1000000ull, 999000ull, &fee));
+    assert_int_equal((int) fee, 1000);
+}
+
+static void test_reclaim_fee_reject_zero(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(1000000ull, 1000000ull, &fee));
+}
+
+static void test_reclaim_fee_reject_output_exceeds_input(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(1000000ull, 1000001ull, &fee));
+}
+
+static void test_reclaim_fee_reject_no_wraparound(void **state) {
+    (void) state;
+    /* in_value = 0, out_value = 1: would wrap to UINT64_MAX under unchecked subtraction. */
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(0, 1, &fee));
+}
+
+/* ---------------------------------------------------------------------------
  * Test runner
  * ------------------------------------------------------------------------- */
 
@@ -940,6 +1093,27 @@ int main(void) {
         cmocka_unit_test(test_payout_reject_vault_utxo_leaf),
         cmocka_unit_test(test_payout_reject_csv_below_min),
         cmocka_unit_test(test_payout_reject_csv_above_max),
+
+        /* parse_claim_leaf_script */
+        cmocka_unit_test(test_claim_valid_34_bytes),
+        cmocka_unit_test(test_claim_reject_33_bytes),
+        cmocka_unit_test(test_claim_reject_35_bytes),
+        cmocka_unit_test(test_claim_reject_wrong_first_opcode),
+        cmocka_unit_test(test_claim_reject_wrong_terminal_opcode),
+
+        /* reclaim_sequence_ok */
+        cmocka_unit_test(test_reclaim_sequence_accept_rbf_signal),
+        cmocka_unit_test(test_reclaim_sequence_reject_locktime_enabling),
+        cmocka_unit_test(test_reclaim_sequence_reject_off_by_two),
+        cmocka_unit_test(test_reclaim_sequence_reject_sequence_final),
+        cmocka_unit_test(test_reclaim_sequence_reject_zero),
+        cmocka_unit_test(test_reclaim_sequence_reject_absent_field),
+
+        /* reclaim_fee_ok */
+        cmocka_unit_test(test_reclaim_fee_accept_positive),
+        cmocka_unit_test(test_reclaim_fee_reject_zero),
+        cmocka_unit_test(test_reclaim_fee_reject_output_exceeds_input),
+        cmocka_unit_test(test_reclaim_fee_reject_no_wraparound),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

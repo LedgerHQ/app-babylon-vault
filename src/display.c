@@ -426,6 +426,28 @@ bool display_payout_finalize(dispatcher_context_t *dc,
 }
 
 // ---------------------------------------------------------------------------
+// Screen 9 — Reclaim transaction
+// ---------------------------------------------------------------------------
+
+// The review screen itself is not implemented yet, so refuse outright: a caller that has
+// fully validated a Reclaim PSBT must still never sign it without a screen the user has
+// actually seen.
+// NAPPS-1482: pegin_txid is not device-verified (see _validate_display_reclaim); the screen
+// must surface it and the early-reclaim forfeiture risk before this can return true.
+bool display_reclaim_transaction(dispatcher_context_t *dc,
+                                 uint64_t amount_reclaimed,
+                                 uint64_t fee,
+                                 const uint8_t *pegin_txid,
+                                 const char *reclaim_address) {
+    (void) amount_reclaimed;
+    (void) fee;
+    (void) pegin_txid;
+    (void) reclaim_address;
+    SEND_SW(dc, SW_DENY);
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Vault intent approval screen
 // ---------------------------------------------------------------------------
 

@@ -149,3 +149,23 @@ bool display_payout_finalize(dispatcher_context_t *dc,
                              const char *cpfp_address,
                              uint64_t fee,
                              const char *vault_prevout_txid);
+
+/**
+ * @brief Screen 9 — Reclaim transaction review.
+ *
+ * The screen itself is not yet implemented: this always refuses, so a Reclaim PSBT that
+ * passes every validation rule is still never signed without a review the user has
+ * actually seen.
+ *
+ * @param amount_reclaimed  Amount returned to the depositor in satoshis.
+ * @param fee               Transaction fee in satoshis.
+ * @param pegin_txid        32-byte PegIn txid (Input 0 prevout), shown as hex; not bound
+ *                          to any intent, so the user must check it themselves.
+ * @param reclaim_address   NUL-terminated bech32m address for Output 0; caller keeps valid.
+ * @return false  Always; SW_DENY already sent.
+ */
+bool display_reclaim_transaction(dispatcher_context_t *dc,
+                                 uint64_t amount_reclaimed,
+                                 uint64_t fee,
+                                 const uint8_t *pegin_txid,
+                                 const char *reclaim_address);

@@ -68,3 +68,34 @@ bool parse_payout_leaf_script(const uint8_t *script,
  * @param prefix      At least VAULT_LEAF_PREFIX_LEN captured leading bytes.
  */
 bool leaf_has_assert_shape(int script_len, const uint8_t *prefix, uint8_t last_byte);
+
+/**
+ * Parse a Claim/Reclaim leaf script: <OP_PUSHBYTES_32> <32B key D> <OP_CHECKSIG>, exactly
+ * VAULT_DEPOSITOR_CLAIM_LEAF_LEN (34) bytes.
+ *
+ * Claim and Reclaim share this leaf byte-for-byte; the dispatcher tells them apart by
+ * output count alone.  Extracts D into d_key_out.
+ * Returns true if the script has the expected shape, false otherwise.
+ */
+bool parse_claim_leaf_script(const uint8_t *script,
+                             int script_len,
+                             uint8_t d_key_out[VAULT_XONLY_PUBKEY_LEN]);
+
+/**
+ * Report whether a Reclaim Input 0 nSequence is exactly the RBF signal RECLAIM_SEQUENCE
+ * (0xFFFFFFFD), requiring the PSBT_IN_SEQUENCE field to be present.
+ *
+ * An absent field decodes as SEQUENCE_FINAL (non-replaceable) per BIP-370, which is not
+ * RECLAIM_SEQUENCE — so omitting the field is already rejected by the equality check.
+ * `present` is still taken explicitly so callers cannot default a PSBT_FIELD_ERROR read
+ * into an accepted comparison value.
+ */
+bool reclaim_sequence_ok(bool present, uint32_t seq);
+
+/**
+ * Compute the Reclaim fee as in_value - out_value with a strictly-positive result.
+ *
+ * Returns false (fee_out left unset) when out_value >= in_value, covering both the
+ * zero-fee case and the case that would otherwise underflow the subtraction.
+ */
+bool reclaim_fee_ok(uint64_t in_value, uint64_t out_value, uint64_t *fee_out);
