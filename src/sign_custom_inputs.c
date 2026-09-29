@@ -127,6 +127,7 @@ bool sign_custom_inputs(
 
         merkleized_map_commitment_t input_map;
         if (call_get_merkleized_map(dc, st->inputs_root, st->n_inputs, 0, &input_map) < 0) {
+            vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -137,6 +138,7 @@ bool sign_custom_inputs(
                                               G_scratch.script_scratch,
                                               VAULT_SCRIPT_MAX_LEN);
         if (leaf_len < 0) {
+            vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -151,12 +153,14 @@ bool sign_custom_inputs(
                                            gi,
                                            G_vault_context.htlc_hashlock[gi],
                                            expected_spk)) {
+            vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
 
         uint8_t input_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
         if (!read_p2tr_witness_utxo(dc, &input_map, expected_spk, input_spk)) {
+            vault_context_invalidate(&G_vault_context);
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -177,9 +181,15 @@ bool sign_custom_inputs(
                                       leaf_hash,
                                       SIGHASH_DEFAULT,
                                       sighash)) {
+            vault_context_invalidate(&G_vault_context);
             return false; /* SW already sent by callee */
         }
 
+        /* Incremented before the yield so an abort mid-yield (signature already
+         * released to the host) cannot be replayed to re-arm the signing cap.
+         * A failure from here on must invalidate the whole session rather than
+         * leave the slot burned with no signature ever produced — matching the
+         * Payout/NoPayout branches below. */
         G_vault_context.pegin_group_mask[gi / 8u] |= (1u << (gi % 8u));
         G_vault_context.pegin_signed++;
 
@@ -193,6 +203,7 @@ bool sign_custom_inputs(
                                             leaf_hash,
                                             SIGHASH_DEFAULT,
                                             sighash)) {
+            vault_context_invalidate(&G_vault_context);
             return false; /* SW already sent by callee */
         }
 

@@ -28,6 +28,8 @@ typedef struct {
     bool scalars_loaded;
     /** Total number of x-only keys stored so far (keepers then challengers). */
     uint8_t keys_received;
+    /** Rolling hash over each accepted APDU's CData; finalized into G_vault_context.intent_fp. */
+    cx_sha256_t intent_hash;
 } approve_intent_state_t;
 
 /* sizeof(nbgl_layoutTagValue_t) — verified at compile time in display.c */
