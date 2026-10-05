@@ -2,9 +2,13 @@ from ledger_bitcoin import Chain
 from ragger.backend import RaisePolicy
 from ragger.backend.interface import BackendInterface
 from ragger.conftest import configuration
+import atexit
 import os
 import re
 import shutil
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Literal, List, Optional, Union
 import pytest
@@ -52,6 +56,20 @@ pytest_plugins = ("ragger.conftest.base_conftest", )
 # Upper bound on Speculos instances started by `-n auto`.  An explicit `-n N` is not capped.
 DEFAULT_MAX_SPECULOS_WORKERS = 16
 
+# Seconds an exchange may stay unanswered before a parallel run treats it as a UI wait.
+DEFAULT_PARALLEL_APDU_TIMEOUT = 3.0
+
+# Runs of this suite that share the repository directory (one container per target) record
+# themselves here, so each can split the cores between the runs that are alive right now.
+PARALLEL_RUNS_DIR = TESTS_ROOT_DIR / ".parallel-runs"
+_RUN_HEARTBEAT_SECONDS = 5.0
+_RUN_STALE_AFTER_SECONDS = 15.0
+# Time to let simultaneously launched runs register before counting them.
+_RUN_REGISTRATION_GRACE_SECONDS = 3.0
+
+_run_file: Optional[Path] = None
+_workers_note: str = ""
+
 
 def _xdist_worker_index() -> Optional[int]:
     """Index of this pytest-xdist worker (gw3 -> 3), or None outside a worker."""
@@ -74,14 +92,94 @@ def pytest_sessionstart(session):
         shutil.rmtree(tmp_root)
 
 
+def pytest_configure(config):
+    """Under xdist, give Speculos exchanges a longer window before they count as 'waiting'.
+
+    bitcoin_app_base's ragger_navigate sets apdu_timeout to 1.0 s and reads "no answer within
+    that window" as "the device is waiting for the user", spending one navigation step.  With
+    many emulators sharing the cores, an exchange that is only busy (verifying, signing) can
+    exceed it; the step index then drifts and the instruction lookup fails with IndexError.
+    Raising the floor costs that many seconds per genuine UI prompt, so it is applied only to
+    parallel runs.  SPECULOS_APDU_TIMEOUT overrides it (seconds).
+    """
+    if _xdist_worker_index() is None:
+        return
+    floor = float(os.environ.get("SPECULOS_APDU_TIMEOUT", DEFAULT_PARALLEL_APDU_TIMEOUT))
+    # Local import: ragger is only guaranteed importable once pytest has loaded its plugins.
+    from ragger.backend.speculos import SpeculosBackend
+
+    setter = SpeculosBackend.apdu_timeout.fset
+
+    def floored_apdu_timeout(self, value: float) -> None:
+        setter(self, max(value, floor))
+
+    SpeculosBackend.apdu_timeout = SpeculosBackend.apdu_timeout.setter(floored_apdu_timeout)
+
+
+def _unregister_run() -> None:
+    global _run_file
+    run_file, _run_file = _run_file, None
+    if run_file is not None:
+        run_file.unlink(missing_ok=True)
+
+
+def _register_run(device: str) -> int:
+    """Record this run in the shared directory and return how many runs are alive, itself
+    included.  A run is alive while its file is touched; a crashed run goes stale."""
+    global _run_file
+    PARALLEL_RUNS_DIR.mkdir(exist_ok=True)
+    run_file = PARALLEL_RUNS_DIR / f"{device}-{uuid.uuid4().hex}.run"
+    run_file.touch()
+    _run_file = run_file
+
+    def heartbeat():
+        while _run_file is run_file:
+            time.sleep(_RUN_HEARTBEAT_SECONDS)
+            try:
+                run_file.touch()
+            except OSError:
+                return
+
+    threading.Thread(target=heartbeat, daemon=True).start()
+    atexit.register(_unregister_run)
+
+    time.sleep(_RUN_REGISTRATION_GRACE_SECONDS)
+    alive = 0
+    for other in PARALLEL_RUNS_DIR.glob("*.run"):
+        try:
+            if time.time() - other.stat().st_mtime < _RUN_STALE_AFTER_SECONDS:
+                alive += 1
+        except FileNotFoundError:
+            continue
+    return max(1, alive)
+
+
 @pytest.hookimpl(optionalhook=True)
 def pytest_xdist_auto_num_workers(config):
-    """Worker count for `-n auto`: one per usable core (`nproc`), at most SPECULOS_MAX_WORKERS (default 8)."""
+    """Worker count for `-n auto`: the usable cores (`nproc`) divided by the runs alive now.
+
+    One container per target means up to five runs share the cores; a lone run gets them all.
+    SPECULOS_PARALLEL_TARGETS fixes the divisor instead of counting, SPECULOS_MAX_WORKERS
+    caps the result.  Runs that do not share this directory cannot see each other, so each
+    would take every core: set SPECULOS_PARALLEL_TARGETS there.
+    """
+    global _workers_note
     cap = int(os.environ.get("SPECULOS_MAX_WORKERS", DEFAULT_MAX_SPECULOS_WORKERS))
     # The affinity mask is what `nproc` reports and follows a container's --cpuset-cpus;
     # os.cpu_count() would count the host's cores.
     cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
-    return max(1, min(cores or 1, cap))
+    cores = cores or 1
+    if "SPECULOS_PARALLEL_TARGETS" in os.environ:
+        runs, source = max(1, int(os.environ["SPECULOS_PARALLEL_TARGETS"])), "fixed"
+    else:
+        runs, source = _register_run(str(config.getoption("device", default="run"))), "counted"
+    workers = max(1, min(cap, cores // runs))
+    _workers_note = f"speculos workers: {workers} ({cores} cores / {runs} {source} run(s), cap {cap})"
+    return workers
+
+
+def pytest_report_header(config):
+    return _workers_note or None
 
 
 def pytest_addoption(parser):
@@ -254,6 +352,7 @@ def check_no_extra_snapshots(request, device):
 
 def pytest_sessionfinish(session, exitstatus):
     """The stale-golden check for a parallel run, once all workers are done."""
+    _unregister_run()
     if _xdist_worker_index() is not None or not getattr(session.config.option, "numprocesses", None):
         return
     golden_run = session.config.getoption("--golden_run", default=False)
