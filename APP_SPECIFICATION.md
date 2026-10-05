@@ -610,7 +610,7 @@ bound relaxes the other.
 | Amount reclaimed | Output 0 value |
 | Transaction fee | Input 0 value − Output 0 value |
 | Reclaim address | bech32m of Output 0 — the depositor's proven BIP-86 address |
-| PegIn txid | Input 0 prevout txid, display only (see *Prevout binding*). Shown in `PSBT_IN_PREVIOUS_TXID` byte order, like every txid the app displays |
+| PegIn txid | Input 0 prevout txid, display only (see *Prevout binding*). Shown in block-explorer byte order (the reverse of `PSBT_IN_PREVIOUS_TXID`), like every txid the app displays |
 
 The rows are preceded by an intro page, titled "Reclaim reserve", that states the one risk
 the device cannot rule out: *"Recover the reserve that protects your deposit. Continue only

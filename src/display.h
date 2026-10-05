@@ -7,6 +7,18 @@
 #include "../bitcoin_app_base/src/boilerplate/dispatcher.h"
 
 /**
+ * @brief Format a 32-byte txid as 64 hex characters in the order block explorers show.
+ *
+ * Txids arrive in PSBT/wire byte order; this reverses them for display so the user can
+ * compare the result against an explorer.
+ *
+ * @param txid     32-byte txid in PSBT/wire byte order.
+ * @param out      Destination buffer; receives 64 hex characters and a NUL.
+ * @param out_len  Size of `out`; at least 65.
+ */
+void format_txid_hex(const uint8_t *txid, char *out, size_t out_len);
+
+/**
  * @brief Screen 1 — DERIVE_CONTEXT_HASH approval (P2=0x00 only).
  *
  * Shows appName and asks the user to confirm before the device derives and

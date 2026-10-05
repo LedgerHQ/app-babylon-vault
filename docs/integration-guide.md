@@ -466,8 +466,8 @@ and that the user should continue only if the vault is redeemed, then the amount
 reclaim address and PegIn txid. User must approve; rejection returns `SW_DENY`.
 
 The device cannot tell whether the vault is redeemed, and it cannot bind the PegIn txid without
-an intent — it only shows it, in `PSBT_IN_PREVIOUS_TXID` byte order (the reverse of the order
-block explorers display). Offer Reclaim only once PegIn Output 0 is spent and deeply confirmed;
+an intent — it only shows it, in the order block explorers display (the reverse of
+`PSBT_IN_PREVIOUS_TXID`). Offer Reclaim only once PegIn Output 0 is spent and deeply confirmed;
 the host is in a better position to check that than the user reading the screen.
 
 **State after:** unchanged. Reclaim consumes no signature cap and does not invalidate a loaded

@@ -3,3 +3,4 @@ bip_utils>=2.9
 ledger-bitcoin==0.4.0
 pytest>=8.3.5,<9.0.0
 ragger[speculos,ledgerwallet]>=1.11.4
+pytest-xdist>=3.5

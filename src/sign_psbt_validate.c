@@ -3582,10 +3582,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        format_hex(vault_txid,
-                   VAULT_HASH256_LEN,
-                   G_scratch.display_tx.txid_str,
-                   TX_DISPLAY_TXID_STR_SIZE);
+        format_txid_hex(vault_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
     }
 
     /* Fee cap (enforcement only, HLD "PayoutFinalize"): attested from the sole group's
