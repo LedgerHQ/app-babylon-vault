@@ -2509,6 +2509,13 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
+    /* PegIn Output 1 is a single-leaf tree, so its control block is exactly depth 0.  The
+     * commitment check alone admits more: a sibling proves some other tree, and trailing
+     * bytes short of a whole sibling hash are never read. */
+    if (G_scratch.tls.control_block_len != 1 + VAULT_XONLY_PUBKEY_LEN) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
 
     merkleized_map_commitment_t input_map;
     if (call_get_merkleized_map(dc, st->inputs_root, 1, 0, &input_map) < 0) {

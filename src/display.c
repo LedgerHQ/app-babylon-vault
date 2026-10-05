@@ -429,22 +429,56 @@ bool display_payout_finalize(dispatcher_context_t *dc,
 // Screen 9 — Reclaim transaction
 // ---------------------------------------------------------------------------
 
-// The review screen itself is not implemented yet, so refuse outright: a caller that has
-// fully validated a Reclaim PSBT must still never sign it without a screen the user has
-// actually seen.
-// NAPPS-1482: pegin_txid is not device-verified (see _validate_display_reclaim); the screen
-// must surface it and the early-reclaim forfeiture risk before this can return true.
+// Consent, not validation: the device cannot see whether the vault is redeemed, so the
+// intro states the risk the user alone can judge — an early sweep kills the self-claim path.
+#define RECLAIM_REVIEW_TITLE "Reclaim reserve"
+#define RECLAIM_REVIEW_WARNING                                                     \
+    "Recover the reserve that protects your deposit. Continue only if your vault " \
+    "is redeemed. This action removes the protection permanently."
+
 bool display_reclaim_transaction(dispatcher_context_t *dc,
                                  uint64_t amount_reclaimed,
                                  uint64_t fee,
                                  const uint8_t *pegin_txid,
                                  const char *reclaim_address) {
-    (void) amount_reclaimed;
-    (void) fee;
-    (void) pegin_txid;
-    (void) reclaim_address;
-    SEND_SW(dc, SW_DENY);
-    return false;
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    nbgl_layoutTagValueList_t pair_list = {0};
+
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+    /* addr_str already holds reclaim_address; the txid goes to txid_str. */
+    format_hex(pegin_txid, 32, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount reclaimed",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = reclaim_address};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.txid_str};
+
+    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
+
+    pair_list.nbMaxLinesForValue = 0;
+    pair_list.nbPairs = n;
+    pair_list.pairs = tx_pairs;
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       RECLAIM_REVIEW_TITLE,
+                       RECLAIM_REVIEW_WARNING,
+                       "Sign reclaim\ntransaction?",
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------

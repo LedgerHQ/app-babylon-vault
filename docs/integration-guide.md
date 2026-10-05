@@ -71,7 +71,7 @@ INTENT_LOADED
   └─ 0x04 SIGN_PSBT (Assert) ─────────────────────────────► INTENT_LOADED  (user review, uncapped)
 
 IDLE / HASH_DERIVED / INTENT_LOADED
-  └─ 0x04 SIGN_PSBT (Refund / Claim / WronglyChallenged / PoP) → (state unchanged)
+  └─ 0x04 SIGN_PSBT (Refund / Claim / Reclaim / WronglyChallenged / PoP) → (state unchanged)
 ```
 
 `DERIVE_CONTEXT_HASH` is accepted from any state and resets the session before deriving. There
@@ -83,7 +83,7 @@ command (P1=`0x00` scalars → P1=`0x01` per-vault groups → P1=`0x02` public k
 to `INTENT_LOADED` on user approval. There is no session-1/session-2 distinction: all
 intent-bound signing flows are accepted from `INTENT_LOADED` in any order.
 
-**Standalone flows** (Refund, Claim, WronglyChallenged, PoP) are accepted from any
+**Standalone flows** (Refund, Claim, Reclaim, WronglyChallenged, PoP) are accepted from any
 state. They do not change state.
 
 **Assert is the exception.** It is dispatched like a standalone flow — by leaf shape, with no
@@ -423,6 +423,55 @@ The device **displays** the Pre-PegIn txid, amount reclaimed, refund timelock (b
 reclaim address. User must approve.
 
 **State after:** unchanged.
+
+---
+
+## Flow C — Reclaim Reserve
+
+Reclaim is a standalone flow that sweeps the depositor claim reserve — PegIn Output 1 — back to
+a BIP-86 address of the depositor once the vault is redeemed. It spends the same
+`<D> OP_CHECKSIG` leaf as Claim; the device tells the two apart by output count alone: 1 output
+is Reclaim, 2 is Claim, anything else is rejected.
+
+Accepted in states: `IDLE`, `HASH_DERIVED`, `INTENT_LOADED`.  
+Required wallet policy: **none** (`has_no_wallet_policy == true`).
+
+> **`TAP_BIP32_DERIVATION` is mandatory on both Input 0 and Output 0.** The input entry is how
+> the device proves `<D>` is its own key; the output entry is how it proves the sweep pays the
+> depositor. A PSBT missing either is rejected with `SW_INCORRECT_DATA` — there is no fallback.
+
+#### PSBT requirements
+
+| Field | Requirement |
+|-------|-------------|
+| `nVersion` | ≥ 2 |
+| `nLockTime` | 0 |
+| Input count | Exactly 1 |
+| Output count | Exactly 1 |
+| Input 0 sighash | `SIGHASH_DEFAULT` — omit `PSBT_IN_SIGHASH_TYPE` or set it to `0` |
+| Input 0 `PSBT_IN_SEQUENCE` | Exactly `0xFFFFFFFD` (BIP-125 RBF), and it must be **present**: an absent field decodes as `0xFFFFFFFF`, which is not replaceable, so it is rejected rather than defaulted |
+| Input 0 `PSBT_IN_WITNESS_UTXO` | P2TR (34-byte scriptPubKey); value must exceed 546 |
+| Input 0 `PSBT_IN_TAP_LEAF_SCRIPT` | Exactly one entry: `OP_PUSHBYTES_32 <D> OP_CHECKSIG` (34 bytes), leaf version `0xC0` |
+| Control block | Exactly 33 bytes: `0xC0 \| parity` ‖ `VAULT_NUMS_XONLY`. PegIn Output 1 is a single-leaf tree, so there are no siblings; the commitment must match the Input 0 scriptPubKey |
+| Input 0 `PSBT_IN_TAP_BIP32_DERIVATION` for `<D>` | **Required.** Fingerprint must match this device's master key; path must be BIP-86; the derived x-only key must equal `<D>` |
+| Output 0 | BIP-86 key-path P2TR (internal key tweaked with the empty script tree) |
+| Output 0 `PSBT_OUT_TAP_BIP32_DERIVATION` | **Required.** Keyed by the **output key** — the 32 bytes of the scriptPubKey — not the internal key. The value's fingerprint must match this device and its BIP-86 path must derive the internal key. It need not be `<D>`'s path. Same rule as Refund |
+| Fee | Input value − output value, strictly positive |
+
+The device derives the signing key from the BIP-86 path in `PSBT_IN_TAP_BIP32_DERIVATION`,
+verifies the derived x-only key matches `<D>`, then signs Input 0 over the leaf.
+
+The device **displays** Screen 9: an intro page warning that the reserve protects the deposit
+and that the user should continue only if the vault is redeemed, then the amount reclaimed, fee,
+reclaim address and PegIn txid. User must approve; rejection returns `SW_DENY`.
+
+The device cannot tell whether the vault is redeemed, and it cannot bind the PegIn txid without
+an intent — it only shows it, in `PSBT_IN_PREVIOUS_TXID` byte order (the reverse of the order
+block explorers display). Offer Reclaim only once PegIn Output 0 is spent and deeply confirmed;
+the host is in a better position to check that than the user reading the screen.
+
+**State after:** unchanged. Reclaim consumes no signature cap and does not invalidate a loaded
+intent.
 
 ---
 
