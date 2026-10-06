@@ -625,10 +625,16 @@ static bool _validate_prepegin(
         }
     }
 
-    /* Every non-HTLC output must be either BIP-86 change (internal), the single shared
-     * auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>", or the single CPFP anchor
-     * P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT. Both optional outputs must appear
-     * strictly after all HTLC outputs.
+    /* Every non-HTLC output must be one of, strictly after all HTLC outputs:
+     *   - the single shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>";
+     *   - the single CPFP anchor paying P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT;
+     *   - after that anchor, at most one change output paying P2TR(depositor_pk) above
+     *     VAULT_DUST_LIMIT.
+     * Change on the wallet policy's change branch (internal outputs) is refused: the
+     * depositor's own key is where the dApp looks for funds.  Outputs to depositor_pk
+     * return value to a key the device derived itself from depositor_path.  The anchor and
+     * the change share one scriptPubKey, so the anchor-first order is the only way for a
+     * reader of the transaction to tell them apart.
      *
      * groups are in ascending htlc_vout order, so the last group has the highest htlc_vout. */
     uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
@@ -651,6 +657,7 @@ static bool _validate_prepegin(
 
     bool anchor_found = false;
     bool cpfp_anchor_found = false;
+    bool depositor_change_found = false;
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         bool is_htlc_output = false;
         for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
@@ -660,9 +667,12 @@ static bool _validate_prepegin(
             }
         }
         if (is_htlc_output) continue;
-        if (bitvector_get(internal_outputs, i)) continue;  // BIP-86 change
+        if (bitvector_get(internal_outputs, i)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
 
-        /* Non-internal, non-HTLC output: must appear strictly after all HTLC outputs. */
+        /* Non-HTLC output: must appear strictly after all HTLC outputs. */
         if (i <= max_htlc_vout) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
@@ -680,23 +690,35 @@ static bool _validate_prepegin(
                 return false;
             }
             anchor_found = true;
-        } else if (out_value == VAULT_DUST_LIMIT &&
-                   memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
-            /* CPFP anchor: P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT, at most one. */
-            if (cpfp_anchor_found) {
+        } else if (memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
+            if (out_value == VAULT_DUST_LIMIT) {
+                /* CPFP anchor: at most one. */
+                if (cpfp_anchor_found) {
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
+                cpfp_anchor_found = true;
+            } else if (out_value > VAULT_DUST_LIMIT) {
+                /* Depositor change: at most one, and only once the anchor has been seen. */
+                if (!cpfp_anchor_found || depositor_change_found) {
+                    SEND_SW(dc, SW_INCORRECT_DATA);
+                    return false;
+                }
+                depositor_change_found = true;
+            } else {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
             }
-            cpfp_anchor_found = true;
         } else {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
     }
-    /* Both optional anchors are enforced at-most-once within the loop; their final
-     * values are intentionally not checked — neither is mandatory. */
+    /* Every optional output is enforced at-most-once within the loop; their final
+     * values are intentionally not checked — none is mandatory. */
     (void) anchor_found;
     (void) cpfp_anchor_found;
+    (void) depositor_change_found;
 
     if (st->outputs.total_amount > st->inputs_total_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
