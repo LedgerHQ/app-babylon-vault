@@ -16,8 +16,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import types
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Iterator, List, Optional, Tuple, Union
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
     from ragger.navigator import Navigator
@@ -605,6 +606,35 @@ def get_vault_state(client: "RaggerClient") -> Tuple[Optional[bytes], Optional[b
 
 
 # ---------------------------------------------------------------------------
+# Reject-path status screen capture
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def capture_status_screen(navigator: "Navigator") -> Iterator[None]:
+    """Make the screen wait after a rejecting tap always see the status screen.
+
+    The device answers SW_DENY before it draws "Transaction rejected".  Ragger's
+    wait_for_screen_change raises a pending error response as soon as the screen is still
+    unchanged, so whether that last frame is captured depends on timing.  Inside this
+    context the wait ends only on a screen change; the error still surfaces when the
+    exchange completes.
+
+    Depends on the private SpeculosBackend._check_async_error, so a Ragger that renames it
+    fails here rather than silently reintroducing the race.
+    """
+    backend = navigator._backend  # pylint: disable=protected-access
+    if not callable(getattr(backend, "_check_async_error", None)):
+        raise RuntimeError(
+            f"{type(backend).__name__} has no _check_async_error: the status-screen "
+            "capture must be revisited for this Ragger version")
+    backend._check_async_error = lambda: None  # pylint: disable=protected-access
+    try:
+        yield
+    finally:
+        del backend._check_async_error
+
+
+# ---------------------------------------------------------------------------
 # sign_psbt screen-test helper
 # ---------------------------------------------------------------------------
 
@@ -653,12 +683,13 @@ def sign_psbt_with_nav_and_compare(
         self.transport_client.apdu_timeout = 1.0
         with self.transport_client.exchange_async_raw(pack_APDU(cla, ins, p1, p2, data)) as done:
             if not done:
-                _nav.navigate_and_compare(
-                    path=screenshot_dir,
-                    test_case_name=_testname,
-                    instructions=nav_instructions,
-                    screen_change_before_first_instruction=True,
-                )
+                with capture_status_screen(_nav):
+                    _nav.navigate_and_compare(
+                        path=screenshot_dir,
+                        test_case_name=_testname,
+                        instructions=nav_instructions,
+                        screen_change_before_first_instruction=True,
+                    )
                 review_count += 1
                 index += 1
         sw, response = self.last_async_response()

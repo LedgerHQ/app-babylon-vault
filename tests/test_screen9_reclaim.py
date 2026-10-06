@@ -35,6 +35,7 @@ from .vault_client import (
     SW_BAD_STATE,
     SW_DENY,
     SW_INCORRECT_DATA,
+    capture_status_screen,
     get_vault_state_raw,
     sign_psbt_with_nav_and_compare,
 )
@@ -69,8 +70,9 @@ def _sign_reclaim_with_nav(client: "RaggerClient", navigator: Navigator, device:
     if device.is_nano:
         instructions = (sign_psbt_reclaim_approve_instructions(device) if approve
                         else sign_psbt_reclaim_reject_instructions(device))
-        return client.sign_psbt(psbt, wallet, None, navigator,
-                                testname=testname, instructions=instructions)
+        with capture_status_screen(navigator):
+            return client.sign_psbt(psbt, wallet, None, navigator,
+                                    testname=testname, instructions=instructions)
     nav = sign_psbt_reclaim_approve_nav(device) if approve else sign_psbt_reclaim_reject_nav(device)
     return sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
                                           testname=testname, nav_instructions=nav)
@@ -279,8 +281,9 @@ def test_wc_leaf_with_one_output_routes_to_wc(
 
     def send():
         if device.is_nano:
-            return client.sign_psbt(psbt, wallet, None, navigator, testname=tname,
-                                    instructions=sign_psbt_wc_reject_instructions(device))
+            with capture_status_screen(navigator):
+                return client.sign_psbt(psbt, wallet, None, navigator, testname=tname,
+                                        instructions=sign_psbt_wc_reject_instructions(device))
         return sign_psbt_with_nav_and_compare(client, psbt, wallet, None, navigator,
                                               testname=tname,
                                               nav_instructions=sign_psbt_wc_reject_nav(device))

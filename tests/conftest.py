@@ -92,8 +92,50 @@ def pytest_sessionstart(session):
         shutil.rmtree(tmp_root)
 
 
+def _snapshot_the_screen_before_the_reply() -> None:
+    """Make the last snapshot of a review that ends in an error status word deterministic.
+
+    The app draws its status screen ("Transaction rejected") and only then sends the status
+    word.  After the final tap, Ragger's wait_for_screen_change() samples the screen, finds
+    it unchanged (the sample predates the draw), then checks for an early reply.  If the
+    reply has landed in between, it raises ExceptionRAPDU on the spot and the snapshot of
+    the status screen is never taken; if it has not, the snapshot is taken.  The same flow
+    therefore leaves 3 or 4 PNGs depending on timing, which fails the run either as a
+    stale golden (surplus golden) or a missing one, and every --golden_run bakes in
+    whichever count that run happened to get.
+
+    A reply being available does not mean no screen change is coming: the draw precedes the
+    reply in the same stream.  So when the reply is in, look at the screen once more, and if
+    it has moved, let the wait return and the caller capture it.  The error still surfaces,
+    as before, when the exchange ends.  If the screen has not moved the app really did
+    refuse without a screen, and Ragger's own early raise applies unchanged.
+    """
+    # Local import: ragger is only guaranteed importable once pytest has loaded its plugins.
+    from io import BytesIO
+    from ragger.backend.speculos import SpeculosBackend, has_data_available, screenshot_equal
+
+    ragger_check = getattr(SpeculosBackend, "_check_async_error", None)
+    if ragger_check is None:
+        return  # a Ragger without the early-reply check has no such race
+
+    def check_async_error(self) -> None:
+        pending = self._pending_async_response
+        if (pending is not None and self._last_async_response is None
+                and has_data_available(pending, timeout=0)
+                and not screenshot_equal(BytesIO(self._client.get_screenshot()),
+                                         self._last_screenshot)):
+            return
+        ragger_check(self)
+
+    SpeculosBackend._check_async_error = check_async_error
+
+
 def pytest_configure(config):
-    """Under xdist, give Speculos exchanges a longer window before they count as 'waiting'.
+    """Install the Speculos backend patches this suite relies on.
+
+    Everywhere: see _snapshot_the_screen_before_the_reply.
+
+    Under xdist, give Speculos exchanges a longer window before they count as 'waiting'.
 
     bitcoin_app_base's ragger_navigate sets apdu_timeout to 1.0 s and reads "no answer within
     that window" as "the device is waiting for the user", spending one navigation step.  With
@@ -102,10 +144,10 @@ def pytest_configure(config):
     Raising the floor costs that many seconds per genuine UI prompt, so it is applied only to
     parallel runs.  SPECULOS_APDU_TIMEOUT overrides it (seconds).
     """
+    _snapshot_the_screen_before_the_reply()
     if _xdist_worker_index() is None:
         return
     floor = float(os.environ.get("SPECULOS_APDU_TIMEOUT", DEFAULT_PARALLEL_APDU_TIMEOUT))
-    # Local import: ragger is only guaranteed importable once pytest has loaded its plugins.
     from ragger.backend.speculos import SpeculosBackend
 
     setter = SpeculosBackend.apdu_timeout.fset

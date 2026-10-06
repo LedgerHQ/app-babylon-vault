@@ -32,7 +32,13 @@ from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
 from test_utils.taproot import taproot_tweak_pubkey
 
-from .vault_client import SW_DENY, SW_INCORRECT_DATA, TEST_VALID_KEYS, sign_psbt_with_nav_and_compare
+from .vault_client import (
+    SW_DENY,
+    SW_INCORRECT_DATA,
+    TEST_VALID_KEYS,
+    capture_status_screen,
+    sign_psbt_with_nav_and_compare,
+)
 from .instructions import (
     sign_psbt_wc_approve_instructions,
     sign_psbt_wc_approve_nav,
@@ -418,8 +424,9 @@ def test_reject_wc_screen(
 
     with pytest.raises(ExceptionRAPDU) as exc:
         if device.is_nano:
-            client.sign_psbt(psbt, dummy_wallet, None, navigator,
-                             testname=tname, instructions=sign_psbt_wc_reject_instructions(device))
+            with capture_status_screen(navigator):
+                client.sign_psbt(psbt, dummy_wallet, None, navigator, testname=tname,
+                                 instructions=sign_psbt_wc_reject_instructions(device))
         else:
             sign_psbt_with_nav_and_compare(client, psbt, dummy_wallet, None, navigator,
                                            testname=tname, nav_instructions=sign_psbt_wc_reject_nav(device))
