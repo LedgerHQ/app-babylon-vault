@@ -24,7 +24,7 @@ import pytest
 
 from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
-from ragger.navigator import Navigator
+from ragger.navigator import NavInsID, Navigator
 
 from ledger_bitcoin.key import ExtendedKey, KeyOriginInfo
 from ledger_bitcoin.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
@@ -37,6 +37,7 @@ from .vault_client import (
     SW_INCORRECT_DATA,
     TEST_VALID_KEYS,
     capture_status_screen,
+    sign_psbt_nav_until_texts,
     sign_psbt_with_nav_and_compare,
 )
 from .instructions import (
@@ -47,6 +48,8 @@ from .instructions import (
 )
 from .test_sign_psbt_validate import (
     _NoWalletPolicy,
+    _add_foreign_p2tr_input,
+    _assert_single_schnorr_sig,
     _bip86_p2tr_spk,
     _tapleaf_hash,
     HARDENED,
@@ -382,14 +385,11 @@ def test_sign_psbt_wc_wrong_output_count(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-@pytest.mark.skip(
-    reason=(
-        "Requires btcext key material for Input 1 signing — the device would sign "
-        "Input 0 (WC) and forward Input 1 (BIP-86 P2TR) to the bitcoin base app. "
-        "Driving the full btcext signing path for Input 1 needs wallet-policy HMAC "
-        "material not available in the no-wallet-policy test fixture."
-    )
-)
+# Value of the external input appended to the WC PSBT; arbitrary, but non-zero: the
+# "Wallet inputs" pair is shown only when the inputs beyond the WC UTXO carry value.
+_WALLET_INPUT_VALUE = 20_000
+
+
 def test_sign_psbt_wc_with_wallet_input(
     client: "RaggerClient",
     navigator: Navigator,
@@ -398,8 +398,30 @@ def test_sign_psbt_wc_with_wallet_input(
 ) -> None:
     """WC accepts a second external input that carries a valid WITNESS_UTXO (wallet input).
 
-    The device signs Input 0 (WC tapscript) and ignores Input 1 (external BIP-86 P2TR).
+    The review shows the extra "Wallet inputs" pair, and the device signs Input 0 (the WC
+    tapscript) only: Input 1 is external, so there is nothing for it to sign.  The
+    signature must verify against the sighash of the full two-input PSBT, which commits to
+    Input 1's amount and scriptPubKey.
+
+    The review is walked by on-screen text, not compared to goldens: the extra pair is
+    what this test is about, and the page count it causes differs per device.
     """
+    fingerprint, leaf_key, coin_type = _wc_keys(client, bitcoin_network)
+    psbt = _build_wc_psbt(fingerprint, leaf_key, coin_type)
+    _add_foreign_p2tr_input(psbt, _WALLET_INPUT_VALUE, tag=0x42)
+    dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+
+    if device.is_nano:
+        advance, confirm = NavInsID.RIGHT_CLICK, [NavInsID.BOTH_CLICK]
+    else:
+        advance = NavInsID.USE_CASE_REVIEW_TAP
+        confirm = [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+
+    result = sign_psbt_nav_until_texts(client, psbt, dummy_wallet, None, navigator, [
+        (advance, [], "Wallet inputs"),  # shown only because Input 1 carries value
+        (advance, confirm, "Sign"),      # the finish page, then approve
+    ])
+    _assert_single_schnorr_sig(result, leaf_key, psbt=psbt)
 
 
 # ===========================================================================

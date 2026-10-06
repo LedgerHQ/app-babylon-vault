@@ -168,8 +168,6 @@ def _build_assert_psbt(
     return psbt
 
 
-@pytest.mark.skip(reason="Assert screen changed in W7 fix (Output count field removed); "
-                  "regenerate snapshots with --golden_run after rebuilding the app")
 def test_sign_psbt_assert_screen(
     client: "RaggerClient",
     navigator: Navigator,

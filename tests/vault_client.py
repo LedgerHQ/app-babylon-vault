@@ -708,3 +708,59 @@ def sign_psbt_with_nav_and_compare(
         )
     return result
 
+
+def sign_psbt_nav_until_texts(
+    client: "RaggerClient",
+    psbt,
+    wallet,
+    wallet_hmac,
+    navigator: "Navigator",
+    stages: "List[Tuple[NavInsID, List[NavInsID], str]]",
+):
+    """Call sign_psbt, steering the review by what is on screen rather than by snapshots.
+
+    stages: (navigate_instruction, validation_instructions, text) triples, run in order.
+    Each repeats navigate_instruction until a line starting with `text` is on screen, then
+    performs validation_instructions.  A stage that never finds its text times out, so
+    reaching one proves the review displayed it.  The same stages drive nano and touch,
+    which only differ in the instruction ids.
+
+    For a review whose content is worth asserting but not worth pinning page by page — the
+    page count shifts whenever NBGL repacks pairs — and which has no golden to compare to.
+
+    Returns client.sign_psbt's result.  Fails if SIGN_PSBT never blocked for a review, for
+    the reason given on sign_psbt_with_nav_and_compare.
+    """
+    from ragger.utils import pack_APDU
+
+    assert stages, "at least one stage is required"
+    review_count = 0
+
+    def _text_navigate(self, _nav, apdu, _instructions, _testname, index):
+        nonlocal review_count
+        cla, ins, p1, p2, data = apdu.values()
+        self.transport_client.apdu_timeout = 1.0
+        with self.transport_client.exchange_async_raw(pack_APDU(cla, ins, p1, p2, data)) as done:
+            if not done:
+                for position, (navigate, validate, text) in enumerate(stages):
+                    # Only the first stage waits for the review to appear; afterwards the
+                    # screen is already settled.
+                    _nav.navigate_until_text(navigate, validate, text,
+                                             screen_change_before_first_instruction=position == 0)
+                review_count += 1
+                index += 1
+        sw, response = self.last_async_response()
+        return sw, response, index
+
+    client.ragger_navigate = types.MethodType(_text_navigate, client)
+    try:
+        result = client.sign_psbt(psbt, wallet, wallet_hmac, navigator)
+    finally:
+        del client.ragger_navigate
+
+    assert review_count > 0, (
+        "SIGN_PSBT completed without ever blocking for a review screen — "
+        "signatures were returned with no user confirmation"
+    )
+    return result
+
