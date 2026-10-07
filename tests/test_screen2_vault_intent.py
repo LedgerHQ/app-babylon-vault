@@ -42,6 +42,7 @@ from .vault_client import (
     build_intent_tlv,
     build_group_tlv,
     approve_vault_intent_with_nav,
+    capture_status_screen,
     depositor_path,
     derive_for_intent,
     _ktlv,
@@ -151,12 +152,13 @@ def test_reject_intent_screen(client: "RaggerClient", navigator: Navigator,
             p2=P2_UNUSED,
             data=_ktlv(TAG_KEEPER_PK, _KEY_A) + _ktlv(TAG_CHALLENGER_PK, _KEY_B),
         ):
-            navigator.navigate_and_compare(
-                path=ROOT_SCREENSHOT_PATH,
-                test_case_name="screen2_vault_intent/reject_" + bitcoin_network,
-                instructions=vault_intent_reject_instructions(device, vault_intent_steps(device, 1, 1)),
-                screen_change_before_first_instruction=True,
-            )
+            with capture_status_screen(navigator):
+                navigator.navigate_and_compare(
+                    path=ROOT_SCREENSHOT_PATH,
+                    test_case_name="screen2_vault_intent/reject_" + bitcoin_network,
+                    instructions=vault_intent_reject_instructions(device, vault_intent_steps(device, 1, 1)),
+                    screen_change_before_first_instruction=True,
+                )
     assert exc.value.status == SW_DENY
 
 

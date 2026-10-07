@@ -16,8 +16,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import types
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Iterator, List, Optional, Tuple, Union
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
     from ragger.navigator import Navigator
@@ -605,6 +606,76 @@ def get_vault_state(client: "RaggerClient") -> Tuple[Optional[bytes], Optional[b
 
 
 # ---------------------------------------------------------------------------
+# Reject-path status screen capture
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def capture_status_screen(navigator: "Navigator") -> Iterator[None]:
+    """Make the screen wait after a rejecting tap always see the status screen.
+
+    The device answers SW_DENY before it draws "Transaction rejected".  Ragger's
+    wait_for_screen_change raises a pending error response as soon as the screen is still
+    unchanged, so whether that last frame is captured depends on timing.  Inside this
+    context the wait ends only on a screen change; the error still surfaces when the
+    exchange completes.
+
+    Depends on the private SpeculosBackend._check_async_error, so a Ragger that renames it
+    fails here rather than silently reintroducing the race.
+    """
+    backend = navigator._backend  # pylint: disable=protected-access
+    if not callable(getattr(backend, "_check_async_error", None)):
+        raise RuntimeError(
+            f"{type(backend).__name__} has no _check_async_error: the status-screen "
+            "capture must be revisited for this Ragger version")
+    outer = vars(backend).get("_check_async_error")
+    backend._check_async_error = lambda: None  # pylint: disable=protected-access
+    try:
+        yield
+    finally:
+        if outer is None:
+            del backend._check_async_error
+        else:
+            backend._check_async_error = outer  # pylint: disable=protected-access
+
+
+@contextmanager
+def record_screen_text(navigator: "Navigator") -> Iterator[List[List[str]]]:
+    """Record the on-screen text of every page the navigator compares against a golden.
+
+    Yields a list that fills with one entry per comparison: the text of each event on the
+    screen at that moment.  It lets a golden-driven review also assert what the screens
+    say, in the same run, so a snapshot generated with a wrong value cannot pass unnoticed.
+
+    A retried comparison records its page again; callers should look for text, not count
+    pages.  Wraps SpeculosBackend.compare_screen_with_snapshot and fails if the backend
+    has no such method.
+    """
+    backend = navigator._backend  # pylint: disable=protected-access
+    compare = getattr(backend, "compare_screen_with_snapshot", None)
+    if not callable(compare):
+        raise RuntimeError(
+            f"{type(backend).__name__} has no compare_screen_with_snapshot: the screen-text "
+            "recorder must be revisited for this Ragger version")
+    pages: List[List[str]] = []
+
+    def recording(*args, **kwargs):
+        result = compare(*args, **kwargs)
+        events = backend.get_current_screen_content()["events"]
+        pages.append([event.get("text", "") for event in events])
+        return result
+
+    outer = vars(backend).get("compare_screen_with_snapshot")
+    backend.compare_screen_with_snapshot = recording
+    try:
+        yield pages
+    finally:
+        if outer is None:
+            del backend.compare_screen_with_snapshot
+        else:
+            backend.compare_screen_with_snapshot = outer
+
+
+# ---------------------------------------------------------------------------
 # sign_psbt screen-test helper
 # ---------------------------------------------------------------------------
 
@@ -653,12 +724,13 @@ def sign_psbt_with_nav_and_compare(
         self.transport_client.apdu_timeout = 1.0
         with self.transport_client.exchange_async_raw(pack_APDU(cla, ins, p1, p2, data)) as done:
             if not done:
-                _nav.navigate_and_compare(
-                    path=screenshot_dir,
-                    test_case_name=_testname,
-                    instructions=nav_instructions,
-                    screen_change_before_first_instruction=True,
-                )
+                with capture_status_screen(_nav):
+                    _nav.navigate_and_compare(
+                        path=screenshot_dir,
+                        test_case_name=_testname,
+                        instructions=nav_instructions,
+                        screen_change_before_first_instruction=True,
+                    )
                 review_count += 1
                 index += 1
         sw, response = self.last_async_response()
@@ -675,5 +747,61 @@ def sign_psbt_with_nav_and_compare(
             "SIGN_PSBT completed without ever blocking for a review screen — "
             "signatures were returned with no user confirmation"
         )
+    return result
+
+
+def sign_psbt_nav_until_texts(
+    client: "RaggerClient",
+    psbt,
+    wallet,
+    wallet_hmac,
+    navigator: "Navigator",
+    stages: "List[Tuple[NavInsID, List[NavInsID], str]]",
+):
+    """Call sign_psbt, steering the review by what is on screen rather than by snapshots.
+
+    stages: (navigate_instruction, validation_instructions, text) triples, run in order.
+    Each repeats navigate_instruction until a line starting with `text` is on screen, then
+    performs validation_instructions.  A stage that never finds its text times out, so
+    reaching one proves the review displayed it.  The same stages drive nano and touch,
+    which only differ in the instruction ids.
+
+    For a review whose content is worth asserting but not worth pinning page by page — the
+    page count shifts whenever NBGL repacks pairs — and which has no golden to compare to.
+
+    Returns client.sign_psbt's result.  Fails if SIGN_PSBT never blocked for a review, for
+    the reason given on sign_psbt_with_nav_and_compare.
+    """
+    from ragger.utils import pack_APDU
+
+    assert stages, "at least one stage is required"
+    review_count = 0
+
+    def _text_navigate(self, _nav, apdu, _instructions, _testname, index):
+        nonlocal review_count
+        cla, ins, p1, p2, data = apdu.values()
+        self.transport_client.apdu_timeout = 1.0
+        with self.transport_client.exchange_async_raw(pack_APDU(cla, ins, p1, p2, data)) as done:
+            if not done:
+                for position, (navigate, validate, text) in enumerate(stages):
+                    # Only the first stage waits for the review to appear; afterwards the
+                    # screen is already settled.
+                    _nav.navigate_until_text(navigate, validate, text,
+                                             screen_change_before_first_instruction=position == 0)
+                review_count += 1
+                index += 1
+        sw, response = self.last_async_response()
+        return sw, response, index
+
+    client.ragger_navigate = types.MethodType(_text_navigate, client)
+    try:
+        result = client.sign_psbt(psbt, wallet, wallet_hmac, navigator)
+    finally:
+        del client.ragger_navigate
+
+    assert review_count > 0, (
+        "SIGN_PSBT completed without ever blocking for a review screen — "
+        "signatures were returned with no user confirmation"
+    )
     return result
 

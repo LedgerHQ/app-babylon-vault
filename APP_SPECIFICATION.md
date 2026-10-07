@@ -235,6 +235,32 @@ it is not implemented.
 
 ---
 
+## User-facing screens
+
+The app has **nine** user-facing screens. Every other command and signature is silent.
+
+| Screen | Shown by | Specified in |
+|---|---|---|
+| 1 | `DERIVE_CONTEXT_HASH` with P2=`0x00` | [DERIVE_CONTEXT_HASH](#derive_context_hash--caller-identity-is-not-authenticated) |
+| 2 | `APPROVE_VAULT_INTENT` | [Screen 2](#screen-2--the-intent-review-is-only-partly-mandatory) |
+| 3 | Refund | [§4](#4-refund-standalone) |
+| 4 | Claim | [§6](#6-claim-standalone) |
+| 5 | Assert | [§7](#7-assert-standalone) |
+| 6 | Wrongly Challenged | [§8](#8-wrongly-challenged--wc-standalone) |
+| 7 | Proof of Possession (BIP-322) | — |
+| 8 | PayoutFinalize | — |
+| 9 | Reclaim | [§9](#9-reclaim-standalone) |
+
+Screen 9 is the only consent screen: it asks the user to judge what the device cannot see —
+whether the vault is redeemed — rather than to confirm values the device has checked.
+
+#### Screen 9 — divergence from HLD v23
+
+HLD v23 §Safety UX specifies exactly 8 user-facing screens. ADR-002 adds Screen 9 for
+Reclaim. The divergence is recorded here; the HLD is not amended.
+
+---
+
 ## Transaction Types
 
 The app recognises ten Bitcoin transaction types via the `SIGN_PSBT` hook. The device independently reconstructs the expected scripts from the loaded `vault_intent_t` and rejects any PSBT whose scripts do not match.
@@ -560,7 +586,7 @@ output count matches neither pattern and is rejected.
 | Input 0 leaf shape | 34 bytes: `<D>(32B) OP_CHECKSIG` — byte-identical to Claim's leaf |
 | Internal key | NUMS (single-leaf P2TR) |
 | `<D>` key | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path; derived key must match leaf key |
-| Taproot commitment | Control block must produce a valid commitment to the leaf |
+| Control block | Exactly 33 bytes (depth 0): PegIn Output 1 is a single-leaf tree, so a sibling proves some other tree. Must produce a valid commitment to the leaf |
 | Input 0 sequence | Exactly `0xFFFFFFFD` (unmasked equality); the field **must be present** — an absent `PSBT_IN_SEQUENCE` decodes as `0xFFFFFFFF`, which is not replaceable |
 | Input 0 value | Plausibility only: `WITNESS_UTXO` value strictly above `VAULT_DUST_LIMIT`. `SIGHASH_DEFAULT` commits it, so a false value only yields an unusable signature (DoS, no fund redirection) |
 | Output 0 | BIP-86 P2TR, proven by its own `TAP_BIP32_DERIVATION` — the same latitude Refund gives its own output; need not equal `<D>` |
@@ -577,9 +603,22 @@ bound relaxes the other.
 **Depositor Claim / Reclaim leaf script:**
 `<D> OP_CHECKSIG`
 
-**User display:** not yet implemented. The device fully validates a Reclaim PSBT against
-every rule above and then refuses — a Reclaim transaction is never signed without a review
-screen the user has actually seen.
+**User display — Screen 9 (explicit approval, consent posture):**
+
+| Row | Source |
+|---|---|
+| Amount reclaimed | Output 0 value |
+| Transaction fee | Input 0 value − Output 0 value |
+| Reclaim address | bech32m of Output 0 — the depositor's proven BIP-86 address |
+| PegIn txid | Input 0 prevout txid, display only (see *Prevout binding*). Shown in block-explorer byte order (the reverse of `PSBT_IN_PREVIOUS_TXID`), like every txid the app displays |
+
+The rows are preceded by an intro page, titled "Reclaim reserve", that states the one risk
+the device cannot rule out: *"Recover the reserve that protects your deposit. Continue only
+if your vault is redeemed. This action removes the protection permanently."* The copy
+weights that risk more heavily than the neutral Refund review on purpose — it is the only
+mitigation for an early sweep. Approval signs Input 0; rejection returns `SW_DENY` and
+nothing is signed. The exact wording is a product decision and may change without changing
+the rows.
 
 ---
 

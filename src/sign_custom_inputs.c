@@ -562,7 +562,8 @@ bool sign_custom_inputs(
 
     /* -----------------------------------------------------------------------
      * Standalone flows: Refund, Claim (Screen 4), Assert (Screen 5), WC (Screen 6),
-     * and WC-with-wallet (has_no_wallet_policy == false, Input 0 external).
+     * Reclaim (Screen 9), and WC-with-wallet (has_no_wallet_policy == false, Input 0
+     * external).
      *
      * All these leaves share the shape <D> OP_PUSHBYTES_32 ... — the depositor's
      * x-only key D is always at leaf[1..32].  Re-read PSBT_IN_TAP_LEAF_SCRIPT

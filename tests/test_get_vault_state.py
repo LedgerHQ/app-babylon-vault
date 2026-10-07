@@ -11,6 +11,7 @@ sent or received, which is the computation a host performs to decide whether to 
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 if TYPE_CHECKING:
@@ -107,10 +108,41 @@ def _state_bytes(intent_fp: Optional[bytes], context_fp: Optional[bytes]) -> byt
     return out
 
 
+def _home_golden(device: Device, bitcoin_network: str) -> Path:
+    """Frame 0 of the dashboard golden: the app home screen."""
+    return SNAPSHOTS_DIR / device.name / "dashboard" / bitcoin_network / "00000.png"
+
+
 def _assert_home_screen(backend: BackendInterface, device: Device, bitcoin_network: str) -> None:
-    """The device shows the app home screen: frame 0 of the dashboard golden."""
-    golden = SNAPSHOTS_DIR / device.name / "dashboard" / bitcoin_network / "00000.png"
-    assert backend.compare_screen_with_snapshot(golden), "screen is not the app home screen"
+    """The screen is the app home screen right now.
+
+    On a mismatch the live frame is saved under snapshots-tmp, so a failure shows what was
+    on screen instead of only that it was not the home screen.
+    """
+    golden = _home_golden(device, bitcoin_network)
+    if backend.compare_screen_with_snapshot(golden):
+        return
+    capture = (SNAPSHOTS_DIR.parent / "snapshots-tmp" / device.name / "get_vault_state"
+               / f"not_home_{bitcoin_network}.png")
+    capture.parent.mkdir(parents=True, exist_ok=True)
+    backend.compare_screen_with_snapshot(golden, tmp_snap_path=capture)
+    pytest.fail(f"screen is not the app home screen; frame saved to {capture}")
+
+
+def _wait_for_home_screen(backend: BackendInterface, device: Device, bitcoin_network: str,
+                          timeout: float = 10.0) -> None:
+    """Block until the screen is the app home screen, then assert it is.
+
+    Ragger's wait_for_home_screen() answers from the last screenshot it took, not from the
+    screen as it is now, so it can return while a status screen is still up.  This polls the
+    live screen instead.
+    """
+    golden = _home_golden(device, bitcoin_network)
+    deadline = time.monotonic() + timeout
+    while not backend.compare_screen_with_snapshot(golden) and time.monotonic() < deadline:
+        backend.send_tick()
+        time.sleep(0.1)
+    _assert_home_screen(backend, device, bitcoin_network)
 
 
 def _intent_1k1c(bitcoin_network: str, **scalar_overrides) -> Tuple[bytes, List[bytes], List[bytes], List[bytes]]:
@@ -169,7 +201,7 @@ def test_approved_intent_reports_both_fingerprints(client: "RaggerClient", navig
     scalars, groups, keepers, challengers = _intent_1k1c(bitcoin_network)
     approve_vault_intent_with_nav(client, navigator, device, scalars, keepers, challengers,
                                   groups=groups)
-    backend.wait_for_home_screen()
+    _wait_for_home_screen(backend, device, bitcoin_network)
 
     intent_fp = intent_fingerprint(scalars, groups, keepers, challengers)
     assert intent_fp == _PINNED_1K1C_INTENT_FP[bitcoin_network]

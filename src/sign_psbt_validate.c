@@ -2509,6 +2509,13 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
+    /* PegIn Output 1 is a single-leaf tree, so its control block is exactly depth 0.  The
+     * commitment check alone admits more: a sibling proves some other tree, and trailing
+     * bytes short of a whole sibling hash are never read. */
+    if (G_scratch.tls.control_block_len != 1 + VAULT_XONLY_PUBKEY_LEN) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
 
     merkleized_map_commitment_t input_map;
     if (call_get_merkleized_map(dc, st->inputs_root, 1, 0, &input_map) < 0) {
@@ -2518,7 +2525,8 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
 
     /* Reclaim is the first accepted pattern with an RBF sequence — see RECLAIM_SEQUENCE.
      * reclaim_sequence_ok requires the field present: an absent PSBT_IN_SEQUENCE decodes as
-     * SEQUENCE_FINAL, which the screen would then mis-describe as non-replaceable. */
+     * SEQUENCE_FINAL, which is not replaceable, so defaulting it would sign a transaction
+     * outside the specified RBF shape. */
     {
         uint32_t seq = 0;
         psbt_field_status_t status = psbt_get_input_sequence(dc, &input_map, &seq);
@@ -3575,10 +3583,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        format_hex(vault_txid,
-                   VAULT_HASH256_LEN,
-                   G_scratch.display_tx.txid_str,
-                   TX_DISPLAY_TXID_STR_SIZE);
+        format_txid_hex(vault_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
     }
 
     /* Fee cap (enforcement only, HLD "PayoutFinalize"): attested from the sole group's

@@ -488,3 +488,46 @@ def sign_psbt_payout_finalize_reject_nav(device: Device) -> List[NavInsID]:
     ]
 
 
+
+
+def sign_psbt_reclaim_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 9 (Reclaim) — Nano devices only.
+
+    Touch devices should use sign_psbt_reclaim_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_reclaim_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 9 (Reclaim) — touch devices.
+
+    Screen 9 shows 4 fields: "Amount reclaimed", "Transaction fee", "Reclaim address"
+    and "PegIn txid", after an intro page that carries the consent warning.
+    """
+    assert not device.is_nano, "Nano uses sign_psbt_reclaim_approve_instructions"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content page 1
+        NavInsID.USE_CASE_REVIEW_TAP,      # content page 2
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_reclaim_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 9 (Reclaim) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_reclaim_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 9 (Reclaim) — touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]

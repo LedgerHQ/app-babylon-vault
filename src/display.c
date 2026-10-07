@@ -44,9 +44,51 @@ _Static_assert(TX_DISPLAY_EXTRA_STR_SIZE >= TX_DISPLAY_AMOUNT_STR_SIZE,
 _Static_assert(TX_DISPLAY_TXID_STR_SIZE >= BIP322_ETH_ADDR_STR_LEN,
                "TX_DISPLAY_TXID_STR_SIZE too small for registry address");
 
+/* Shared by every TYPE_TRANSACTION review whose pairs were written into
+ * G_scratch.display_tx.pairs_raw: runs the review, blocks on the user's choice and sends
+ * SW_DENY on rejection.  Returns true only on approval. */
+static bool review_tx_pairs(dispatcher_context_t *dc,
+                            int n_pairs,
+                            const char *title,
+                            const char *subtitle,
+                            const char *finish_title) {
+    LEDGER_ASSERT(n_pairs <= MAX_N_PAIRS, "Too many pairs");
+
+    nbgl_layoutTagValueList_t pair_list = {
+        .nbMaxLinesForValue = 0,
+        .nbPairs = n_pairs,
+        .pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw,
+    };
+
+    nbgl_useCaseReview(TYPE_TRANSACTION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       title,
+                       subtitle,
+                       finish_title,
+                       review_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Shared value formatting
 // ---------------------------------------------------------------------------
+
+// Txids reach the device in PSBT/wire byte order; block explorers and wallets show the
+// reverse, which is the order a user can compare against.
+void format_txid_hex(const uint8_t *txid, char *out, size_t out_len) {
+    uint8_t displayed[VAULT_HASH256_LEN];
+    for (size_t i = 0; i < sizeof(displayed); i++) {
+        displayed[i] = txid[sizeof(displayed) - 1 - i];
+    }
+    format_hex(displayed, sizeof(displayed), out, out_len);
+}
 
 // "4294967295 blocks (~29826161 days)\0" is the widest output; see
 // TX_DISPLAY_EXTRA_STR_SIZE in globals.h.
@@ -127,9 +169,8 @@ bool display_refund_transaction(dispatcher_context_t *dc,
                                 const char *refund_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
 
-    format_hex(prepegin_txid, 32, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
+    format_txid_hex(prepegin_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
     format_timelock_blocks(timelock_blocks,
                            G_scratch.display_tx.extra_str,
@@ -147,26 +188,7 @@ bool display_refund_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
 
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review refund\ntransaction",
-                       NULL,
-                       "Sign refund\ntransaction?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
+    return review_tx_pairs(dc, n, "Review refund\ntransaction", NULL, "Sign refund\ntransaction?");
 }
 
 // ---------------------------------------------------------------------------
@@ -181,13 +203,12 @@ bool display_claim_transaction(dispatcher_context_t *dc,
                                const char *out0_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, amount_spent, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, connector_amount, G_scratch.display_tx.extra_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
     /* txid_str (65 B): 32-byte txid as 64 hex chars + NUL; addr_str is free for out0_address. */
-    format_hex(pegin_txid, 32, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
+    format_txid_hex(pegin_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
 
     int n = 0;
     tx_pairs[n++] =
@@ -200,26 +221,7 @@ bool display_claim_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.txid_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Output 0 address", .value = out0_address};
 
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review Claim\ntransaction",
-                       NULL,
-                       "Sign Claim\ntransaction?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
+    return review_tx_pairs(dc, n, "Review Claim\ntransaction", NULL, "Sign Claim\ntransaction?");
 }
 
 // ---------------------------------------------------------------------------
@@ -232,10 +234,9 @@ bool display_assert_transaction(dispatcher_context_t *dc,
                                 uint64_t fee) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
 
     /* addr_str (80 B) holds 64-char hex txid + NUL. */
-    format_hex(claim_txid, 32, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
+    format_txid_hex(claim_txid, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
     format_sats_amount(COIN_COINID_SHORT, amount_carried, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
 
@@ -247,26 +248,7 @@ bool display_assert_transaction(dispatcher_context_t *dc,
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review Assert\ntransaction",
-                       NULL,
-                       "Sign Assert\ntransaction?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
+    return review_tx_pairs(dc, n, "Review Assert\ntransaction", NULL, "Sign Assert\ntransaction?");
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +262,6 @@ bool display_wc_transaction(dispatcher_context_t *dc,
                             const char *wc_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
@@ -297,26 +278,11 @@ bool display_wc_transaction(dispatcher_context_t *dc,
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = wc_address};
 
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review wrongly\nchallenged tx",
-                       NULL,
-                       "Sign wrongly\nchallenged tx?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
+    return review_tx_pairs(dc,
+                           n,
+                           "Review wrongly\nchallenged tx",
+                           NULL,
+                           "Sign wrongly\nchallenged tx?");
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +296,6 @@ bool display_pop_transaction(dispatcher_context_t *dc,
                              const char *btc_address) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
 
     // addr_str (80 B): ETH address (42 chars + NUL fits within 80 B)
     strlcpy(G_scratch.display_tx.addr_str, eth_addr, TX_DISPLAY_ADDR_STR_SIZE);
@@ -352,26 +317,7 @@ bool display_pop_transaction(dispatcher_context_t *dc,
                                              .value = G_scratch.display_tx.txid_str};
     tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Bitcoin address", .value = btc_addr_buf};
 
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Register ETH\naddress",
-                       NULL,
-                       "Register ETH\naddress?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
+    return review_tx_pairs(dc, n, "Register ETH\naddress", NULL, "Register ETH\naddress?");
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +332,6 @@ bool display_payout_finalize(dispatcher_context_t *dc,
                              const char *vault_prevout_txid) {
     nbgl_layoutTagValue_t *const tx_pairs =
         (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
-    nbgl_layoutTagValueList_t pair_list = {0};
 
     format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
     format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
@@ -403,48 +348,51 @@ bool display_payout_finalize(dispatcher_context_t *dc,
     tx_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
 
-    LEDGER_ASSERT(n <= MAX_N_PAIRS, "Too many pairs");
-
-    pair_list.nbMaxLinesForValue = 0;
-    pair_list.nbPairs = n;
-    pair_list.pairs = tx_pairs;
-
-    nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pair_list,
-                       &ICON_APP_ACTION,
-                       "Review payout\nfinalization",
-                       NULL,
-                       "Sign payout\nfinalization?",
-                       review_choice);
-
-    bool approved = io_ui_process(dc);
-    if (!approved) {
-        SEND_SW(dc, SW_DENY);
-        return false;
-    }
-    return true;
+    return review_tx_pairs(dc,
+                           n,
+                           "Review payout\nfinalization",
+                           NULL,
+                           "Sign payout\nfinalization?");
 }
 
 // ---------------------------------------------------------------------------
 // Screen 9 — Reclaim transaction
 // ---------------------------------------------------------------------------
 
-// The review screen itself is not implemented yet, so refuse outright: a caller that has
-// fully validated a Reclaim PSBT must still never sign it without a screen the user has
-// actually seen.
-// NAPPS-1482: pegin_txid is not device-verified (see _validate_display_reclaim); the screen
-// must surface it and the early-reclaim forfeiture risk before this can return true.
+// Consent, not validation: the device cannot see whether the vault is redeemed, so the
+// intro states the risk the user alone can judge — an early sweep kills the self-claim path.
+#define RECLAIM_REVIEW_TITLE "Reclaim reserve"
+#define RECLAIM_REVIEW_WARNING                                                     \
+    "Recover the reserve that protects your deposit. Continue only if your vault " \
+    "is redeemed. This action removes the protection permanently."
+
 bool display_reclaim_transaction(dispatcher_context_t *dc,
                                  uint64_t amount_reclaimed,
                                  uint64_t fee,
                                  const uint8_t *pegin_txid,
                                  const char *reclaim_address) {
-    (void) amount_reclaimed;
-    (void) fee;
-    (void) pegin_txid;
-    (void) reclaim_address;
-    SEND_SW(dc, SW_DENY);
-    return false;
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+    /* addr_str already holds reclaim_address; the txid goes to txid_str. */
+    format_txid_hex(pegin_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount reclaimed",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = reclaim_address};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.txid_str};
+
+    return review_tx_pairs(dc,
+                           n,
+                           RECLAIM_REVIEW_TITLE,
+                           RECLAIM_REVIEW_WARNING,
+                           "Sign reclaim\ntransaction?");
 }
 
 // ---------------------------------------------------------------------------
