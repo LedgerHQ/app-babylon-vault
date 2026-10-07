@@ -56,6 +56,7 @@ from .test_get_vault_state import _NOTHING_HELD, _approve_prepegin_intent, _deri
 from .test_screen6_wc import _build_wc_psbt
 from .test_sign_psbt_validate import (
     VAULT_DUST_LIMIT,
+    _PREPEGIN_TXID,
     _NoWalletPolicy,
     _add_foreign_p2tr_input,
     _add_p2tr_output,
@@ -63,7 +64,10 @@ from .test_sign_psbt_validate import (
     _assert_refused_unsigned,
     _assert_single_schnorr_sig,
     _bip86_p2tr_spk,
+    _build_pegin_psbt,
+    _depositor_pk,
     _reclaim_keys,
+    _setup_s2_state,
     _standard_reclaim_psbt,
 )
 
@@ -189,7 +193,12 @@ def test_reclaim_leaves_session_state_unchanged(
     state: str,
 ) -> None:
     """Reclaim signs through the same Screen 9 in IDLE, HASH_DERIVED and INTENT_LOADED,
-    moves no signature counter and invalidates nothing."""
+    moves no signature counter and invalidates nothing.
+
+    Signature counters exist only for an approved intent and reset on each approval, so
+    IDLE and HASH_DERIVED hold none that Reclaim could move.  GET_VAULT_STATE does not
+    return counters, so INTENT_LOADED shows it through the Pre-PegIn signature after
+    the Reclaim, which a moved `pre_pegin_signed` (cap 1) would refuse."""
     prepegin = None
     if state == "hash_derived":
         _derive_silent(client, bitcoin_network)
@@ -205,6 +214,30 @@ def test_reclaim_leaves_session_state_unchanged(
         prepegin_psbt, wallet, _ = prepegin
         assert len(client.sign_psbt(prepegin_psbt, wallet, None)) == 1
         assert get_vault_state_raw(client) == before
+
+
+def test_reclaim_leaves_pegin_slot_unspent(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """A PegIn still signs after a Reclaim: `pegin_signed` (cap 1) did not move.
+
+    The intent here binds a PegIn-signable txid, which the Pre-PegIn intent of the
+    session-state test does not, so the two tests cover different counters.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    depositor_pk = _depositor_pk(bitcoin_network)
+    hashlock = _setup_s2_state(client, navigator, device, coin_type, _PREPEGIN_TXID)
+    before = get_vault_state_raw(client)
+
+    _approve_and_verify_reclaim(client, navigator, device, bitcoin_network)
+    assert get_vault_state_raw(client) == before
+
+    pegin_psbt = _build_pegin_psbt(depositor_pk, hashlock, _PREPEGIN_TXID)
+    result = client.sign_psbt(pegin_psbt, _NoWalletPolicy("", "tr(@0/**)", []), None)
+    _assert_single_schnorr_sig(result, depositor_pk, psbt=pegin_psbt)
 
 
 # ===========================================================================
