@@ -134,9 +134,12 @@ bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen,
 
 /**
  * Report whether a Pre-PegIn may return change to the key at `path`: the first receive
- * address of a BIP-86 account, m/86'/coin_type'/account'/0/0, which is the address a wallet
- * shows and scans.  The depositor path is chosen by the host and never shown on the device, so
- * change paid anywhere else in the BIP-86 space (the change branch, a high address index)
- * would sit where wallets do not look.
+ * address, m/86'/coin_type'/account'/0/0, of the account the transaction is signed from.  That
+ * is the address a wallet shows and scans.  The depositor path is chosen by the host and never
+ * shown on the device, so change paid anywhere else in the BIP-86 space (the change branch, a
+ * high address index, another account) would sit where wallets do not look.
+ *
+ * @param signing_account  Unhardened account index of the wallet policy the inputs are signed
+ *                         from, as verified against the device's own key by the base app.
  */
-bool prepegin_change_path_ok(const uint32_t *path, int path_len);
+bool prepegin_change_path_ok(const uint32_t *path, int path_len, uint32_t signing_account);

@@ -508,6 +508,157 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
 static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
+/* Per vault group: verify htlc_vout range, HTLC scriptPubKey, and amount. */
+static bool _validate_prepegin_htlc_outputs(dispatcher_context_t *dc,
+                                            const sign_psbt_state_t *st,
+                                            const vault_intent_t *intent) {
+    for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
+        if (intent->groups[gi].htlc_vout >= st->n_outputs) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint8_t actual_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t htlc_value;
+        if (!_read_output(dc,
+                          st->outputs_root,
+                          st->n_outputs,
+                          intent->groups[gi].htlc_vout,
+                          actual_spk,
+                          &htlc_value)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        if (!vault_build_htlc_scriptpubkey(intent,
+                                           gi,
+                                           G_vault_context.htlc_hashlock[gi],
+                                           expected_spk)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (memcmp(actual_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint64_t min_htlc =
+            intent->groups[gi].vault_amount + intent->groups[gi].depositor_claim_value;
+        if (min_htlc < intent->groups[gi].vault_amount) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* Include P2A anchor: the PegIn funds this output from the HTLC value. */
+        min_htlc += P2A_ANCHOR_VALUE;
+        if (min_htlc < P2A_ANCHOR_VALUE) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint64_t max_htlc = min_htlc + intent->groups[gi].pegin_max_fee;
+        if (max_htlc < min_htlc) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (htlc_value < min_htlc || htlc_value > max_htlc) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Every non-HTLC output must be one of, strictly after all HTLC outputs:
+ *   - the single shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>";
+ *   - the single CPFP anchor paying P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT;
+ *   - after that anchor, at most one change output paying P2TR(depositor_pk) above
+ *     VAULT_DUST_LIMIT, when depositor_path is the first receive address of the account
+ *     the inputs are signed from.
+ * Change on the wallet policy's change branch (internal outputs) is refused: the
+ * depositor's own key is where the dApp looks for funds.  Outputs to depositor_pk
+ * return value to a key the device derived itself from depositor_path.  That path is
+ * host-chosen and never shown, so change is only accepted where a wallet looks for it.
+ * The anchor and the change share one scriptPubKey, so the anchor-first order is the only
+ * way for a reader of the transaction to tell them apart.
+ *
+ * groups are in ascending htlc_vout order, so the last group has the highest htlc_vout. */
+static bool _validate_prepegin_outputs(
+    dispatcher_context_t *dc,
+    const sign_psbt_state_t *st,
+    const vault_intent_t *intent,
+    const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
+    uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
+    expected_anchor_spk[0] = 0x6A;  // OP_RETURN
+    expected_anchor_spk[1] = OP_PUSHBYTES_32;
+    memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
+
+    uint8_t expected_cpfp_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    if (!_bip86_p2tr_spk(intent->depositor_pk, expected_cpfp_spk)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Assert vault_count ∈ [1, VAULT_MAX_VAULTS] enforced at parse time.
+     * Guards against a false-positive [security.ArrayBound] warning: the analyzer cannot
+     * prove the invariant across the parse/validate boundary and flags the -1 index path. */
+    LEDGER_ASSERT(intent->vault_count >= 1 && intent->vault_count <= VAULT_MAX_VAULTS,
+                  "vault_count out of range");
+    const unsigned int max_htlc_vout = intent->groups[intent->vault_count - 1].htlc_vout;
+
+    bool anchor_found = false;
+    prepegin_depositor_outputs_t depositor_outputs = {false, false};
+    const bool change_allowed =
+        st->account.is_default && prepegin_change_path_ok(intent->depositor_path,
+                                                          VAULT_DEPOSITOR_PATH_LEN,
+                                                          st->account.bip44_account);
+    for (unsigned int i = 0; i < st->n_outputs; i++) {
+        bool is_htlc_output = false;
+        for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
+            if (intent->groups[gi].htlc_vout == i) {
+                is_htlc_output = true;
+                break;
+            }
+        }
+        if (is_htlc_output) continue;
+        if (bitvector_get(internal_outputs, i)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        /* Non-HTLC output: must appear strictly after all HTLC outputs. */
+        if (i <= max_htlc_vout) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t out_value;
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, i, out_spk, &out_value)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (out_value == 0 && memcmp(out_spk, expected_anchor_spk, AUTH_ANCHOR_SPK_LEN) == 0) {
+            /* OP_RETURN auth-anchor: provably unspendable, at most one permitted. */
+            if (anchor_found) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+            anchor_found = true;
+        } else if (memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
+            if (!prepegin_depositor_output_accept(&depositor_outputs, out_value, change_allowed)) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+        } else {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+    /* Every optional output is enforced at-most-once within the loop; their final
+     * values are intentionally not checked — none is mandatory. */
+    (void) anchor_found;
+    return true;
+}
+
 static bool _validate_prepegin(
     dispatcher_context_t *dc,
     sign_psbt_state_t *st,
@@ -570,141 +721,8 @@ static bool _validate_prepegin(
         /* PSBT_FIELD_ABSENT means no PSBT_IN_SIGHASH_TYPE → SIGHASH_DEFAULT → OK */
     }
 
-    /* Per vault group: verify htlc_vout range, HTLC scriptPubKey, and amount. */
-    for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
-        if (intent->groups[gi].htlc_vout >= st->n_outputs) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint8_t actual_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        uint64_t htlc_value;
-        if (!_read_output(dc,
-                          st->outputs_root,
-                          st->n_outputs,
-                          intent->groups[gi].htlc_vout,
-                          actual_spk,
-                          &htlc_value)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!vault_build_htlc_scriptpubkey(intent,
-                                           gi,
-                                           G_vault_context.htlc_hashlock[gi],
-                                           expected_spk)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (memcmp(actual_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint64_t min_htlc =
-            intent->groups[gi].vault_amount + intent->groups[gi].depositor_claim_value;
-        if (min_htlc < intent->groups[gi].vault_amount) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        /* Include P2A anchor: the PegIn funds this output from the HTLC value. */
-        min_htlc += P2A_ANCHOR_VALUE;
-        if (min_htlc < P2A_ANCHOR_VALUE) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint64_t max_htlc = min_htlc + intent->groups[gi].pegin_max_fee;
-        if (max_htlc < min_htlc) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (htlc_value < min_htlc || htlc_value > max_htlc) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
-
-    /* Every non-HTLC output must be one of, strictly after all HTLC outputs:
-     *   - the single shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>";
-     *   - the single CPFP anchor paying P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT;
-     *   - after that anchor, at most one change output paying P2TR(depositor_pk) above
-     *     VAULT_DUST_LIMIT, when depositor_path is the first receive address of its account.
-     * Change on the wallet policy's change branch (internal outputs) is refused: the
-     * depositor's own key is where the dApp looks for funds.  Outputs to depositor_pk
-     * return value to a key the device derived itself from depositor_path.  That path is
-     * host-chosen and never shown, so change is only accepted where a wallet looks for it.
-     * The anchor and the change share one scriptPubKey, so the anchor-first order is the only
-     * way for a reader of the transaction to tell them apart.
-     *
-     * groups are in ascending htlc_vout order, so the last group has the highest htlc_vout. */
-    uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
-    expected_anchor_spk[0] = 0x6A;  // OP_RETURN
-    expected_anchor_spk[1] = OP_PUSHBYTES_32;
-    memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
-
-    uint8_t expected_cpfp_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-    if (!_bip86_p2tr_spk(intent->depositor_pk, expected_cpfp_spk)) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
-
-    /* Assert vault_count ∈ [1, VAULT_MAX_VAULTS] enforced at parse time.
-     * Guards against a false-positive [security.ArrayBound] warning: the analyzer cannot
-     * prove the invariant across the parse/validate boundary and flags the -1 index path. */
-    LEDGER_ASSERT(intent->vault_count >= 1 && intent->vault_count <= VAULT_MAX_VAULTS,
-                  "vault_count out of range");
-    const unsigned int max_htlc_vout = intent->groups[intent->vault_count - 1].htlc_vout;
-
-    bool anchor_found = false;
-    prepegin_depositor_outputs_t depositor_outputs = {false, false};
-    const bool change_allowed =
-        prepegin_change_path_ok(intent->depositor_path, VAULT_DEPOSITOR_PATH_LEN);
-    for (unsigned int i = 0; i < st->n_outputs; i++) {
-        bool is_htlc_output = false;
-        for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
-            if (intent->groups[gi].htlc_vout == i) {
-                is_htlc_output = true;
-                break;
-            }
-        }
-        if (is_htlc_output) continue;
-        if (bitvector_get(internal_outputs, i)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        /* Non-HTLC output: must appear strictly after all HTLC outputs. */
-        if (i <= max_htlc_vout) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        uint64_t out_value;
-        if (!_read_output(dc, st->outputs_root, st->n_outputs, i, out_spk, &out_value)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (out_value == 0 && memcmp(out_spk, expected_anchor_spk, AUTH_ANCHOR_SPK_LEN) == 0) {
-            /* OP_RETURN auth-anchor: provably unspendable, at most one permitted. */
-            if (anchor_found) {
-                SEND_SW(dc, SW_INCORRECT_DATA);
-                return false;
-            }
-            anchor_found = true;
-        } else if (memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
-            if (!prepegin_depositor_output_accept(&depositor_outputs, out_value, change_allowed)) {
-                SEND_SW(dc, SW_INCORRECT_DATA);
-                return false;
-            }
-        } else {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
-    /* Every optional output is enforced at-most-once within the loop; their final
-     * values are intentionally not checked — none is mandatory. */
-    (void) anchor_found;
+    if (!_validate_prepegin_htlc_outputs(dc, st, intent)) return false;
+    if (!_validate_prepegin_outputs(dc, st, intent, internal_outputs)) return false;
 
     if (st->outputs.total_amount > st->inputs_total_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);

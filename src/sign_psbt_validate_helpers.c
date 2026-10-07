@@ -21,6 +21,11 @@
 #define BIP86_MAX_ACCOUNT       100u
 #define BIP86_MAX_ADDRESS_INDEX 10000u
 
+/* Levels of a BIP-86 path below the purpose and coin type */
+#define BIP86_ACCOUNT_LEVEL 2
+#define BIP86_CHANGE_LEVEL  3
+#define BIP86_INDEX_LEVEL   4
+
 /* Position of the first receive address within an account */
 #define BIP86_RECEIVE_BRANCH      0u
 #define BIP86_FIRST_ADDRESS_INDEX 0u
@@ -274,7 +279,10 @@ bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen,
     return false;
 }
 
-bool prepegin_change_path_ok(const uint32_t *path, int path_len) {
+bool prepegin_change_path_ok(const uint32_t *path, int path_len, uint32_t signing_account) {
     if (!check_bip86_path(path, path_len)) return false;
-    return path[3] == BIP86_RECEIVE_BRANCH && path[4] == BIP86_FIRST_ADDRESS_INDEX;
+    if ((signing_account & BIP32_FIRST_HARDENED_CHILD) != 0) return false;
+    return path[BIP86_ACCOUNT_LEVEL] == (signing_account | BIP32_FIRST_HARDENED_CHILD) &&
+           path[BIP86_CHANGE_LEVEL] == BIP86_RECEIVE_BRANCH &&
+           path[BIP86_INDEX_LEVEL] == BIP86_FIRST_ADDRESS_INDEX;
 }
