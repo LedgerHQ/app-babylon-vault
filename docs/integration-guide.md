@@ -200,7 +200,7 @@ the reconstructed Pre-PegIn txid could not match the broadcast one.
 | Inputs | All inputs must be wallet-policy owned — device rejects any non-internal input, and any policy that is not native SegWit |
 | Sighash | `SIGHASH_DEFAULT` (absent) or `SIGHASH_ALL` (1) per input |
 | Output at `htlc_vout` | P2TR scriptPubKey matching `vault_build_htlc_scriptpubkey(intent, htlc_hashlock)` |
-| Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value, vault_amount + depositor_claim_value + pegin_max_fee]` |
+| Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value + 240, vault_amount + depositor_claim_value + 240 + pegin_max_fee]`; the 240 sat fund the P2A anchor of the PegIn transaction |
 | **Auth-anchor output** | Optional `OP_RETURN` output with scriptPubKey `6A 20 ‖ auth_anchor_hash` (34 bytes) and **value 0**; at most one permitted |
 | **CPFP anchor output** | Optional P2TR(depositor_pk) BIP-86 key-path output at exactly **546 sat** (`VAULT_DUST_LIMIT`); at most one permitted |
 | **Change output** | Optional P2TR(depositor_pk) BIP-86 key-path output with value **above 546 sat**, placed after the CPFP anchor; at most one permitted, and only when the intent's `depositor_path` is `m/86'/coin'/account'/0/0` |
