@@ -627,11 +627,15 @@ def capture_status_screen(navigator: "Navigator") -> Iterator[None]:
         raise RuntimeError(
             f"{type(backend).__name__} has no _check_async_error: the status-screen "
             "capture must be revisited for this Ragger version")
+    outer = vars(backend).get("_check_async_error")
     backend._check_async_error = lambda: None  # pylint: disable=protected-access
     try:
         yield
     finally:
-        del backend._check_async_error
+        if outer is None:
+            del backend._check_async_error
+        else:
+            backend._check_async_error = outer  # pylint: disable=protected-access
 
 
 @contextmanager
@@ -660,11 +664,15 @@ def record_screen_text(navigator: "Navigator") -> Iterator[List[List[str]]]:
         pages.append([event.get("text", "") for event in events])
         return result
 
+    outer = vars(backend).get("compare_screen_with_snapshot")
     backend.compare_screen_with_snapshot = recording
     try:
         yield pages
     finally:
-        del backend.compare_screen_with_snapshot
+        if outer is None:
+            del backend.compare_screen_with_snapshot
+        else:
+            backend.compare_screen_with_snapshot = outer
 
 
 # ---------------------------------------------------------------------------
