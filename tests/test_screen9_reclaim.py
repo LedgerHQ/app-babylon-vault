@@ -18,7 +18,9 @@ Run with --golden_run to regenerate reference snapshots:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import re
+from decimal import Decimal
+from typing import TYPE_CHECKING, Dict, List
 
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
@@ -31,12 +33,15 @@ from ragger.navigator import Navigator
 from ledger_bitcoin.key import ExtendedKey
 from ledger_bitcoin.psbt import PSBT
 
+from test_utils import segwit_addr
+
 from .vault_client import (
     SW_BAD_STATE,
     SW_DENY,
     SW_INCORRECT_DATA,
     capture_status_screen,
     get_vault_state_raw,
+    record_screen_text,
     sign_psbt_with_nav_and_compare,
 )
 from .instructions import (
@@ -78,18 +83,55 @@ def _sign_reclaim_with_nav(client: "RaggerClient", navigator: Navigator, device:
                                           testname=testname, nav_instructions=nav)
 
 
+# Nano labels a value split over several pages "Label (1/2)", "Label (2/2)".
+_PAGE_COUNTER = re.compile(r"\(\d+/\d+\)$")
+
+
+def _expected_review_values(psbt: PSBT, bitcoin_network: str) -> Dict[str, str]:
+    """Screen 9 values computed from the PSBT alone, as the user would read them."""
+    main = bitcoin_network == "main"
+    ticker = "BTC" if main else "sBTC"
+    output = psbt.tx.vout[0]
+    fee = psbt.inputs[0].witness_utxo.nValue - output.nValue
+    txid = psbt.tx.vin[0].prevout.hash.to_bytes(32, "little")[::-1]
+    return {
+        "amount reclaimed": f"{Decimal(output.nValue).scaleb(-8).normalize():f} {ticker}",
+        "fee": f"{Decimal(fee).scaleb(-8).normalize():f} {ticker}",
+        "reclaim address": segwit_addr.encode("bc" if main else "tb", 1, output.scriptPubKey[2:]),
+        "pegin txid": txid.hex(),
+    }
+
+
+def _assert_review_shows(pages: List[List[str]], expected: Dict[str, str]) -> None:
+    """Every expected value appears on the recorded screens.
+
+    Whitespace and case are ignored: NBGL wraps values at arbitrary columns, and the txid
+    is uppercase on the device.  Page counters are dropped so a value Nano splits over
+    pages reads as one string.
+    """
+    shown = "".join("".join(text.split())
+                    for page in pages for text in page
+                    if not _PAGE_COUNTER.search(text)).lower()
+    for field, value in expected.items():
+        assert "".join(value.split()).lower() in shown, f"{field!r}: {value!r} not on screen"
+
+
 def _approve_and_verify_reclaim(client: "RaggerClient", navigator: Navigator, device: Device,
                                 bitcoin_network: str) -> None:
-    """Sign the standard Reclaim through Screen 9 and verify the signature under D.
+    """Sign the standard Reclaim through Screen 9, verify the signature under D and
+    that the screens show the PSBT's values.
 
     Every caller compares against the same goldens, so a Reclaim signed from any session
     state must also have shown exactly the same screens.
     """
     _, leaf_key, _, _ = _reclaim_keys(client, bitcoin_network)
     psbt = _standard_reclaim_psbt(client, bitcoin_network)
-    result = _sign_reclaim_with_nav(client, navigator, device, psbt,
-                                    "screen9_reclaim/screen_" + bitcoin_network, approve=True)
+    with record_screen_text(navigator) as pages:
+        result = _sign_reclaim_with_nav(client, navigator, device, psbt,
+                                        "screen9_reclaim/screen_" + bitcoin_network,
+                                        approve=True)
     _assert_single_schnorr_sig(result, leaf_key, psbt=psbt)
+    _assert_review_shows(pages, _expected_review_values(psbt, bitcoin_network))
 
 
 # ===========================================================================
@@ -102,12 +144,12 @@ def test_sign_psbt_reclaim_screen(
     device: Device,
     bitcoin_network: str,
 ) -> None:
-    """Show Screen 9 (Reclaim), approve it, and verify the signature.
+    """Show Screen 9 (Reclaim), approve it, and verify the signature and the displayed values.
 
-    The goldens pin every review page: the consent intro, then amount reclaimed
-    (1,199,000 sats — Output 0), fee (1,000 sats — input minus output), the reclaim
-    address (bech32m of Output 0) and the PegIn txid (Input 0 prevout, shown in
-    PSBT_IN_PREVIOUS_TXID byte order like every other txid in the app).  The returned
+    The goldens pin every review page.  The recorded screen text is checked against values
+    computed from the PSBT, so a golden cannot hide a wrong value: amount reclaimed
+    (Output 0), fee (input minus output), the reclaim address (bech32m of Output 0) and
+    the PegIn txid (Input 0 prevout, in the byte order block explorers show).  The returned
     signature must verify against the depositor key D over the reviewed PSBT's sighash.
     """
     _approve_and_verify_reclaim(client, navigator, device, bitcoin_network)
