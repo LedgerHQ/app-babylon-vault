@@ -269,7 +269,8 @@ def _htlc_output(depositor_pk: bytes, vp_pk: bytes,
 # ---------------------------------------------------------------------------
 
 def _standard_single_key_wallet(client: "RaggerClient", coin_type: int,
-                                purpose: int, descriptor_template: str) -> WalletPolicy:
+                                purpose: int, descriptor_template: str,
+                                account: int = 0) -> WalletPolicy:
     """Default (HMAC-less) single-key wallet policy for the test device.
 
     wallet_id != all-zeros → has_no_wallet_policy = false → SIGN_PSBT routes to the
@@ -277,17 +278,17 @@ def _standard_single_key_wallet(client: "RaggerClient", coin_type: int,
     the key origin is m/purpose'/coin_type'/account', so purpose must match the template.
     """
     fingerprint = client.get_master_fingerprint()
-    xpub = client.get_extended_pubkey(f"m/{purpose}'/{coin_type}'/0'", display=False)
+    xpub = client.get_extended_pubkey(f"m/{purpose}'/{coin_type}'/{account}'", display=False)
     return WalletPolicy(
         name="",
         descriptor_template=descriptor_template,
-        keys_info=[f"[{fingerprint.hex()}/{purpose}'/{coin_type}'/0']{xpub}"],
+        keys_info=[f"[{fingerprint.hex()}/{purpose}'/{coin_type}'/{account}']{xpub}"],
     )
 
 
-def _standard_taproot_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
-    """BIP-86 tr() wallet — SegWit v1, empty scriptSig."""
-    return _standard_single_key_wallet(client, coin_type, BIP86_TAPROOT, "tr(@0/**)")
+def _standard_taproot_wallet(client: "RaggerClient", coin_type: int, account: int = 0) -> WalletPolicy:
+    """BIP-86 tr() wallet of the given account — SegWit v1, empty scriptSig."""
+    return _standard_single_key_wallet(client, coin_type, BIP86_TAPROOT, "tr(@0/**)", account)
 
 
 def _standard_native_segwit_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
@@ -322,6 +323,7 @@ def _build_prepegin_psbt(
     input_coin_type: int = 0,
     auth_anchor: Optional[bytes] = None,
     auth_anchor_value: int = 0,
+    input_account: int = 0,
 ) -> PSBT:
     """Pre-PegIn PSBTv0: HTLC output at htlc_vout, plus an optional OP_RETURN.
 
@@ -367,7 +369,7 @@ def _build_prepegin_psbt(
             set(),
             KeyOriginInfo(
                 input_fingerprint,
-                [HARDENED | 86, HARDENED | input_coin_type, HARDENED | 0, 0, 0],
+                [HARDENED | 86, HARDENED | input_coin_type, HARDENED | input_account, 0, 0],
             ),
         )
 
@@ -575,8 +577,8 @@ def _build_pegin_psbt(
 # Pre-PegIn input key helpers
 # ---------------------------------------------------------------------------
 
-def _prepegin_input_key(client: "RaggerClient", coin_type: int):
-    """Return (fingerprint, internal_key) for a BIP-86 P2TR input at m/86'/{coin_type}'/0'/0/0.
+def _prepegin_input_key(client: "RaggerClient", coin_type: int, account: int = 0):
+    """Return (fingerprint, internal_key) for a BIP-86 P2TR input at m/86'/{coin_type}'/{account}'/0/0.
 
     The 'all inputs internal' check in _validate_prepegin requires the
     input witness_utxo to have a BIP-86 tweaked key derived from this device's
@@ -585,7 +587,7 @@ def _prepegin_input_key(client: "RaggerClient", coin_type: int):
     """
     fingerprint = client.get_master_fingerprint()
     internal_key = ExtendedKey.deserialize(
-        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/{account}'/0/0", display=False)
     ).pubkey[1:]
     return fingerprint, internal_key
 
@@ -2324,6 +2326,7 @@ def _prepegin_bound_to_intent(
     extra_fee: int = 0,
     depositor_index: int = 0,
     depositor_account: int = 0,
+    signing_account: int = 0,
 ):
     """Build a Pre-PegIn, then approve the intent committed to its txid.  Returns (psbt, wallet).
 
@@ -2338,7 +2341,7 @@ def _prepegin_bound_to_intent(
     grows the input's value, which the txid does not cover, so the binding stays valid.
 
     The depositor is m/86'/coin'/depositor_account'/0/depositor_index; account 0 index 0 is the
-    address the dApp shows.  The inputs are always signed from account 0.
+    address the dApp shows.  The inputs are signed from signing_account.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     if depositor_index == 0 and depositor_account == 0:
@@ -2355,13 +2358,14 @@ def _prepegin_bound_to_intent(
         dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
         _HTLC_REFUND_TIMELOCK, hashlock,
     )
-    fingerprint, input_key = _prepegin_input_key(client, coin_type)
+    fingerprint, input_key = _prepegin_input_key(client, coin_type, signing_account)
     psbt = _build_prepegin_psbt(
         htlc_spk,
         input_internal_key=input_key,
         input_fingerprint=fingerprint,
         input_coin_type=coin_type,
         auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
+        input_account=signing_account,
     )
 
     depositor_spk = _bip86_depositor_spk(dep_pk)
@@ -2369,7 +2373,7 @@ def _prepegin_bound_to_intent(
     change_out = None
     if internal_change_value is not None:
         change_key = ExtendedKey.deserialize(
-            client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/1/0", display=False)
+            client.get_extended_pubkey(f"m/86'/{coin_type}'/{signing_account}'/1/0", display=False)
         ).pubkey[1:]
         _, change_tweaked = taproot_tweak_pubkey(change_key, b'')
         change_out = PartiallySignedOutput(0)
@@ -2378,7 +2382,7 @@ def _prepegin_bound_to_intent(
             set(),
             KeyOriginInfo(
                 fingerprint,
-                [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 1, 0],
+                [HARDENED | 86, HARDENED | coin_type, HARDENED | signing_account, 1, 0],
             ),
         )
         extra.append(CTxOut(internal_change_value, bytes([0x51, 0x20]) + change_tweaked))
@@ -2403,7 +2407,7 @@ def _prepegin_bound_to_intent(
         scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
         groups=[_build_group_for_test()],
     )
-    return psbt, _standard_taproot_wallet(client, coin_type)
+    return psbt, _standard_taproot_wallet(client, coin_type, signing_account)
 
 
 def test_sign_psbt_prepegin_external_output(
@@ -2620,14 +2624,19 @@ def test_sign_psbt_prepegin_depositor_change_fee_cap(
         assert exc.value.status == SW_INCORRECT_DATA
 
 
-@pytest.mark.parametrize("depositor_index, depositor_account, depositor_values, accepted", [
-    pytest.param(1, 0, [_VAULT_DUST_LIMIT], True, id="other_index_anchor_only_accepted"),
-    pytest.param(1, 0, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
-                 id="other_index_change_rejected"),
-    pytest.param(1, 1, [_VAULT_DUST_LIMIT], True, id="other_account_anchor_only_accepted"),
-    pytest.param(0, 1, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
-                 id="other_account_change_rejected"),
-])
+@pytest.mark.parametrize(
+    "depositor_index, depositor_account, signing_account, depositor_values, accepted", [
+        pytest.param(1, 0, 0, [_VAULT_DUST_LIMIT], True, id="other_index_anchor_only_accepted"),
+        pytest.param(1, 0, 0, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
+                     id="other_index_change_rejected"),
+        pytest.param(1, 1, 0, [_VAULT_DUST_LIMIT], True, id="other_account_anchor_only_accepted"),
+        pytest.param(0, 1, 0, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
+                     id="other_account_change_rejected"),
+        pytest.param(0, 1, 1, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], True,
+                     id="signing_account_1_change_accepted"),
+        pytest.param(0, 0, 1, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
+                     id="signing_account_1_depositor_account_0_change_rejected"),
+    ])
 def test_sign_psbt_prepegin_change_needs_signing_accounts_first_receive_address(
     client: "RaggerClient",
     navigator: Navigator,
@@ -2635,20 +2644,23 @@ def test_sign_psbt_prepegin_change_needs_signing_accounts_first_receive_address(
     bitcoin_network: str,
     depositor_index: int,
     depositor_account: int,
+    signing_account: int,
     depositor_values: List[int],
     accepted: bool,
 ) -> None:
     """Pre-PegIn change is accepted only at m/86'/coin'/account'/0/0 of the signing account.
 
-    The inputs are signed from account 0.  The depositor path is the host's choice and is not
-    shown on the device, so change to any other address of the depositor (here /0/1 of account
-    0, or the first address of account 1) would land where a wallet does not look.  The anchor
-    is not affected by the path.
+    The depositor path is the host's choice and is not shown on the device, so change to any
+    other address of the depositor would land where a wallet does not look: another address
+    index of the signing account, or the first address of an account the inputs are not
+    signed from.  The signing account is taken from the wallet policy, so both a zero and a
+    nonzero account are exercised.  The anchor is not affected by the path.
     """
     psbt, wallet = _prepegin_bound_to_intent(
         client, navigator, device, bitcoin_network,
         depositor_values=depositor_values,
         depositor_index=depositor_index, depositor_account=depositor_account,
+        signing_account=signing_account,
     )
     if accepted:
         result = client.sign_psbt(psbt, wallet, None)
