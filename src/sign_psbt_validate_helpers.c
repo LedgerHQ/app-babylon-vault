@@ -21,6 +21,10 @@
 #define BIP86_MAX_ACCOUNT       100u
 #define BIP86_MAX_ADDRESS_INDEX 10000u
 
+/* Position of the first receive address within an account */
+#define BIP86_RECEIVE_BRANCH      0u
+#define BIP86_FIRST_ADDRESS_INDEX 0u
+
 /* BIP-32 derivation record layout */
 #define BIP32_PATH_STEP_SIZE   4 /* bytes per path component (uint32_t LE) */
 #define BIP32_FINGERPRINT_SIZE 4 /* bytes for the key fingerprint (uint32_t BE) */
@@ -252,7 +256,9 @@ bool reclaim_fee_ok(uint64_t in_value, uint64_t out_value, uint64_t *fee_out) {
     return true;
 }
 
-bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen, uint64_t value) {
+bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen,
+                                      uint64_t value,
+                                      bool change_allowed) {
     if (seen->change_seen && !seen->anchor_seen) return false;
 
     if (value == VAULT_DUST_LIMIT) {
@@ -261,9 +267,14 @@ bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen, uint64
         return true;
     }
     if (value > VAULT_DUST_LIMIT) {
-        if (!seen->anchor_seen || seen->change_seen) return false;
+        if (!change_allowed || !seen->anchor_seen || seen->change_seen) return false;
         seen->change_seen = true;
         return true;
     }
     return false;
+}
+
+bool prepegin_change_path_ok(const uint32_t *path, int path_len) {
+    if (!check_bip86_path(path, path_len)) return false;
+    return path[3] == BIP86_RECEIVE_BRANCH && path[4] == BIP86_FIRST_ADDRESS_INDEX;
 }

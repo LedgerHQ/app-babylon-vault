@@ -203,14 +203,14 @@ the reconstructed Pre-PegIn txid could not match the broadcast one.
 | Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value, vault_amount + depositor_claim_value + pegin_max_fee]` |
 | **Auth-anchor output** | Optional `OP_RETURN` output with scriptPubKey `6A 20 ‖ auth_anchor_hash` (34 bytes) and **value 0**; at most one permitted |
 | **CPFP anchor output** | Optional P2TR(depositor_pk) BIP-86 key-path output at exactly **546 sat** (`VAULT_DUST_LIMIT`); at most one permitted |
-| **Change output** | Optional P2TR(depositor_pk) BIP-86 key-path output with value **above 546 sat**, placed after the CPFP anchor; at most one permitted |
+| **Change output** | Optional P2TR(depositor_pk) BIP-86 key-path output with value **above 546 sat**, placed after the CPFP anchor; at most one permitted, and only when the intent's `depositor_path` is `m/86'/coin'/account'/0/0` |
 | All other outputs | Rejected with `SW_INCORRECT_DATA`, including change on the wallet policy's change branch (`m/86'/coin'/0'/1/*`) |
 
 The auth-anchor `OP_RETURN` payload is bound to `SHA256(authAnchor)` recomputed on-device from the root — the host cannot substitute it. Its value must be **0** (it is provably unspendable; a non-zero value would silently burn change).
 
 The CPFP anchor at `VAULT_DUST_LIMIT` is appended by the protocol to every Pre-PegIn transaction so the depositor can fee-bump via CPFP if needed.
 
-Change goes to the depositor's own address, P2TR(`depositor_pk`), where `depositor_pk` is the key the device derived from the intent's `depositor_path` — the address the dApp shows. The anchor and the change share one scriptPubKey, so the order tells them apart: every non-HTLC output follows all HTLC outputs and the change follows the anchor. A change with no anchor before it, a second anchor, two changes, and a depositor output below 546 sat are all refused. The canonical layout is `[HTLC…, OP_RETURN?, anchor, change?]`; the device does not order the `OP_RETURN` against the depositor outputs.
+Change goes to the depositor's own address, P2TR(`depositor_pk`), where `depositor_pk` is the key the device derived from the intent's `depositor_path` — the address the dApp shows. The anchor and the change share one scriptPubKey, so the order tells them apart: every non-HTLC output follows all HTLC outputs and the change follows the anchor. A change with no anchor before it, a second anchor, two changes, a change under a `depositor_path` other than `…/0/0`, and a depositor output below 546 sat are all refused. The canonical layout is `[HTLC…, OP_RETURN?, anchor, change?]`; the device does not order the `OP_RETURN` against the depositor outputs.
 
 > **Breaking since 0.11.0:** change sent to the wallet policy's change branch (`…/1/x`) is refused. A host that builds Pre-PegIn change there must send it to the depositor's address instead. Inputs on either branch are unaffected.
 

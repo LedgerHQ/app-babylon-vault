@@ -629,12 +629,13 @@ static bool _validate_prepegin(
      *   - the single shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>";
      *   - the single CPFP anchor paying P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT;
      *   - after that anchor, at most one change output paying P2TR(depositor_pk) above
-     *     VAULT_DUST_LIMIT.
+     *     VAULT_DUST_LIMIT, when depositor_path is the first receive address of its account.
      * Change on the wallet policy's change branch (internal outputs) is refused: the
      * depositor's own key is where the dApp looks for funds.  Outputs to depositor_pk
-     * return value to a key the device derived itself from depositor_path.  The anchor and
-     * the change share one scriptPubKey, so the anchor-first order is the only way for a
-     * reader of the transaction to tell them apart.
+     * return value to a key the device derived itself from depositor_path.  That path is
+     * host-chosen and never shown, so change is only accepted where a wallet looks for it.
+     * The anchor and the change share one scriptPubKey, so the anchor-first order is the only
+     * way for a reader of the transaction to tell them apart.
      *
      * groups are in ascending htlc_vout order, so the last group has the highest htlc_vout. */
     uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
@@ -657,6 +658,8 @@ static bool _validate_prepegin(
 
     bool anchor_found = false;
     prepegin_depositor_outputs_t depositor_outputs = {false, false};
+    const bool change_allowed =
+        prepegin_change_path_ok(intent->depositor_path, VAULT_DEPOSITOR_PATH_LEN);
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         bool is_htlc_output = false;
         for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
@@ -690,7 +693,7 @@ static bool _validate_prepegin(
             }
             anchor_found = true;
         } else if (memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
-            if (!prepegin_depositor_output_accept(&depositor_outputs, out_value)) {
+            if (!prepegin_depositor_output_accept(&depositor_outputs, out_value, change_allowed)) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
             }

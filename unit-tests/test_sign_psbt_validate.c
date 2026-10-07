@@ -9,6 +9,7 @@
  *   reclaim_sequence_ok           — Reclaim Input 0 nSequence rule
  *   reclaim_fee_ok                — Reclaim fee arithmetic (checked subtraction)
  *   prepegin_depositor_output_accept — Pre-PegIn CPFP anchor / depositor change classification
+ *   prepegin_change_path_ok       — depositor paths that may receive Pre-PegIn change
  *
  * Tests verify both acceptance of valid inputs and rejection of every
  * distinct invalid shape. BIP44_COIN_TYPE=1 is set via CMake compile def.
@@ -1047,7 +1048,7 @@ static void assert_seen(const prepegin_depositor_outputs_t *seen,
 static bool accept_depositor_outputs(const uint64_t *values, size_t n_values) {
     prepegin_depositor_outputs_t seen = {false, false};
     for (size_t i = 0; i < n_values; i++) {
-        if (!prepegin_depositor_output_accept(&seen, values[i])) return false;
+        if (!prepegin_depositor_output_accept(&seen, values[i], true)) return false;
     }
     return true;
 }
@@ -1055,7 +1056,7 @@ static bool accept_depositor_outputs(const uint64_t *values, size_t n_values) {
 static void test_depositor_output_accept_anchor_at_dust_limit(void **state) {
     (void) state;
     prepegin_depositor_outputs_t seen = {false, false};
-    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT));
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
     assert_seen(&seen, true, false);
 }
 
@@ -1063,7 +1064,7 @@ static void test_depositor_output_accept_change_just_above_dust_limit(void **sta
     (void) state;
     /* 547 sat is the smallest change; it is distinguished from the anchor by value alone. */
     prepegin_depositor_outputs_t seen = {true, false};
-    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u));
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
     assert_seen(&seen, true, true);
 }
 
@@ -1071,37 +1072,37 @@ static void test_depositor_output_accept_change_max_value(void **state) {
     (void) state;
     /* No upper bound on change here: the transaction's fee bound is enforced separately. */
     prepegin_depositor_outputs_t seen = {true, false};
-    assert_true(prepegin_depositor_output_accept(&seen, UINT64_MAX));
+    assert_true(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
     assert_seen(&seen, true, true);
 }
 
 static void test_depositor_output_reject_change_without_anchor(void **state) {
     (void) state;
     prepegin_depositor_outputs_t seen = {false, false};
-    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u));
-    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX));
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
     assert_seen(&seen, false, false);
 }
 
 static void test_depositor_output_reject_second_anchor(void **state) {
     (void) state;
     prepegin_depositor_outputs_t seen = {true, false};
-    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT));
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
     assert_seen(&seen, true, false);
 }
 
 static void test_depositor_output_reject_anchor_after_change(void **state) {
     (void) state;
     prepegin_depositor_outputs_t seen = {true, true};
-    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT));
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
     assert_seen(&seen, true, true);
 }
 
 static void test_depositor_output_reject_second_change(void **state) {
     (void) state;
     prepegin_depositor_outputs_t seen = {true, true};
-    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u));
-    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX));
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
     assert_seen(&seen, true, true);
 }
 
@@ -1111,7 +1112,7 @@ static void test_depositor_output_reject_below_dust_limit_in_every_state(void **
     for (size_t v = 0; v < sizeof(k_sub_dust_values) / sizeof(k_sub_dust_values[0]); v++) {
         for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
             prepegin_depositor_outputs_t seen = k_seen_states[s];
-            assert_false(prepegin_depositor_output_accept(&seen, k_sub_dust_values[v]));
+            assert_false(prepegin_depositor_output_accept(&seen, k_sub_dust_values[v], true));
             assert_seen(&seen, k_seen_states[s].anchor_seen, k_seen_states[s].change_seen);
         }
     }
@@ -1128,32 +1129,91 @@ static void test_depositor_output_reject_change_seen_without_anchor_seen(void **
                                UINT64_MAX};
     for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
         prepegin_depositor_outputs_t seen = {false, true};
-        assert_false(prepegin_depositor_output_accept(&seen, values[v]));
+        assert_false(prepegin_depositor_output_accept(&seen, values[v], true));
         assert_seen(&seen, false, true);
     }
 }
 
 static void test_depositor_output_state_only_moves_forward(void **state) {
     (void) state;
-    /* Whatever the value, an accepted output sets exactly one new flag and clears none; a
-     * rejected one changes nothing. */
+    /* Whatever the value and path policy, an accepted output sets exactly one new flag and
+     * clears none; a rejected one changes nothing; change is never set when it is not allowed. */
     const uint64_t values[] =
         {0, 1, VAULT_DUST_LIMIT - 1u, VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + 1u, UINT64_MAX};
-    for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
-        for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
-            const prepegin_depositor_outputs_t before = k_seen_states[s];
-            prepegin_depositor_outputs_t seen = before;
-            if (prepegin_depositor_output_accept(&seen, values[v])) {
-                assert_true(seen.anchor_seen >= before.anchor_seen);
-                assert_true(seen.change_seen >= before.change_seen);
-                assert_int_equal((seen.anchor_seen != before.anchor_seen) +
-                                     (seen.change_seen != before.change_seen),
-                                 1);
-            } else {
-                assert_seen(&seen, before.anchor_seen, before.change_seen);
+    const bool change_allowed_cases[] = {false, true};
+    for (size_t c = 0; c < sizeof(change_allowed_cases) / sizeof(change_allowed_cases[0]); c++) {
+        for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
+            for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+                const prepegin_depositor_outputs_t before = k_seen_states[s];
+                prepegin_depositor_outputs_t seen = before;
+                if (prepegin_depositor_output_accept(&seen, values[v], change_allowed_cases[c])) {
+                    assert_true(seen.anchor_seen >= before.anchor_seen);
+                    assert_true(seen.change_seen >= before.change_seen);
+                    assert_int_equal((seen.anchor_seen != before.anchor_seen) +
+                                         (seen.change_seen != before.change_seen),
+                                     1);
+                    if (!change_allowed_cases[c]) {
+                        assert_int_equal(seen.change_seen, before.change_seen);
+                    }
+                } else {
+                    assert_seen(&seen, before.anchor_seen, before.change_seen);
+                }
             }
         }
     }
+}
+
+static void test_depositor_output_reject_change_when_path_disallows_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, false));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, false));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_accept_anchor_when_path_disallows_change(void **state) {
+    (void) state;
+    /* The path restriction concerns change only; an anchor at any depositor path is kept. */
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, false));
+    assert_seen(&seen, true, false);
+}
+
+static void test_change_path_accept_first_receive_address(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5));
+    /* The account is the host's choice; only the position inside it is fixed. */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5));
+}
+
+static void test_change_path_reject_other_positions(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 1);
+    assert_false(prepegin_change_path_ok(path, 5)); /* second receive address */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 10000);
+    assert_false(prepegin_change_path_ok(path, 5)); /* last permitted address index */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 0);
+    assert_false(prepegin_change_path_ok(path, 5)); /* wallet change branch */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 1);
+    assert_false(prepegin_change_path_ok(path, 5));
+}
+
+static void test_change_path_reject_malformed_path(void **state) {
+    (void) state;
+    uint32_t path[6];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[5] = 0;
+    assert_false(prepegin_change_path_ok(path, 4)); /* too short */
+    assert_false(prepegin_change_path_ok(path, 6)); /* too long */
+    make_bip86_path(path, 84, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_false(prepegin_change_path_ok(path, 5)); /* not BIP-86 */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[2] &= ~0x80000000u;
+    assert_false(prepegin_change_path_ok(path, 5)); /* unhardened account */
 }
 
 static void test_depositor_output_sequence_accept_anchor_then_change(void **state) {
@@ -1288,6 +1348,11 @@ int main(void) {
         cmocka_unit_test(test_depositor_output_reject_below_dust_limit_in_every_state),
         cmocka_unit_test(test_depositor_output_reject_change_seen_without_anchor_seen),
         cmocka_unit_test(test_depositor_output_state_only_moves_forward),
+        cmocka_unit_test(test_depositor_output_reject_change_when_path_disallows_change),
+        cmocka_unit_test(test_depositor_output_accept_anchor_when_path_disallows_change),
+        cmocka_unit_test(test_change_path_accept_first_receive_address),
+        cmocka_unit_test(test_change_path_reject_other_positions),
+        cmocka_unit_test(test_change_path_reject_malformed_path),
         cmocka_unit_test(test_depositor_output_sequence_accept_anchor_then_change),
         cmocka_unit_test(test_depositor_output_sequence_reject_change_before_anchor),
         cmocka_unit_test(test_depositor_output_sequence_reject_repeats),

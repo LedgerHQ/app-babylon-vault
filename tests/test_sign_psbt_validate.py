@@ -676,6 +676,11 @@ def _assert_refused_unsigned(expected_sw: int, send: Callable[[], object]) -> No
     assert not yielded, f"device yielded {len(yielded)} value(s) before refusing: {yielded}"
 
 
+def _depositor_path_at(coin_type: int, depositor_index: int) -> List[int]:
+    """Depositor path m/86'/coin_type'/0'/0/depositor_index (index 0 is the dApp's address)."""
+    return depositor_path(coin_type)[:-1] + [depositor_index]
+
+
 def _build_intent_tlv_for_test(
     coin_type: int,
     prepegin_txid: bytes,
@@ -683,6 +688,7 @@ def _build_intent_tlv_for_test(
     challenger_pks: Optional[List[bytes]] = None,
     prepegin_max_fee: int = _PREPEGIN_MAX_FEE,
     base_fee_rate: int = _BASE_FEE_RATE,
+    depositor_index: int = 0,
 ) -> bytes:
     if keeper_pks is None:
         keeper_pks = _TEST_KEEPER_PKS
@@ -695,7 +701,7 @@ def _build_intent_tlv_for_test(
         payout_timelock=_PAYOUT_TIMELOCK,
         prepegin_txid=prepegin_txid,
         htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
-        depositor_path=depositor_path(coin_type),
+        depositor_path=_depositor_path_at(coin_type, depositor_index),
         keeper_count=len(keeper_pks),
         challenger_count=len(challenger_pks),
         prepegin_max_fee=prepegin_max_fee,
@@ -856,10 +862,12 @@ _DERIVE_CONTEXT = bytes(range(72))  # fixed non-empty vaultContext-shaped blob
 _DERIVED_ROOT: bytes = b""
 
 
-def _derive_root_and_hashlock(client: "RaggerClient", navigator: "Navigator", device, coin_type: int) -> bytes:
+def _derive_root_and_hashlock(client: "RaggerClient", navigator: "Navigator", device, coin_type: int,
+                              depositor_index: int = 0) -> bytes:
     """Run DERIVE_CONTEXT_HASH, stash the root, and return the per-vault hashlock h."""
     global _DERIVED_ROOT
-    _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME, depositor_path(coin_type),
+    _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME,
+                                        _depositor_path_at(coin_type, depositor_index),
                                         _DERIVE_CONTEXT, navigator, device)
     return vault_hashlock(_DERIVED_ROOT, _HTLC_VOUT)
 
@@ -2287,6 +2295,7 @@ def _prepegin_bound_to_intent(
     foreign_outputs: Sequence[CTxOut] = (),
     internal_change_value: Optional[int] = None,
     extra_fee: int = 0,
+    depositor_index: int = 0,
 ):
     """Build a Pre-PegIn, then approve the intent committed to its txid.  Returns (psbt, wallet).
 
@@ -2299,11 +2308,18 @@ def _prepegin_bound_to_intent(
     Binding the txid is what lets a rejection be attributed to output validation: an intent
     committed to any other txid rejects the PSBT whatever its outputs are.  extra_fee only
     grows the input's value, which the txid does not cover, so the binding stays valid.
+
+    The depositor is m/86'/coin'/0'/0/depositor_index; index 0 is the address the dApp shows.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
-    dep_pk = _depositor_pk(bitcoin_network)
+    if depositor_index == 0:
+        dep_pk = _depositor_pk(bitcoin_network)
+    else:
+        dep_pk = ExtendedKey.deserialize(
+            client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/{depositor_index}", display=False)
+        ).pubkey[1:]
 
-    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type, depositor_index)
     _, _, _, _, htlc_spk = _htlc_output(
         dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
         _HTLC_REFUND_TIMELOCK, hashlock,
@@ -2348,7 +2364,8 @@ def _prepegin_bound_to_intent(
     )
 
     scalars_tlv = _build_intent_tlv_for_test(
-        coin_type, _hash256(psbt.tx.serialize_without_witness())
+        coin_type, _hash256(psbt.tx.serialize_without_witness()),
+        depositor_index=depositor_index,
     )
     approve_vault_intent_with_nav(
         client, navigator, device,
@@ -2561,6 +2578,41 @@ def test_sign_psbt_prepegin_depositor_change_fee_cap(
     fee = psbt.inputs[0].witness_utxo.nValue - sum(out.nValue for out in psbt.tx.vout)
     assert fee == _PREPEGIN_MAX_FEE + fee_over_cap
 
+    if accepted:
+        result = client.sign_psbt(psbt, wallet, None)
+
+        assert len(result) == 1
+        input_index, partial_sig = result[0]
+        assert input_index == 0
+        assert len(partial_sig.signature) == 64
+    else:
+        with pytest.raises(ExceptionRAPDU) as exc:
+            client.sign_psbt(psbt, wallet, None)
+        assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.parametrize("depositor_values, accepted", [
+    pytest.param([_VAULT_DUST_LIMIT], True, id="anchor_only_accepted"),
+    pytest.param([_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False, id="change_rejected"),
+])
+def test_sign_psbt_prepegin_change_needs_first_receive_address(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    depositor_values: List[int],
+    accepted: bool,
+) -> None:
+    """Pre-PegIn change is accepted only when the depositor is m/86'/coin'/account'/0/0.
+
+    The depositor path is the host's choice and is not shown on the device, so change to
+    any other address of the depositor (here /0/1) would land where a wallet does not look.
+    The anchor is not affected by the path.
+    """
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=depositor_values, depositor_index=1,
+    )
     if accepted:
         result = client.sign_psbt(psbt, wallet, None)
 
