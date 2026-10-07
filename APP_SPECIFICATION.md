@@ -281,9 +281,8 @@ The depositor creates one or more HTLC outputs (one per vault group) that lock B
   - at most one CPFP anchor, value exactly `VAULT_DUST_LIMIT` (546 sat);
   - after the anchor, at most one change output, value above `VAULT_DUST_LIMIT`;
   - a change output with no preceding anchor, a second anchor, and a depositor output below `VAULT_DUST_LIMIT` are rejected.
-- No other output is accepted. In particular, change on the wallet policy's change branch (`…/1/*`), accepted before 0.11.0, is rejected. The base app treats receive-branch outputs (`…/0/*`) as external, which is why change to the depositor's own address is matched by script above instead
-
-Accepted layout: `[HTLC…, OP_RETURN?, anchor, change?]`. The anchor and the change share one scriptPubKey, so the order is what lets a reader of the transaction tell them apart.
+- No other output is accepted. In particular, change on the wallet policy's change branch (`…/1/*`), accepted before 0.11.0, is rejected. The base app treats receive-branch outputs (`…/0/*`) as external, which is why change to the depositor's own address is matched by script above instead.
+- Ordering: the device enforces that every non-HTLC output follows all HTLC outputs and that the change follows the anchor. The anchor and the change share one scriptPubKey, so that order is what lets a reader of the transaction tell them apart. The device does not order the auth-anchor OP_RETURN against the depositor outputs; the canonical layout, which btc-vault builds and reads, is `[HTLC…, OP_RETURN?, anchor, change?]`.
 - Sighash: `SIGHASH_ALL` or `SIGHASH_DEFAULT`; version ≥ 2; locktime = 0
 - Fee: `total_inputs − total_outputs ≤ prepegin_max_fee`
 

@@ -8,6 +8,7 @@
  *   parse_claim_leaf_script       — Claim/Reclaim leaf script shape checker
  *   reclaim_sequence_ok           — Reclaim Input 0 nSequence rule
  *   reclaim_fee_ok                — Reclaim fee arithmetic (checked subtraction)
+ *   prepegin_depositor_output_accept — Pre-PegIn CPFP anchor / depositor change classification
  *
  * Tests verify both acceptance of valid inputs and rejection of every
  * distinct invalid shape. BIP44_COIN_TYPE=1 is set via CMake compile def.
@@ -1021,6 +1022,167 @@ static void test_reclaim_fee_reject_no_wraparound(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
+ * prepegin_depositor_output_accept
+ * ------------------------------------------------------------------------- */
+
+/* Every (anchor_seen, change_seen) combination, including the unreachable one. */
+static const prepegin_depositor_outputs_t k_seen_states[] = {
+    {false, false},
+    {true, false},
+    {true, true},
+    {false, true},
+};
+
+/* Values strictly below the anchor value, which can never be accepted. */
+static const uint64_t k_sub_dust_values[] = {0, 1, VAULT_DUST_LIMIT - 1u};
+
+static void assert_seen(const prepegin_depositor_outputs_t *seen,
+                        bool anchor_seen,
+                        bool change_seen) {
+    assert_int_equal(seen->anchor_seen, anchor_seen);
+    assert_int_equal(seen->change_seen, change_seen);
+}
+
+/* Feed outputs in order through the helper; returns false at the first rejected output. */
+static bool accept_depositor_outputs(const uint64_t *values, size_t n_values) {
+    prepegin_depositor_outputs_t seen = {false, false};
+    for (size_t i = 0; i < n_values; i++) {
+        if (!prepegin_depositor_output_accept(&seen, values[i])) return false;
+    }
+    return true;
+}
+
+static void test_depositor_output_accept_anchor_at_dust_limit(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_accept_change_just_above_dust_limit(void **state) {
+    (void) state;
+    /* 547 sat is the smallest change; it is distinguished from the anchor by value alone. */
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_accept_change_max_value(void **state) {
+    (void) state;
+    /* No upper bound on change here: the transaction's fee bound is enforced separately. */
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_true(prepegin_depositor_output_accept(&seen, UINT64_MAX));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_change_without_anchor(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX));
+    assert_seen(&seen, false, false);
+}
+
+static void test_depositor_output_reject_second_anchor(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_reject_anchor_after_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, true};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_second_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, true};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_below_dust_limit_in_every_state(void **state) {
+    (void) state;
+    /* 545 is the boundary just under the anchor value; 0 is the other extreme. */
+    for (size_t v = 0; v < sizeof(k_sub_dust_values) / sizeof(k_sub_dust_values[0]); v++) {
+        for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
+            prepegin_depositor_outputs_t seen = k_seen_states[s];
+            assert_false(prepegin_depositor_output_accept(&seen, k_sub_dust_values[v]));
+            assert_seen(&seen, k_seen_states[s].anchor_seen, k_seen_states[s].change_seen);
+        }
+    }
+}
+
+static void test_depositor_output_reject_change_seen_without_anchor_seen(void **state) {
+    (void) state;
+    /* Unreachable for a caller that updates the state only through the helper; refused for
+     * every value, including the anchor value that would otherwise be accepted here. */
+    const uint64_t values[] = {0,
+                               VAULT_DUST_LIMIT - 1u,
+                               VAULT_DUST_LIMIT,
+                               VAULT_DUST_LIMIT + 1u,
+                               UINT64_MAX};
+    for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+        prepegin_depositor_outputs_t seen = {false, true};
+        assert_false(prepegin_depositor_output_accept(&seen, values[v]));
+        assert_seen(&seen, false, true);
+    }
+}
+
+static void test_depositor_output_state_only_moves_forward(void **state) {
+    (void) state;
+    /* Whatever the value, an accepted output sets exactly one new flag and clears none; a
+     * rejected one changes nothing. */
+    const uint64_t values[] =
+        {0, 1, VAULT_DUST_LIMIT - 1u, VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + 1u, UINT64_MAX};
+    for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
+        for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+            const prepegin_depositor_outputs_t before = k_seen_states[s];
+            prepegin_depositor_outputs_t seen = before;
+            if (prepegin_depositor_output_accept(&seen, values[v])) {
+                assert_true(seen.anchor_seen >= before.anchor_seen);
+                assert_true(seen.change_seen >= before.change_seen);
+                assert_int_equal((seen.anchor_seen != before.anchor_seen) +
+                                     (seen.change_seen != before.change_seen),
+                                 1);
+            } else {
+                assert_seen(&seen, before.anchor_seen, before.change_seen);
+            }
+        }
+    }
+}
+
+static void test_depositor_output_sequence_accept_anchor_then_change(void **state) {
+    (void) state;
+    const uint64_t anchor_only[] = {VAULT_DUST_LIMIT};
+    const uint64_t anchor_then_change[] = {VAULT_DUST_LIMIT, 1000000u};
+    assert_true(accept_depositor_outputs(anchor_only, 1));
+    assert_true(accept_depositor_outputs(anchor_then_change, 2));
+}
+
+static void test_depositor_output_sequence_reject_change_before_anchor(void **state) {
+    (void) state;
+    const uint64_t change_only[] = {1000000u};
+    const uint64_t change_then_anchor[] = {1000000u, VAULT_DUST_LIMIT};
+    assert_false(accept_depositor_outputs(change_only, 1));
+    assert_false(accept_depositor_outputs(change_then_anchor, 2));
+}
+
+static void test_depositor_output_sequence_reject_repeats(void **state) {
+    (void) state;
+    const uint64_t two_anchors[] = {VAULT_DUST_LIMIT, VAULT_DUST_LIMIT};
+    const uint64_t anchor_change_anchor[] = {VAULT_DUST_LIMIT, 1000000u, VAULT_DUST_LIMIT};
+    const uint64_t two_changes[] = {VAULT_DUST_LIMIT, 1000000u, 2000000u};
+    assert_false(accept_depositor_outputs(two_anchors, 2));
+    assert_false(accept_depositor_outputs(anchor_change_anchor, 3));
+    assert_false(accept_depositor_outputs(two_changes, 3));
+}
+
+/* ---------------------------------------------------------------------------
  * Test runner
  * ------------------------------------------------------------------------- */
 
@@ -1114,6 +1276,21 @@ int main(void) {
         cmocka_unit_test(test_reclaim_fee_reject_zero),
         cmocka_unit_test(test_reclaim_fee_reject_output_exceeds_input),
         cmocka_unit_test(test_reclaim_fee_reject_no_wraparound),
+
+        /* prepegin_depositor_output_accept */
+        cmocka_unit_test(test_depositor_output_accept_anchor_at_dust_limit),
+        cmocka_unit_test(test_depositor_output_accept_change_just_above_dust_limit),
+        cmocka_unit_test(test_depositor_output_accept_change_max_value),
+        cmocka_unit_test(test_depositor_output_reject_change_without_anchor),
+        cmocka_unit_test(test_depositor_output_reject_second_anchor),
+        cmocka_unit_test(test_depositor_output_reject_anchor_after_change),
+        cmocka_unit_test(test_depositor_output_reject_second_change),
+        cmocka_unit_test(test_depositor_output_reject_below_dust_limit_in_every_state),
+        cmocka_unit_test(test_depositor_output_reject_change_seen_without_anchor_seen),
+        cmocka_unit_test(test_depositor_output_state_only_moves_forward),
+        cmocka_unit_test(test_depositor_output_sequence_accept_anchor_then_change),
+        cmocka_unit_test(test_depositor_output_sequence_reject_change_before_anchor),
+        cmocka_unit_test(test_depositor_output_sequence_reject_repeats),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

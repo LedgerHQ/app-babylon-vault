@@ -251,3 +251,19 @@ bool reclaim_fee_ok(uint64_t in_value, uint64_t out_value, uint64_t *fee_out) {
     *fee_out = in_value - out_value;
     return true;
 }
+
+bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen, uint64_t value) {
+    if (seen->change_seen && !seen->anchor_seen) return false;
+
+    if (value == VAULT_DUST_LIMIT) {
+        if (seen->anchor_seen) return false;
+        seen->anchor_seen = true;
+        return true;
+    }
+    if (value > VAULT_DUST_LIMIT) {
+        if (!seen->anchor_seen || seen->change_seen) return false;
+        seen->change_seen = true;
+        return true;
+    }
+    return false;
+}

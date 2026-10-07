@@ -656,8 +656,7 @@ static bool _validate_prepegin(
     const unsigned int max_htlc_vout = intent->groups[intent->vault_count - 1].htlc_vout;
 
     bool anchor_found = false;
-    bool cpfp_anchor_found = false;
-    bool depositor_change_found = false;
+    prepegin_depositor_outputs_t depositor_outputs = {false, false};
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         bool is_htlc_output = false;
         for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
@@ -691,21 +690,7 @@ static bool _validate_prepegin(
             }
             anchor_found = true;
         } else if (memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
-            if (out_value == VAULT_DUST_LIMIT) {
-                /* CPFP anchor: at most one. */
-                if (cpfp_anchor_found) {
-                    SEND_SW(dc, SW_INCORRECT_DATA);
-                    return false;
-                }
-                cpfp_anchor_found = true;
-            } else if (out_value > VAULT_DUST_LIMIT) {
-                /* Depositor change: at most one, and only once the anchor has been seen. */
-                if (!cpfp_anchor_found || depositor_change_found) {
-                    SEND_SW(dc, SW_INCORRECT_DATA);
-                    return false;
-                }
-                depositor_change_found = true;
-            } else {
+            if (!prepegin_depositor_output_accept(&depositor_outputs, out_value)) {
                 SEND_SW(dc, SW_INCORRECT_DATA);
                 return false;
             }
@@ -717,8 +702,6 @@ static bool _validate_prepegin(
     /* Every optional output is enforced at-most-once within the loop; their final
      * values are intentionally not checked — none is mandatory. */
     (void) anchor_found;
-    (void) cpfp_anchor_found;
-    (void) depositor_change_found;
 
     if (st->outputs.total_amount > st->inputs_total_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);

@@ -99,3 +99,30 @@ bool reclaim_sequence_ok(bool present, uint32_t seq);
  * zero-fee case and the case that would otherwise underflow the subtraction.
  */
 bool reclaim_fee_ok(uint64_t in_value, uint64_t out_value, uint64_t *fee_out);
+
+/**
+ * The optional Pre-PegIn outputs paying P2TR(depositor_pk) accepted so far.  Zero-initialise
+ * before the first output and update only through prepegin_depositor_output_accept.
+ */
+typedef struct {
+    bool anchor_seen;
+    bool change_seen;
+} prepegin_depositor_outputs_t;
+
+/**
+ * Accept a Pre-PegIn output whose scriptPubKey is already known to be P2TR(depositor_pk), and
+ * record it in `seen`:
+ *
+ *   value == VAULT_DUST_LIMIT  CPFP anchor; at most one.
+ *   value  > VAULT_DUST_LIMIT  depositor change; at most one, and only once the anchor has
+ *                              been seen.
+ *   value  < VAULT_DUST_LIMIT  rejected.
+ *
+ * The anchor and the change share one scriptPubKey, so the anchor-first order is the only way
+ * for a reader of the transaction to tell them apart.
+ *
+ * Returns false, leaving `seen` unchanged, for any output that is not acceptable in the given
+ * state.  change_seen without anchor_seen cannot arise from a caller that updates `seen` only
+ * through this function, and is rejected for every value.
+ */
+bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen, uint64_t value);
