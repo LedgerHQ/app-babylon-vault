@@ -2547,7 +2547,8 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
 
     /* Reclaim is the first accepted pattern with an RBF sequence — see RECLAIM_SEQUENCE.
      * reclaim_sequence_ok requires the field present: an absent PSBT_IN_SEQUENCE decodes as
-     * SEQUENCE_FINAL, which the screen would then mis-describe as non-replaceable. */
+     * SEQUENCE_FINAL, which is not replaceable, so defaulting it would sign a transaction
+     * outside the specified RBF shape. */
     {
         uint32_t seq = 0;
         psbt_field_status_t status = psbt_get_input_sequence(dc, &input_map, &seq);

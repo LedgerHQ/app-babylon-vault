@@ -456,7 +456,7 @@ Required wallet policy: **none** (`has_no_wallet_policy == true`).
 | Input 0 `PSBT_IN_TAP_BIP32_DERIVATION` for `<D>` | **Required.** Fingerprint must match this device's master key; path must be BIP-86; the derived x-only key must equal `<D>` |
 | Output 0 | BIP-86 key-path P2TR (internal key tweaked with the empty script tree) |
 | Output 0 `PSBT_OUT_TAP_BIP32_DERIVATION` | **Required.** Keyed by the **output key** — the 32 bytes of the scriptPubKey — not the internal key. The value's fingerprint must match this device and its BIP-86 path must derive the internal key. It need not be `<D>`'s path. Same rule as Refund |
-| Fee | Input value − output value, strictly positive |
+| Fee | Input value − output value, strictly positive. An output value above the input value is refused by the base app before the vault validator runs; the vault's checked fee arithmetic is pinned by unit tests |
 
 The device derives the signing key from the BIP-86 path in `PSBT_IN_TAP_BIP32_DERIVATION`,
 verifies the derived x-only key matches `<D>`, then signs Input 0 over the leaf.

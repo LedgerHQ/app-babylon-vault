@@ -627,11 +627,52 @@ def capture_status_screen(navigator: "Navigator") -> Iterator[None]:
         raise RuntimeError(
             f"{type(backend).__name__} has no _check_async_error: the status-screen "
             "capture must be revisited for this Ragger version")
+    outer = vars(backend).get("_check_async_error")
     backend._check_async_error = lambda: None  # pylint: disable=protected-access
     try:
         yield
     finally:
-        del backend._check_async_error
+        if outer is None:
+            del backend._check_async_error
+        else:
+            backend._check_async_error = outer  # pylint: disable=protected-access
+
+
+@contextmanager
+def record_screen_text(navigator: "Navigator") -> Iterator[List[List[str]]]:
+    """Record the on-screen text of every page the navigator compares against a golden.
+
+    Yields a list that fills with one entry per comparison: the text of each event on the
+    screen at that moment.  It lets a golden-driven review also assert what the screens
+    say, in the same run, so a snapshot generated with a wrong value cannot pass unnoticed.
+
+    A retried comparison records its page again; callers should look for text, not count
+    pages.  Wraps SpeculosBackend.compare_screen_with_snapshot and fails if the backend
+    has no such method.
+    """
+    backend = navigator._backend  # pylint: disable=protected-access
+    compare = getattr(backend, "compare_screen_with_snapshot", None)
+    if not callable(compare):
+        raise RuntimeError(
+            f"{type(backend).__name__} has no compare_screen_with_snapshot: the screen-text "
+            "recorder must be revisited for this Ragger version")
+    pages: List[List[str]] = []
+
+    def recording(*args, **kwargs):
+        result = compare(*args, **kwargs)
+        events = backend.get_current_screen_content()["events"]
+        pages.append([event.get("text", "") for event in events])
+        return result
+
+    outer = vars(backend).get("compare_screen_with_snapshot")
+    backend.compare_screen_with_snapshot = recording
+    try:
+        yield pages
+    finally:
+        if outer is None:
+            del backend.compare_screen_with_snapshot
+        else:
+            backend.compare_screen_with_snapshot = outer
 
 
 # ---------------------------------------------------------------------------
