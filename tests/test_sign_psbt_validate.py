@@ -1,5 +1,5 @@
 """
-Silent-flow validation tests for SIGN_PSBT (NAPPS-1375/1376/1462/1481/1482).
+Silent-flow validation tests for SIGN_PSBT (NAPPS-1375/1376/1462/1481).
 
 Covers Pre-PegIn, PegIn, Payout, NoPayout, Refund, and Reclaim validation (no display).
 Screen-capture tests live in the corresponding test_screen*.py files:
@@ -1687,7 +1687,7 @@ def test_sign_psbt_refund_nonzero_locktime(
 
 
 # ===========================================================================
-# Reclaim transaction validation (NAPPS-1481/1482, Screen 9)
+# Reclaim transaction validation (NAPPS-1481, Screen 9)
 #
 # Reclaim shares its leaf shape byte-for-byte with Claim (<D> OP_CHECKSIG, 34 bytes);
 # the dispatcher tells them apart by output count alone (2 outputs -> Claim, 1 -> Reclaim).
@@ -1791,9 +1791,9 @@ def _standard_reclaim_psbt(client: "RaggerClient", bitcoin_network: str, **overr
 def _add_foreign_p2tr_input(psbt: PSBT, value: int, tag: int) -> None:
     """Append a well-formed external P2TR input.
 
-    It carries a WITNESS_UTXO so the base app's input preprocessing accepts it; an input
-    with neither UTXO field is refused there, before any vault validator runs, and a test
-    built on one would not reach the gate it is named after.
+    It carries a WITNESS_UTXO because the base app refuses an input with neither UTXO
+    field during input preprocessing, so a test built on one would never reach the vault
+    validator it targets.
     """
     txin = CTxIn()
     txin.prevout = COutPoint(int.from_bytes(bytes([tag]) * 32, 'little'), 0)
@@ -1845,13 +1845,20 @@ def test_sign_psbt_reclaim_dispatch_wrong_leaf_shape(
 # Validator: rejection matrix.  Each PSBT differs from a signable Reclaim in one rule.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("version", [1, 0])
 def test_sign_psbt_reclaim_wrong_version(
     client: "RaggerClient",
     bitcoin_network: str,
+    version: int,
 ) -> None:
-    """Reclaim fails when nVersion < 2."""
+    """Reclaim fails when nVersion < 2.
+
+    Version 1 is refused by Reclaim's own version rule.  Version 0 is the Proof-of-Possession
+    discriminator, so it is routed to the PoP validator and refused on its shape rules; the
+    test asserts that a version-0 Reclaim-shaped PSBT is never signed.
+    """
     psbt = _standard_reclaim_psbt(client, bitcoin_network)
-    psbt.tx.nVersion = 1
+    psbt.tx.nVersion = version
     _assert_reclaim_refused(client, psbt)
 
 

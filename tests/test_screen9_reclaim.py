@@ -249,8 +249,8 @@ def test_reclaim_leaves_pegin_slot_unspent(
 # what shows it, and not Reclaim's validator, made the call.
 # ===========================================================================
 
-# Output 0 value leaving the added outputs inside the input value: a PSBT whose outputs
-# exceed its inputs is refused by the base app before any vault validator runs.
+# Output 0 value that leaves room for added outputs: the base app refuses a PSBT whose
+# outputs exceed its inputs, so one that did would never reach the validator under test.
 _ROOM_FOR_OUTPUTS = 1_000_000
 
 def test_reclaim_two_inputs_rejected_by_payout_gate(
