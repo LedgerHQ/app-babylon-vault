@@ -348,7 +348,9 @@ actionable.
 Both fingerprints are check values, not authenticators. At 32 bits a hostile host can grind
 an intent with a colliding fingerprint in about 2³² hashes, so a match tells the host that
 the device holds an intent with that fingerprint, not that it holds the host's own. The
-device is unaffected: it signs only within the intent the user approved on screen.
+device is unaffected: it signs only within the intent the user approved on screen. A host
+should therefore treat a match as a hint to resume, never as proof: what keeps signing bound
+to the approved intent is the device's validation of each PSBT, not the fingerprint.
 
 Signature counters are deliberately not returned (ADR-001 Option 3). The session also
 survives a transport disconnection on battery-powered devices, a pending divergence from

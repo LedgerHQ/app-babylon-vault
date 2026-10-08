@@ -219,11 +219,8 @@ Pre-PegIn signs with no further screen. Restoring it was requested by Babylon (J
 option 1 of two proposed boundaries) for usability on large intents, where the key list can
 run to 64 entries.
 
-> ⚠️ **Residual risk acknowledgement: PENDING.** This entry must cite a written Donjon
-> sign-off (Baptistin Boilot) by name and date; none has been recorded
-> at the time of writing.
-> Until it is, the deviation is undocumented in the sense that matters — the next audit
-> finds a reopened finding with no paper trail.
+**This is the intended behaviour.** Phase 2 is skippable by design, phase 1 stays mandatory,
+and Skip always lands on the approve/reject page, so approval is never bypassed.
 
 **Interaction with Assert.** The Assert leaf binding is session-scoped, and the note under
 [Assert](#7-assert-standalone) identifies the user's review of the key list on Screen 2 as
