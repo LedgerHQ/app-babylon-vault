@@ -434,16 +434,20 @@ reclaim address. User must approve.
 ## Flow C — Reclaim Reserve
 
 Reclaim is a standalone flow that sweeps the depositor claim reserve — PegIn Output 1 — back to
-a BIP-86 address of the depositor once the vault is redeemed. It spends the same
+the depositor's own address, BIP-86 P2TR(`<D>`), once the vault is redeemed. It spends the same
 `<D> OP_CHECKSIG` leaf as Claim; the device tells the two apart by output count alone: 1 output
 is Reclaim, 2 is Claim, anything else is rejected.
 
 Accepted in states: `IDLE`, `HASH_DERIVED`, `INTENT_LOADED`.  
 Required wallet policy: **none** (`has_no_wallet_policy == true`).
 
-> **`TAP_BIP32_DERIVATION` is mandatory on both Input 0 and Output 0.** The input entry is how
-> the device proves `<D>` is its own key; the output entry is how it proves the sweep pays the
-> depositor. A PSBT missing either is rejected with `SW_INCORRECT_DATA` — there is no fallback.
+> **`TAP_BIP32_DERIVATION` is mandatory on Input 0; Output 0 needs none.** The input entry is
+> how the device proves `<D>` is its own key; a PSBT without it is rejected with
+> `SW_INCORRECT_DATA` — there is no fallback. Output 0 must pay P2TR(`<D>`) itself, so the
+> reclaim goes to the address the dApp shows for the depositor. Any other address is rejected,
+> including another address of the same wallet: the host would choose its path, the device never
+> shows it, and funds sent there would sit where no wallet scans. To end up elsewhere, move the
+> funds after the reclaim.
 
 #### PSBT requirements
 
@@ -459,8 +463,8 @@ Required wallet policy: **none** (`has_no_wallet_policy == true`).
 | Input 0 `PSBT_IN_TAP_LEAF_SCRIPT` | Exactly one entry: `OP_PUSHBYTES_32 <D> OP_CHECKSIG` (34 bytes), leaf version `0xC0` |
 | Control block | Exactly 33 bytes: `0xC0 \| parity` ‖ `VAULT_NUMS_XONLY`. PegIn Output 1 is a single-leaf tree, so there are no siblings; the commitment must match the Input 0 scriptPubKey |
 | Input 0 `PSBT_IN_TAP_BIP32_DERIVATION` for `<D>` | **Required.** Fingerprint must match this device's master key; path must be BIP-86; the derived x-only key must equal `<D>` |
-| Output 0 | BIP-86 key-path P2TR (internal key tweaked with the empty script tree) |
-| Output 0 `PSBT_OUT_TAP_BIP32_DERIVATION` | **Required.** Keyed by the **output key** — the 32 bytes of the scriptPubKey — not the internal key. The value's fingerprint must match this device and its BIP-86 path must derive the internal key. It need not be `<D>`'s path. Same rule as Refund |
+| Output 0 | BIP-86 key-path P2TR of `<D>` (`<D>` tweaked with the empty script tree). Same rule as Claim's Output 1, WC's Output 0 and PayoutFinalize's outputs |
+| Output 0 `PSBT_OUT_TAP_BIP32_DERIVATION` | Not read. May be omitted; if present it changes nothing |
 | Fee | Input value − output value, strictly positive. An output value above the input value is refused by the base app before the vault validator runs; the vault's checked fee arithmetic is pinned by unit tests |
 
 The device derives the signing key from the BIP-86 path in `PSBT_IN_TAP_BIP32_DERIVATION`,

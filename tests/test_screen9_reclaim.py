@@ -1,7 +1,7 @@
 """Screen 9 — Reclaim: goldens, signing, cross-flow collisions and session states.
 
 Reclaim is a standalone SIGN_PSBT flow: the depositor sweeps the claim reserve (PegIn
-Output 1) back to a BIP-86 address of their own.  Screen 9 is a consent screen — the
+Output 1) back to their own address, P2TR(D).  Screen 9 is a consent screen — the
 device proves where the funds go, not that the vault is redeemed — so its intro states
 the risk before the amount, fee, address and PegIn txid are shown.
 
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
@@ -30,7 +30,7 @@ import pytest
 from ledgered.devices import Device
 from ragger.navigator import Navigator
 
-from ledger_bitcoin.key import ExtendedKey
+from ledger_bitcoin.key import ExtendedKey, KeyOriginInfo
 from ledger_bitcoin.psbt import PSBT
 
 from test_utils import segwit_addr
@@ -55,8 +55,10 @@ from .instructions import (
 from .test_get_vault_state import _NOTHING_HELD, _approve_prepegin_intent, _derive_silent
 from .test_screen6_wc import _build_wc_psbt
 from .test_sign_psbt_validate import (
+    HARDENED,
     VAULT_DUST_LIMIT,
     _PREPEGIN_TXID,
+    _RECLAIM_D_INDEX,
     _NoWalletPolicy,
     _add_foreign_p2tr_input,
     _add_p2tr_output,
@@ -65,6 +67,7 @@ from .test_sign_psbt_validate import (
     _assert_single_schnorr_sig,
     _bip86_p2tr_spk,
     _build_pegin_psbt,
+    _build_reclaim_psbt,
     _depositor_pk,
     _reclaim_keys,
     _setup_s2_state,
@@ -121,15 +124,17 @@ def _assert_review_shows(pages: List[List[str]], expected: Dict[str, str]) -> No
 
 
 def _approve_and_verify_reclaim(client: "RaggerClient", navigator: Navigator, device: Device,
-                                bitcoin_network: str) -> None:
-    """Sign the standard Reclaim through Screen 9, verify the signature under D and
-    that the screens show the PSBT's values.
+                                bitcoin_network: str, psbt: Optional[PSBT] = None) -> None:
+    """Sign the standard Reclaim (or `psbt`) through Screen 9, verify the signature under D
+    and that the screens show the PSBT's values.
 
     Every caller compares against the same goldens, so a Reclaim signed from any session
-    state must also have shown exactly the same screens.
+    state, or with any PSBT that differs only off-screen, must also have shown exactly the
+    same screens.
     """
-    _, leaf_key, _, _ = _reclaim_keys(client, bitcoin_network)
-    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    _, leaf_key, _ = _reclaim_keys(client, bitcoin_network)
+    if psbt is None:
+        psbt = _standard_reclaim_psbt(client, bitcoin_network)
     with record_screen_text(navigator) as pages:
         result = _sign_reclaim_with_nav(client, navigator, device, psbt,
                                         "screen9_reclaim/screen_" + bitcoin_network,
@@ -173,6 +178,36 @@ def test_reject_reclaim_screen(
                                        "screen9_reclaim/reject_" + bitcoin_network,
                                        approve=False),
     )
+
+
+@pytest.mark.parametrize("derivation", ["foreign_fingerprint", "non_bip86_path"])
+def test_reclaim_output_derivation_is_not_read(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    derivation: str,
+) -> None:
+    """Reclaim signs through the same Screen 9 whatever TAP_BIP32_DERIVATION Output 0 carries.
+
+    Output 0 is pinned to P2TR(D) and D is proven by Input 0's own entry, so the device
+    reads no derivation for the output: a foreign fingerprint or a non-BIP-86 path on it
+    changes neither the screens nor the signature.  The plain approval above is the case
+    with no entry at all.
+    """
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    if derivation == "foreign_fingerprint":
+        origin = KeyOriginInfo(
+            b'\xff\xff\xff\xff',
+            [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, _RECLAIM_D_INDEX],
+        )
+    else:
+        origin = KeyOriginInfo(
+            fingerprint,
+            [HARDENED | 44, HARDENED | coin_type, HARDENED | 0, 0, _RECLAIM_D_INDEX],
+        )
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type, out_origin=origin)
+    _approve_and_verify_reclaim(client, navigator, device, bitcoin_network, psbt)
 
 
 # ===========================================================================
@@ -305,7 +340,7 @@ def test_reclaim_two_outputs_rejected_by_claim(
     Claim-shaped except for Reclaim's RBF sequence, which Claim's SEQUENCE_FINAL rule
     refuses.
     """
-    _, leaf_key, _, _ = _reclaim_keys(client, bitcoin_network)
+    _, leaf_key, _ = _reclaim_keys(client, bitcoin_network)
     psbt = _standard_reclaim_psbt(client, bitcoin_network)
     _add_p2tr_output(psbt, VAULT_DUST_LIMIT, _bip86_p2tr_spk(leaf_key))
     _assert_reclaim_refused(client, psbt)

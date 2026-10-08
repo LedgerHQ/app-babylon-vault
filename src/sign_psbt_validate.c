@@ -1569,6 +1569,15 @@ static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
     return true;
 }
 
+/* True iff spk is exactly the BIP-86 key-path-only P2TR scriptPubKey of xonly_key.  Used for
+ * every output the device pins to the depositor's own key D, so the check is never open-coded. */
+static bool _spk_is_bip86_p2tr_of(const uint8_t spk[VAULT_P2TR_SCRIPTPUBKEY_LEN],
+                                  const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN]) {
+    uint8_t expected[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    return _bip86_p2tr_spk(xonly_key, expected) &&
+           memcmp(spk, expected, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0;
+}
+
 /*
  * Identify the Payout claimer from Input 1's PSBT_IN_TAP_LEAF_SCRIPT.
  *
@@ -2388,7 +2397,6 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     /* Verify D key via BIP-32 derivation path in Input 0.
      * G_scratch.tls is consumed above; use G_scratch.sign_standalone for the large
      * buffers (xpub 78 B, deriv_val 89 B) to keep them off the call stack. */
-    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN]; /* BIP-86 P2TR(D) for output check */
     {
         G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
         memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
@@ -2426,11 +2434,6 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        uint8_t bip86_parity;
-        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
     }
 
     /* Output 1: value == VAULT_DUST_LIMIT, script == BIP-86 P2TR(D) */
@@ -2445,8 +2448,7 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out_spk[0] != OP_1 || out_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (!_spk_is_bip86_p2tr_of(out_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2511,13 +2513,12 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
  * Precondition: G_scratch.tls is populated by the leaf-based dispatcher.
  * Input 0: PegIn Output 1 (depositor claim reserve) — leaf <D> OP_CHECKSIG, byte-identical
  * to Claim; the dispatcher tells the two apart by output count alone.
- * Output 0: a BIP-86 address proven to belong to this device, the same latitude Refund
- * gives its own output — not required to equal <D> itself.
+ * Output 0: BIP-86 P2TR(<D>), the depositor's own address, as in Claim, WC and PayoutFinalize.
  *
  * No intent is loaded for this flow, so the device cannot tell whether PegIn Output 0 has
  * already been spent and cannot bind an expected PegIn txid or bound how early the sweep
  * happens.  Screen 9 carries that risk to the user; this validator only proves the funds
- * go to a key the device itself derived.
+ * go to the depositor's own key.
  * ---------------------------------------------------------------------- */
 
 static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_t *st) {
@@ -2645,8 +2646,9 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
         }
     }
 
-    /* Output 0: BIP-86 key-path P2TR, proven by its own TAP_BIP32_DERIVATION — reused
-     * from Refund unchanged; the output need not equal the input's D. */
+    /* Output 0: BIP-86 P2TR(D), the depositor's own address.  The host supplies no path for
+     * it, so no PSBT_OUT_TAP_BIP32_DERIVATION is read: any other BIP-86 address of this
+     * device would sit where no wallet looks for it. */
     merkleized_map_commitment_t out_map;
     if (call_get_merkleized_map(dc, st->outputs_root, 1, 0, &out_map) < 0) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -2659,8 +2661,7 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
                                              1,
                                              out_script,
                                              VAULT_P2TR_SCRIPTPUBKEY_LEN);
-    if (slen != VAULT_P2TR_SCRIPTPUBKEY_LEN || out_script[0] != OP_1 ||
-        out_script[1] != OP_PUSHBYTES_32) {
+    if (slen != VAULT_P2TR_SCRIPTPUBKEY_LEN || !_spk_is_bip86_p2tr_of(out_script, d_key)) {
         SEND_SW(dc, SW_INCORRECT_DATA);
         return false;
     }
@@ -2671,56 +2672,6 @@ static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_
         return false;
     }
     uint64_t out_value = read_u64_le(raw8, 0);
-
-    {
-        const uint8_t *out_key = out_script + 2;
-        uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];
-        deriv_key[0] = PSBT_OUT_TAP_BIP32_DERIVATION;
-        memcpy(deriv_key + 1, out_key, VAULT_XONLY_PUBKEY_LEN);
-
-        uint8_t deriv_val[MAX_TAP_BIP32_DERIV_VALUE_LEN];
-        int deriv_len = call_get_merkleized_map_value(dc,
-                                                      &out_map,
-                                                      deriv_key,
-                                                      sizeof(deriv_key),
-                                                      deriv_val,
-                                                      sizeof(deriv_val));
-        if (deriv_len < 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint32_t fingerprint;
-        uint32_t path[5];
-        int path_len = parse_tap_bip32_deriv_value(deriv_val, deriv_len, &fingerprint, path, 5);
-        if (path_len < 0 || fingerprint != st->master_key_fingerprint) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (!check_bip86_path(path, path_len)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        serialized_extended_pubkey_t xpub;
-        if (get_extended_pubkey_at_path(path, (uint8_t) path_len, BIP32_PUBKEY_VERSION, &xpub) !=
-            0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t bip86_parity;
-        uint8_t bip86_tweaked[VAULT_XONLY_PUBKEY_LEN];
-        if (crypto_tr_tweak_pubkey(xpub.compressed_pubkey + 1,
-                                   NULL,
-                                   0,
-                                   &bip86_parity,
-                                   bip86_tweaked) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (memcmp(bip86_tweaked, out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
 
     uint64_t fee;
     if (!reclaim_fee_ok(input_value, out_value, &fee)) {
@@ -2967,7 +2918,6 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
     }
 
     /* Verify D key via BIP-32 derivation in Input 0 */
-    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN];
     {
         uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];
         deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
@@ -2998,11 +2948,6 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
             return false;
         }
         if (memcmp(xpub.compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t bip86_parity;
-        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3039,8 +2984,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out_spk[0] != OP_1 || out_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (!_spk_is_bip86_p2tr_of(out_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3464,7 +3408,6 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
 
     /* Verify D key via BIP-32 derivation in Input 1.
      * G_scratch.tls is consumed above; use G_scratch.sign_standalone for large buffers. */
-    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN];
     {
         G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
         memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
@@ -3499,11 +3442,6 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             return false;
         }
         if (memcmp(xpub->compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t bip86_parity;
-        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3542,8 +3480,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out0_spk[0] != OP_1 || out0_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out0_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (!_spk_is_bip86_p2tr_of(out0_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3575,9 +3512,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out1_value != VAULT_DUST_LIMIT || out1_spk[0] != OP_1 ||
-            out1_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out1_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (out1_value != VAULT_DUST_LIMIT || !_spk_is_bip86_p2tr_of(out1_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }

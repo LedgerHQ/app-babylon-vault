@@ -1741,27 +1741,36 @@ _RECLAIM_SEQUENCE = 0xFFFFFFFD
 # pin the byte order the txid is displayed in.
 _RECLAIM_PEGIN_TXID = hashlib.sha256(b"reclaim pegin txid").digest()
 _DEPOSITOR_CLAIM_VOUT = 1  # PegIn Output 1 holds the depositor claim reserve
+_RECLAIM_D_INDEX = 1  # D sits at m/86'/coin'/0'/0/<this>
+
+
+def _own_xonly_key(client: "RaggerClient", coin_type: int, account: int, change: int,
+                   index: int) -> bytes:
+    """X-only key this device derives at m/86'/coin_type'/account'/change/index."""
+    path = f"m/86'/{coin_type}'/{account}'/{change}/{index}"
+    return ExtendedKey.deserialize(client.get_extended_pubkey(path, display=False)).pubkey[1:]
 
 
 def _build_reclaim_psbt(
     fingerprint: bytes,
     leaf_key: bytes,
-    out_key: bytes,
     coin_type: int,
     input_value: int = 1_200_000,
     reclaimed_value: int = 1_199_000,
     nsequence: int = _RECLAIM_SEQUENCE,
-    leaf_key_index: int = 0,
-    out_key_index: int = 1,
+    leaf_key_index: int = _RECLAIM_D_INDEX,
     pegin_txid: bytes = _RECLAIM_PEGIN_TXID,
+    out_key: Optional[bytes] = None,
+    out_origin: Optional[KeyOriginInfo] = None,
 ) -> PSBT:
     """Build a Reclaim PSBTv0 (Screen 9).
 
     Input 0: PegIn Output 1 (depositor claim reserve) -- leaf <D> OP_CHECKSIG (34 bytes),
              byte-identical to Claim; single-leaf P2TR with NUMS internal key.  D is
              proven via the input's own TAP_BIP32_DERIVATION.
-    Output 0: a BIP-86 P2TR proven by its own TAP_BIP32_DERIVATION -- need not equal D,
-              the same latitude the device gives Refund's output.
+    Output 0: BIP-86 P2TR of `out_key`, which is D unless overridden -- the only output the
+              device accepts.  It carries no TAP_BIP32_DERIVATION, since the device reads
+              none for it; `out_origin` attaches one anyway.
     """
     reclaim_leaf = _depositor_claim_leaf(leaf_key)  # <D> OP_CHECKSIG, 34 bytes
     leaf_hash = _tapleaf_hash(reclaim_leaf)
@@ -1769,7 +1778,7 @@ def _build_reclaim_psbt(
     in_spk = bytes([0x51, 0x20]) + tweaked
     control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY
 
-    _, bip86_out_key = taproot_tweak_pubkey(out_key, b'')
+    _, bip86_out_key = taproot_tweak_pubkey(leaf_key if out_key is None else out_key, b'')
     out_script = bytes([0x51, 0x20]) + bip86_out_key
 
     tx = CTransaction()
@@ -1797,34 +1806,25 @@ def _build_reclaim_psbt(
         ),
     )
 
-    psbt.outputs[0].tap_bip32_paths[bip86_out_key] = (
-        set(),
-        KeyOriginInfo(
-            fingerprint,
-            [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, out_key_index],
-        ),
-    )
+    if out_origin is not None:
+        psbt.outputs[0].tap_bip32_paths[bip86_out_key] = (set(), out_origin)
 
     return psbt
 
 
 def _reclaim_keys(client: "RaggerClient", bitcoin_network: str):
-    """Return (fingerprint, leaf_key, out_key, coin_type) for the standard Reclaim keys."""
+    """Return (fingerprint, leaf_key, coin_type) for the standard Reclaim: D at
+    m/86'/coin'/0'/0/_RECLAIM_D_INDEX."""
     coin_type = 0 if bitcoin_network == "main" else 1
     fingerprint = client.get_master_fingerprint()
-    leaf_key = ExtendedKey.deserialize(
-        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
-    ).pubkey[1:]
-    out_key = ExtendedKey.deserialize(
-        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/1", display=False)
-    ).pubkey[1:]
-    return fingerprint, leaf_key, out_key, coin_type
+    leaf_key = _own_xonly_key(client, coin_type, 0, 0, _RECLAIM_D_INDEX)
+    return fingerprint, leaf_key, coin_type
 
 
 def _standard_reclaim_psbt(client: "RaggerClient", bitcoin_network: str, **overrides) -> PSBT:
     """_build_reclaim_psbt over the standard keys; `overrides` go to the builder."""
-    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    return _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type, **overrides)
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    return _build_reclaim_psbt(fingerprint, leaf_key, coin_type, **overrides)
 
 
 def _add_foreign_p2tr_input(psbt: PSBT, value: int, tag: int) -> None:
@@ -1997,8 +1997,8 @@ def test_sign_psbt_reclaim_wrong_taproot_commitment(
     """Reclaim fails when a 33-byte NUMS control block does not commit the leaf to the
     spent scriptPubKey: a wrong output-key parity bit, or a scriptPubKey built for a
     different leaf."""
-    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type)
     leaf_hash = _tapleaf_hash(_depositor_claim_leaf(leaf_key))
     parity, _ = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
     if tamper == "flipped_parity":
@@ -2024,8 +2024,8 @@ def test_sign_psbt_reclaim_control_block_not_33_bytes(
     hash, which a proof walk that stops at the last full 32 bytes never reads.  Sent as
     PSBTv2 because the client's PSBTv0 round-trip refuses a 40-byte control block itself.
     """
-    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type)
     reclaim_leaf = _depositor_claim_leaf(leaf_key)
     if shape == "with_sibling":
         sibling_leaf = _depositor_claim_leaf(TEST_VALID_KEYS[0])
@@ -2049,8 +2049,8 @@ def test_sign_psbt_reclaim_wrong_fingerprint(
 ) -> None:
     """Reclaim fails when Input 0's TAP_BIP32_DERIVATION fingerprint belongs to a
     foreign device."""
-    _, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    psbt = _build_reclaim_psbt(b'\xff\xff\xff\xff', leaf_key, out_key, coin_type)
+    _, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(b'\xff\xff\xff\xff', leaf_key, coin_type)
     _assert_reclaim_refused(client, psbt)
 
 
@@ -2059,9 +2059,9 @@ def test_sign_psbt_reclaim_foreign_key(
     bitcoin_network: str,
 ) -> None:
     """Reclaim fails when the leaf's D key is not derived from this device's seed."""
-    fingerprint, _, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    fingerprint, _, coin_type = _reclaim_keys(client, bitcoin_network)
     foreign_key = TEST_VALID_KEYS[0]  # valid EC point, not derived from this device
-    psbt = _build_reclaim_psbt(fingerprint, foreign_key, out_key, coin_type)
+    psbt = _build_reclaim_psbt(fingerprint, foreign_key, coin_type)
     _assert_reclaim_refused(client, psbt)
 
 
@@ -2076,51 +2076,36 @@ def test_sign_psbt_reclaim_input_no_derivation(
     _assert_reclaim_refused(client, psbt)
 
 
-def test_sign_psbt_reclaim_output_wrong_fingerprint(
+@pytest.mark.parametrize("account, change, index, with_derivation", [
+    (0, 0, 0, True),      # another receive address of D's own account
+    (0, 0, 0, False),     # the same, with no derivation entry at all
+    (0, 1, 0, True),      # the account's change branch
+    (99, 1, 9999, True),  # a path no wallet scans
+])
+def test_sign_psbt_reclaim_output_not_depositor_address(
     client: "RaggerClient",
     bitcoin_network: str,
+    account: int,
+    change: int,
+    index: int,
+    with_derivation: bool,
 ) -> None:
-    """Reclaim fails when Output 0's TAP_BIP32_DERIVATION fingerprint belongs to a
-    foreign device."""
-    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
-    (bip86_out_key, (leaf_hashes, _)) = next(iter(psbt.outputs[0].tap_bip32_paths.items()))
-    psbt.outputs[0].tap_bip32_paths = {
-        bip86_out_key: (
-            leaf_hashes,
-            KeyOriginInfo(b'\xff\xff\xff\xff',
-                         [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, 1]),
-        )
-    }
-    _assert_reclaim_refused(client, psbt)
+    """Reclaim fails when Output 0 pays any BIP-86 address of this device other than
+    P2TR(D), whatever derivation entry comes with it.
 
-
-def test_sign_psbt_reclaim_output_non_bip86_path(
-    client: "RaggerClient",
-    bitcoin_network: str,
-) -> None:
-    """Reclaim fails when Output 0's derivation path is not BIP-86 (m/44' instead of
-    m/86')."""
-    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
-    (bip86_out_key, (leaf_hashes, _)) = next(iter(psbt.outputs[0].tap_bip32_paths.items()))
-    psbt.outputs[0].tap_bip32_paths = {
-        bip86_out_key: (
-            leaf_hashes,
-            KeyOriginInfo(fingerprint,
-                         [HARDENED | 44, HARDENED | coin_type, HARDENED | 0, 0, 1]),
-        )
-    }
-    _assert_reclaim_refused(client, psbt)
-
-
-def test_sign_psbt_reclaim_output_no_derivation(
-    client: "RaggerClient",
-    bitcoin_network: str,
-) -> None:
-    """Reclaim fails when Output 0 carries no TAP_BIP32_DERIVATION at all."""
-    psbt = _standard_reclaim_psbt(client, bitcoin_network)
-    psbt.outputs[0].tap_bip32_paths = {}
+    The host picks that path and the device never shows it, so funds sent elsewhere would
+    be safe on the seed but sit where no wallet looks.  Output 0 is therefore pinned to D
+    itself rather than to a device-derived key at a host-supplied path.
+    """
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    other_key = _own_xonly_key(client, coin_type, account, change, index)
+    assert other_key != leaf_key
+    origin = KeyOriginInfo(
+        fingerprint,
+        [HARDENED | 86, HARDENED | coin_type, HARDENED | account, change, index],
+    ) if with_derivation else None
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type,
+                               out_key=other_key, out_origin=origin)
     _assert_reclaim_refused(client, psbt)
 
 
@@ -2128,16 +2113,14 @@ def test_sign_psbt_reclaim_output_script_tree(
     client: "RaggerClient",
     bitcoin_network: str,
 ) -> None:
-    """Reclaim fails when Output 0 is not BIP-86: its key is this device's derived key,
-    at a valid BIP-86 path, but tweaked with a script tree rather than the empty one, so
-    the output is also spendable by whoever controls the tree's leaf."""
-    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
+    """Reclaim fails when Output 0 is not BIP-86: its key is D, but tweaked with a script
+    tree rather than the empty one, so the output is also spendable by whoever controls
+    the tree's leaf."""
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type)
     script_tree_root = _tapleaf_hash(_depositor_claim_leaf(TEST_VALID_KEYS[0]))
-    _, tree_out_key = taproot_tweak_pubkey(out_key, script_tree_root)
-    (_, (leaf_hashes, origin)) = next(iter(psbt.outputs[0].tap_bip32_paths.items()))
+    _, tree_out_key = taproot_tweak_pubkey(leaf_key, script_tree_root)
     psbt.tx.vout[0].scriptPubKey = bytes([0x51, 0x20]) + tree_out_key
-    psbt.outputs[0].tap_bip32_paths = {tree_out_key: (leaf_hashes, origin)}
     _assert_reclaim_refused(client, psbt)
 
 
@@ -2147,12 +2130,13 @@ def test_sign_psbt_reclaim_output_foreign_key(
 ) -> None:
     """Reclaim fails when Output 0 pays a BIP-86 key this device did not derive, even with
     a derivation entry claiming this device's fingerprint and a valid BIP-86 path."""
-    fingerprint, leaf_key, out_key, coin_type = _reclaim_keys(client, bitcoin_network)
-    psbt = _build_reclaim_psbt(fingerprint, leaf_key, out_key, coin_type)
-    _, foreign_out_key = taproot_tweak_pubkey(TEST_VALID_KEYS[0], b'')
-    (_, (leaf_hashes, origin)) = next(iter(psbt.outputs[0].tap_bip32_paths.items()))
-    psbt.tx.vout[0].scriptPubKey = bytes([0x51, 0x20]) + foreign_out_key
-    psbt.outputs[0].tap_bip32_paths = {foreign_out_key: (leaf_hashes, origin)}
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    origin = KeyOriginInfo(
+        fingerprint,
+        [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, _RECLAIM_D_INDEX],
+    )
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type,
+                               out_key=TEST_VALID_KEYS[0], out_origin=origin)
     _assert_reclaim_refused(client, psbt)
 
 

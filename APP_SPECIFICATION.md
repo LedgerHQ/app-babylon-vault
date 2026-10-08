@@ -597,7 +597,7 @@ output count matches neither pattern and is rejected.
 | Control block | Exactly 33 bytes (depth 0): PegIn Output 1 is a single-leaf tree, so a sibling proves some other tree. Must produce a valid commitment to the leaf |
 | Input 0 sequence | Exactly `0xFFFFFFFD` (unmasked equality); the field **must be present** — an absent `PSBT_IN_SEQUENCE` decodes as `0xFFFFFFFF`, which is not replaceable |
 | Input 0 value | Plausibility only: `WITNESS_UTXO` value strictly above `VAULT_DUST_LIMIT`. `SIGHASH_DEFAULT` commits it, so a false value only yields an unusable signature (DoS, no fund redirection) |
-| Output 0 | BIP-86 P2TR, proven by its own `TAP_BIP32_DERIVATION` — the same latitude Refund gives its own output; need not equal `<D>` |
+| Output 0 | BIP-86 P2TR(`<D>`) — the depositor's own address, as in Claim, WC and PayoutFinalize. No `PSBT_OUT_TAP_BIP32_DERIVATION` is read: the host would choose the path and the device never shows it, so any other address of this device could sit where no wallet scans |
 | Fee | `input_value − output_value > 0` (checked subtraction; rejects on underflow) |
 | Prevout binding | **Not enforced** — without an intent the device cannot compute the expected PegIn txid. Displayed on the review screen for the user to check by eye |
 | Sighash | `SIGHASH_DEFAULT` only |
@@ -617,7 +617,7 @@ bound relaxes the other.
 |---|---|
 | Amount reclaimed | Output 0 value |
 | Transaction fee | Input 0 value − Output 0 value |
-| Reclaim address | bech32m of Output 0 — the depositor's proven BIP-86 address |
+| Reclaim address | bech32m of Output 0 — the depositor's own address, BIP-86 P2TR(`<D>`) |
 | PegIn txid | Input 0 prevout txid, display only (see *Prevout binding*). Shown in block-explorer byte order (the reverse of `PSBT_IN_PREVIOUS_TXID`), like every txid the app displays |
 
 The rows are preceded by an intro page, titled "Reclaim reserve", that states the one risk
