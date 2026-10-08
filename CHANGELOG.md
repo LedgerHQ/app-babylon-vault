@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.11.0] - Pre-PegIn change returns to the depositor's address
+
+### Changed
+
+- **BREAKING — Pre-PegIn change is accepted only at the depositor's own address (NAPPS-1494)**: after the HTLC outputs, a Pre-PegIn may now carry an optional auth-anchor OP_RETURN, the CPFP anchor (exactly 546 sat), and then at most one change output above 546 sat, both paying P2TR(`depositor_pk`) — the key the device derived from `depositor_path`, i.e. the address the dApp shows. The anchor and the change share one scriptPubKey, so the order is what tells them apart, and the device enforces it: every non-HTLC output follows all HTLC outputs and the change follows the anchor. The OP_RETURN is not ordered against the depositor outputs by the device; the canonical layout that btc-vault builds and reads is `[HTLC…, OP_RETURN?, anchor, change?]`. The change is accepted only when `depositor_path` is the first receive address (`m/86'/coin'/account'/0/0`) of the BIP-86 account the inputs are signed from, which the base app verifies against the device's own key: the host chooses the path and the device never shows it, so change under any other path or account would land where a wallet does not look. Change with no preceding anchor, change before the anchor, change under another `depositor_path`, a second anchor and a depositor output below 546 sat are rejected with `SW_INCORRECT_DATA`, as is any output on the wallet policy's change branch (`m/86'/coin'/0'/1/*`), which earlier versions accepted. Until now change had to go to `…/1/0`, which the dApp neither shows nor spends, so a depositor's balance appeared to drop by the change amount (babylon-toolkit#2283). **Host impact:** a dApp must send Pre-PegIn change to the depositor's address before it works with this version; one that still sends change to `…/1/x` is refused. Inputs on either branch are unaffected, and change already sitting on `…/1/0` stays spendable; surfacing it in the dApp is separate dApp work. Fee cap, `prepegin_txid` check and HTLC reconstruction are unchanged. The anchor/change classification moved into the pure helper `prepegin_depositor_output_accept` so it can be unit-tested (`src/sign_psbt_validate.c`, `src/sign_psbt_validate_helpers.c`, `APP_SPECIFICATION.md`, `docs/integration-guide.md`)
+
+### Refactored
+
+- **Pre-PegIn validator split**: the HTLC-output check and the output classification of `_validate_prepegin` moved into `_validate_prepegin_htlc_outputs` and `_validate_prepegin_outputs`, so that none of the three functions exceeds 100 lines. No behavior change (`src/sign_psbt_validate.c`)
+
+### Tests
+
+- **Depositor change covered**: Ragger tests accept anchor then change, including change one satoshi above the anchor value, and reject change before the anchor, change with no anchor, a second anchor after the change, two changes, a depositor output below 546 sat and an output on the change branch with and without an anchor. Every Pre-PegIn rejection in this group runs through a helper that commits the intent to the PSBT's txid, so the rejection is attributable to output validation rather than to a txid mismatch (`tests/test_sign_psbt_validate.py`)
+- **Ordering and multi-vault covered**: a 3-vault Pre-PegIn with anchor then change is signed, and a CPFP anchor positioned before the last HTLC output is refused like a misplaced OP_RETURN (`tests/test_sign_psbt_validate.py`)
+- **Change path restriction covered**: a Ragger test signs an anchor under a depositor at `…/0/1` of account 0 or at `…/0/0` of account 1, refuses anchor-plus-change under either, and accepts anchor-plus-change when the inputs are signed from account 1 and the depositor is at `…/1'/0/0` (`tests/test_sign_psbt_validate.py`)
+- **Change needs a BIP-86 signing wallet**: a Ragger test signs an anchor-only Pre-PegIn from a non-BIP-86 wallet whose account matches the depositor's, and refuses the same Pre-PegIn with change (`tests/test_sign_psbt_validate.py`)
+- **Fee cap kept with depositor change**: a Ragger test signs an anchor-plus-change Pre-PegIn whose fee equals `prepegin_max_fee` and refuses one a satoshi above it. The two cases differ only in input value, which the txid does not cover, so the rejection is attributable to the fee check (`tests/test_sign_psbt_validate.py`)
+- **Depositor output classifier unit-tested**: cmocka tests cover the anchor at exactly 546 sat, change at 547 sat and at the maximum value, change with no anchor or before it, a second anchor, a second change, values below 546 sat in every state, that a rejected output leaves the recorded state untouched, and the depositor path rule (`prepegin_change_path_ok`) for the first receive address of the signing account, other positions, other accounts, signing purposes other than 86, a hardened signing account and malformed paths (`unit-tests/test_sign_psbt_validate.c`)
+
 ## [0.10.2] - Skip restored on the intent review
 
 ### Added

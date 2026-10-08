@@ -146,7 +146,8 @@ add_test(NAME test_vault_script COMMAND test_vault_script)
 #
 # Tests the pure helper functions extracted from sign_psbt_validate.c:
 #   check_bip86_path, parse_tap_bip32_deriv_value, parse_refund_leaf_script,
-#   parse_claim_leaf_script, reclaim_sequence_ok, reclaim_fee_ok.
+#   parse_claim_leaf_script, reclaim_sequence_ok, reclaim_fee_ok,
+#   prepegin_depositor_output_accept.
 # mocks/read.h provides inline read_u32_le; mocks/common/script.h provides
 # opcode constants.  No mock_cx needed (no SHA-256 or crypto calls).
 # -----------------------------------------------------------------------

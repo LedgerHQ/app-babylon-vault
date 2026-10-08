@@ -277,12 +277,23 @@ The depositor creates one or more HTLC outputs (one per vault group) that lock B
 - Inputs: wallet inputs (BIP-86 P2TR), signed by the base app
 - Output at `htlc_vout` (per group): P2TR matching the 2-leaf HTLC reconstructed from the intent; value in `[vault_amount + depositor_claim_value + 240, vault_amount + depositor_claim_value + 240 + pegin_max_fee]` (the minimum covers `vault_amount`, `depositor_claim_value`, and the 240-sat P2A anchor funded by the PegIn transaction)
 - Optional OP_RETURN output (positioned strictly after all HTLC outputs): 34-byte scriptPubKey `0x6A 0x20 <auth_anchor_hash>`, value `0`; when present the device validates the 32-byte payload against `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` computed at `APPROVE_VAULT_INTENT` time. At most one such output is permitted.
-- Optional CPFP anchor output (positioned strictly after all HTLC outputs): P2TR(depositor_pk) BIP-86 key-path scriptPubKey, value exactly `VAULT_DUST_LIMIT` (546 sat). At most one such output is permitted.
-- All other outputs: BIP-86 change outputs owned by this device (verified via `TAP_BIP32_DERIVATION`)
+- Optional depositor outputs (positioned strictly after all HTLC outputs), paying P2TR(depositor_pk) — the BIP-86 key-path scriptPubKey of the key the device derived from `depositor_path`, i.e. the address the dApp shows:
+  - at most one CPFP anchor, value exactly `VAULT_DUST_LIMIT` (546 sat);
+  - after the anchor, at most one change output, value above `VAULT_DUST_LIMIT`, and only when `depositor_path` is the first receive address (`m/86'/coin'/account'/0/0`) of the BIP-86 account the inputs are signed from, which the base app verifies against the device's own key: the path is chosen by the host and never shown on the device, so change is accepted only where a wallet looks for it;
+  - a change output with no preceding anchor, a second anchor, a change output under any other `depositor_path` (another address index, the change branch, or another account), and a depositor output below `VAULT_DUST_LIMIT` are rejected. The anchor does not depend on the path.
+- No other output is accepted. In particular, change on the wallet policy's change branch (`…/1/*`) is rejected. The base app treats receive-branch outputs (`…/0/*`) as external, which is why change to the depositor's own address is matched by script above instead.
+- Ordering: the device enforces that every non-HTLC output follows all HTLC outputs and that the change follows the anchor. The anchor and the change share one scriptPubKey, so that order is what lets a reader of the transaction tell them apart. The device does not order the auth-anchor OP_RETURN against the depositor outputs; the canonical layout, which btc-vault builds and reads, is `[HTLC…, OP_RETURN?, anchor, change?]`.
 - Sighash: `SIGHASH_ALL` or `SIGHASH_DEFAULT`; version ≥ 2; locktime = 0
 - Fee: `total_inputs − total_outputs ≤ prepegin_max_fee`
 
 **User display:** Pre-PegIn signing is silent — no per-signing screen is shown. The fee bound (`prepegin_max_fee`) is displayed on the intent approval screen (Screen 2).
+
+**Relation to HLD v23.** The HLD admits "Depositor outputs (zero or more)" under any BIP-86 path and
+does not distinguish change from the anchor. The device is narrower, never looser: a depositor output
+must pay `depositor_pk` itself, at most one anchor and one change output are accepted, the change
+must follow the anchor, and the change is accepted only when `depositor_path` is `m/86'/coin'/account'/0/0` of a BIP-86 signing account.
+Every depositor output returns value to a key the device derived, so the count
+and order limits do not affect where value goes; the fee remains bounded by `prepegin_max_fee`.
 
 **HTLC scripts (2-leaf P2TR, NUMS internal key):**
 - *Leaf 0 — Hashlock + All-Party:* `OP_SIZE <32> OP_EQUALVERIFY / OP_SHA256 <h> OP_EQUALVERIFY / <D> OP_CHECKSIGVERIFY / <VP> OP_CHECKSIGVERIFY / <VK N-of-N> / <UC M-of-M>`
