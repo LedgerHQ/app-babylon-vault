@@ -279,8 +279,12 @@ bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen,
     return false;
 }
 
-bool prepegin_change_path_ok(const uint32_t *path, int path_len, uint32_t signing_account) {
+bool prepegin_change_path_ok(const uint32_t *path,
+                             int path_len,
+                             uint32_t signing_purpose,
+                             uint32_t signing_account) {
     if (!check_bip86_path(path, path_len)) return false;
+    if (signing_purpose != BIP86_PURPOSE) return false;
     if ((signing_account & BIP32_FIRST_HARDENED_CHILD) != 0) return false;
     return path[BIP86_ACCOUNT_LEVEL] == (signing_account | BIP32_FIRST_HARDENED_CHILD) &&
            path[BIP86_CHANGE_LEVEL] == BIP86_RECEIVE_BRANCH &&

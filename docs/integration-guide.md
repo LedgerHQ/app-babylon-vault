@@ -203,7 +203,7 @@ the reconstructed Pre-PegIn txid could not match the broadcast one.
 | Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value + 240, vault_amount + depositor_claim_value + 240 + pegin_max_fee]`; the 240 sat fund the P2A anchor of the PegIn transaction |
 | **Auth-anchor output** | Optional `OP_RETURN` output with scriptPubKey `6A 20 ‖ auth_anchor_hash` (34 bytes) and **value 0**; at most one permitted |
 | **CPFP anchor output** | Optional P2TR(depositor_pk) BIP-86 key-path output at exactly **546 sat** (`VAULT_DUST_LIMIT`); at most one permitted |
-| **Change output** | Optional P2TR(depositor_pk) BIP-86 key-path output with value **above 546 sat**, placed after the CPFP anchor; at most one permitted, and only when the intent's `depositor_path` is `m/86'/coin'/account'/0/0` with `account` equal to the account of the wallet policy the inputs are signed from |
+| **Change output** | Optional P2TR(depositor_pk) BIP-86 key-path output with value **above 546 sat**, placed after the CPFP anchor; at most one permitted, and only when the intent's `depositor_path` is `m/86'/coin'/account'/0/0` with `account` equal to the account of the BIP-86 wallet policy the inputs are signed from |
 | All other outputs | Rejected with `SW_INCORRECT_DATA`, including change on the wallet policy's change branch (`m/86'/coin'/0'/1/*`) |
 
 The auth-anchor `OP_RETURN` payload is bound to `SHA256(authAnchor)` recomputed on-device from the root — the host cannot substitute it. Its value must be **0** (it is provably unspendable; a non-zero value would silently burn change).

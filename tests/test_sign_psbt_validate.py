@@ -443,6 +443,7 @@ def _build_prepegin_psbt_ecdsa(
     coin_type: int,
     auth_anchor: bytes,
     htlc_value: int = _HTLC_VALUE,
+    extra_outputs: Sequence[CTxOut] = (),
 ) -> PSBT:
     """Pre-PegIn PSBTv0 whose single wallet input belongs to a non-Taproot standard policy.
 
@@ -457,7 +458,7 @@ def _build_prepegin_psbt_ecdsa(
     reject a segwitv0 input whose previous transaction is absent.
 
     Outputs are the HTLC and the auth-anchor OP_RETURN, both 34 bytes, which is what the
-    device's txid reconstruction expects.
+    device's txid reconstruction expects, then `extra_outputs`, which the input funds.
     """
     redeem_script = b''
     if purpose == BIP44_LEGACY:
@@ -470,7 +471,7 @@ def _build_prepegin_psbt_ecdsa(
     else:
         raise ValueError(f"unsupported BIP-44 purpose for an ECDSA input: {purpose}")
 
-    input_value = htlc_value + _PREPEGIN_DEFAULT_FEE
+    input_value = htlc_value + _PREPEGIN_DEFAULT_FEE + sum(out.nValue for out in extra_outputs)
     prev_tx = _funding_tx(input_spk, input_value)
 
     tx = CTransaction()
@@ -482,6 +483,7 @@ def _build_prepegin_psbt_ecdsa(
     tx.vout = [
         CTxOut(htlc_value, htlc_spk),
         CTxOut(0, _OP_RETURN_PUSH32 + auth_anchor),
+        *extra_outputs,
     ]
     tx.wit = CTxWitness()
 
@@ -1203,8 +1205,11 @@ def _setup_prepegin_ecdsa_case(
     device: Device,
     bitcoin_network: str,
     purpose: int,
+    depositor_values: Sequence[int] = (),
 ):
     """Approve an intent bound to a Pre-PegIn PSBT spending a `purpose` wallet input.
+
+    Each entry of depositor_values pays P2TR(depositor_pk) after the auth-anchor.
 
     Returns (psbt, coin_type, pubkey) where pubkey is the input's compressed wallet key.
     """
@@ -1218,9 +1223,11 @@ def _setup_prepegin_ecdsa_case(
     )
 
     fingerprint, pubkey = _ecdsa_input_key(client, purpose, coin_type)
+    depositor_spk = _bip86_depositor_spk(dep_pk)
     psbt = _build_prepegin_psbt_ecdsa(
         htlc_spk, purpose, fingerprint, pubkey, coin_type,
         auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
+        extra_outputs=[CTxOut(value, depositor_spk) for value in depositor_values],
     )
 
     scalars_tlv = _build_intent_tlv_for_test(
@@ -2669,6 +2676,42 @@ def test_sign_psbt_prepegin_change_needs_signing_accounts_first_receive_address(
         input_index, partial_sig = result[0]
         assert input_index == 0
         assert len(partial_sig.signature) == 64
+    else:
+        with pytest.raises(ExceptionRAPDU) as exc:
+            client.sign_psbt(psbt, wallet, None)
+        assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.parametrize("depositor_values, accepted", [
+    pytest.param([_VAULT_DUST_LIMIT], True, id="anchor_only_accepted"),
+    pytest.param([_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False, id="change_rejected"),
+])
+def test_sign_psbt_prepegin_change_needs_bip86_signing_wallet(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    depositor_values: List[int],
+    accepted: bool,
+) -> None:
+    """Pre-PegIn change is refused when the inputs are signed from a non-BIP-86 wallet.
+
+    The account matches the depositor's; the anchor alone is signed, so the change is the
+    only reason for the refusal.
+    """
+    psbt, coin_type, pubkey = _setup_prepegin_ecdsa_case(
+        client, navigator, device, bitcoin_network, BIP84_NATIVE_SEGWIT,
+        depositor_values=depositor_values,
+    )
+    wallet = _standard_native_segwit_wallet(client, coin_type)
+
+    if accepted:
+        result = client.sign_psbt(psbt, wallet, None)
+
+        assert len(result) == 1
+        input_index, partial_sig = result[0]
+        assert input_index == 0
+        assert partial_sig.pubkey == pubkey
     else:
         with pytest.raises(ExceptionRAPDU) as exc:
             client.sign_psbt(psbt, wallet, None)

@@ -1183,23 +1183,36 @@ static void test_change_path_accept_first_receive_address(void **state) {
     (void) state;
     uint32_t path[5];
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
-    assert_true(prepegin_change_path_ok(path, 5, 0));
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
     /* The account must be the one the inputs are signed from, whichever it is. */
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 7, 0, 0);
-    assert_true(prepegin_change_path_ok(path, 5, 7));
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 7));
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 0);
-    assert_true(prepegin_change_path_ok(path, 5, 100));
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 100));
 }
 
 static void test_change_path_reject_other_account(void **state) {
     (void) state;
     uint32_t path[5];
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 1, 0, 0);
-    assert_false(prepegin_change_path_ok(path, 5, 0)); /* depositor in another account */
+    /* depositor in another account */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
-    assert_false(prepegin_change_path_ok(path, 5, 1)); /* signing from another account */
+    /* signing from another account */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 1));
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 0);
-    assert_false(prepegin_change_path_ok(path, 5, 99));
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 99));
+}
+
+static void test_change_path_reject_other_signing_purpose(void **state) {
+    (void) state;
+    /* 0 is the purpose of a state with no wallet policy; a hardened 86 is no purpose. */
+    const uint32_t purposes[] = {0u, 44u, 49u, 84u, 87u, BIP86_PURPOSE | 0x80000000u};
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    for (size_t i = 0; i < sizeof(purposes) / sizeof(purposes[0]); i++) {
+        assert_false(prepegin_change_path_ok(path, 5, purposes[i], 0));
+    }
 }
 
 static void test_change_path_reject_hardened_signing_account(void **state) {
@@ -1208,20 +1221,21 @@ static void test_change_path_reject_hardened_signing_account(void **state) {
      * collide with the hardened account level of the path. */
     uint32_t path[5];
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
-    assert_false(prepegin_change_path_ok(path, 5, 0x80000000u));
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0x80000000u));
 }
 
 static void test_change_path_reject_other_positions(void **state) {
     (void) state;
     uint32_t path[5];
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 1);
-    assert_false(prepegin_change_path_ok(path, 5, 0)); /* second receive address */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* second receive address */
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 10000);
-    assert_false(prepegin_change_path_ok(path, 5, 0)); /* last permitted address index */
+    /* last permitted address index */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 0);
-    assert_false(prepegin_change_path_ok(path, 5, 0)); /* wallet change branch */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* wallet change branch */
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 1);
-    assert_false(prepegin_change_path_ok(path, 5, 0));
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
 }
 
 static void test_change_path_reject_malformed_path(void **state) {
@@ -1229,13 +1243,13 @@ static void test_change_path_reject_malformed_path(void **state) {
     uint32_t path[6];
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     path[5] = 0;
-    assert_false(prepegin_change_path_ok(path, 4, 0)); /* too short */
-    assert_false(prepegin_change_path_ok(path, 6, 0)); /* too long */
+    assert_false(prepegin_change_path_ok(path, 4, BIP86_PURPOSE, 0)); /* too short */
+    assert_false(prepegin_change_path_ok(path, 6, BIP86_PURPOSE, 0)); /* too long */
     make_bip86_path(path, 84, BIP44_COIN_TYPE, 0, 0, 0);
-    assert_false(prepegin_change_path_ok(path, 5, 0)); /* not BIP-86 */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* not BIP-86 */
     make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
     path[2] &= ~0x80000000u;
-    assert_false(prepegin_change_path_ok(path, 5, 0)); /* unhardened account */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* unhardened account */
 }
 
 static void test_depositor_output_sequence_accept_anchor_then_change(void **state) {
@@ -1374,6 +1388,7 @@ int main(void) {
         cmocka_unit_test(test_depositor_output_accept_anchor_when_path_disallows_change),
         cmocka_unit_test(test_change_path_accept_first_receive_address),
         cmocka_unit_test(test_change_path_reject_other_account),
+        cmocka_unit_test(test_change_path_reject_other_signing_purpose),
         cmocka_unit_test(test_change_path_reject_hardened_signing_account),
         cmocka_unit_test(test_change_path_reject_other_positions),
         cmocka_unit_test(test_change_path_reject_malformed_path),

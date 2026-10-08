@@ -572,8 +572,8 @@ static bool _validate_prepegin_htlc_outputs(dispatcher_context_t *dc,
  *   - the single shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>";
  *   - the single CPFP anchor paying P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT;
  *   - after that anchor, at most one change output paying P2TR(depositor_pk) above
- *     VAULT_DUST_LIMIT, when depositor_path is the first receive address of the account
- *     the inputs are signed from.
+ *     VAULT_DUST_LIMIT, when depositor_path is the first receive address of the BIP-86
+ *     account the inputs are signed from.
  * Change on the wallet policy's change branch (internal outputs) is refused: the
  * depositor's own key is where the dApp looks for funds.  Outputs to depositor_pk
  * return value to a key the device derived itself from depositor_path.  That path is
@@ -610,6 +610,7 @@ static bool _validate_prepegin_outputs(
     const bool change_allowed =
         st->account.is_default && prepegin_change_path_ok(intent->depositor_path,
                                                           VAULT_DEPOSITOR_PATH_LEN,
+                                                          (uint32_t) st->account.bip44_purpose,
                                                           st->account.bip44_account);
     for (unsigned int i = 0; i < st->n_outputs; i++) {
         bool is_htlc_output = false;
