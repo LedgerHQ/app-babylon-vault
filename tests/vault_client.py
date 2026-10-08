@@ -149,7 +149,7 @@ def _require_sw_ok(response, command: str) -> bytes:
     SIGN_PSBT client-command protocol can operate. The custom CLA 0xE1 handlers never
     legitimately use interrupted execution, so without this check a 0xE000 from those
     commands would be read as successful completion and mask an APDU-routing or
-    state-machine regression (Cerberus V-037).
+    state-machine regression.
     """
     if response.status != SW_OK:
         raise AssertionError(f"{command} expected SW_OK, got {response.status:#06x}")
@@ -187,7 +187,7 @@ def derive_context_hash(client: "RaggerClient",
                         p2: int = P2_SHOW) -> bytes:
     """Send DERIVE_CONTEXT_HASH APDUs (chunked if needed), navigate Screen 1, return root.
 
-    Wire format (NAPPS-1441 rev 2.1):
+    Wire format (spec rev 2.1):
       P1=0x00: app_name_len(1B) | app_name | path_len(1B) | path(4·n B BE)
                | context_total_len(2B BE) | first_context_chunk
       P1=0x01: continuation context bytes (repeated until total received)
@@ -704,7 +704,7 @@ def sign_psbt_with_nav_and_compare(
 
     Returns client.sign_psbt's result — the list of (input_index, PartialSignature) pairs —
     so callers can verify the signatures rather than only the screens.  Discarding it made
-    cryptographic verification impossible at every call site (Cerberus V-035).
+    cryptographic verification impossible at every call site.
 
     require_review: assert that at least one APDU actually blocked for review.  This helper
     exists to prove review-required flows display and await approval, but every exchange

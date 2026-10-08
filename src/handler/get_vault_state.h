@@ -18,8 +18,8 @@
  * a root and intent bytes the legitimate host already holds. A host with no approval can
  * still read context_fp for a root it derived silently (DERIVE_CONTEXT_HASH P2=0x01, inputs
  * of its choosing) — 32 bits of a hash of a 256-bit secret, not invertible and not used
- * elsewhere. Accepted in ADR-001, like the unauthenticated caller of Screen 1 (Cerberus
- * V-012); see APP_SPECIFICATION.md.
+ * elsewhere. Accepted in ADR-001, like the unauthenticated caller of Screen 1; see
+ * APP_SPECIFICATION.md.
  *
  * @param dc   Dispatcher context.
  * @param cmd  Parsed APDU command.

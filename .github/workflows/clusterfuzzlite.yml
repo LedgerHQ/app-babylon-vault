@@ -14,8 +14,8 @@ permissions: read-all
 # Pull-request runs use code-change mode, which reads the stored corpus but does not
 # publish a new one, so those two sanitizers are safe to run in parallel.
 #
-# Everything else touches the shared corpus and is therefore chained with `needs:`
-# (Cerberus V-028). The phases used to be parallel matrix entries with per-entry
+# Everything else touches the shared corpus and is therefore chained with `needs:`.
+# The phases used to be parallel matrix entries with per-entry
 # concurrency groups, which deliberately put them in *different* groups rather than
 # serialising them: with ClusterFuzzLite's default shared corpus storage, prune could
 # download the pre-run corpus while the batch jobs were still discovering inputs and then
@@ -24,7 +24,7 @@ permissions: read-all
 # already runs 18000s against 600s for the other phases, and each job carries its own
 # timeout — so the chain is roughly 5h50m against 5h fully parallel.
 #
-# No 'undefined' (UBSan) phase, and that is not an oversight (Cerberus V-027 stays open).
+# No 'undefined' (UBSan) phase, and that is not an oversight.
 # oss-fuzz's bad_build_check requires at least THRESHOLD_FOR_NUMBER_OF_EDGES=100 coverage
 # edges per target. Measured with that checker: fuzz_vault_group_tlv has 173 edges and
 # fuzz_vault_tlv 157, both of which pass, but fuzz_key_batch has 46 and is rejected with

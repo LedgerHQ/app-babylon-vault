@@ -17,7 +17,7 @@
  * P2=0x00: show Screen 1 (app_name) and return the 32-byte root on the final chunk.
  * P2=0x01: silent re-derivation; return SW_OK with no data on the final chunk.
  *
- * Both modes store the derivation path in G_vault_context for NAPPS-1442.
+ * Both modes store the derivation path in G_vault_context.
  * Calling while state != IDLE invalidates the current session before proceeding.
  *
  * Core crypto logic lives in derive_context_hash_core.h (static inline, unit-testable).

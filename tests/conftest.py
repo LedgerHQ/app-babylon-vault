@@ -228,7 +228,7 @@ def pytest_addoption(parser):
     # "auto" is a distinct value, not an alias for "test".  Overloading "test" as the
     # auto sentinel made an omitted option and an explicit --network test
     # indistinguishable, so either could be silently switched to "main" by detection —
-    # and no CLI value could force testnet (Cerberus V-032).
+    # and no CLI value could force testnet.
     parser.addoption("--network", default="auto", choices=("auto", "main", "test"))
     # Under pytest-xdist each worker gets its own Speculos ports: API port
     # base + index * stride, APDU port one above.  Ragger would otherwise pick the first

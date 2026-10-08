@@ -1,5 +1,5 @@
 """
-Silent-flow validation tests for SIGN_PSBT (NAPPS-1375/1376/1462/1481).
+Silent-flow validation tests for SIGN_PSBT.
 
 Covers Pre-PegIn, PegIn, Payout, NoPayout, Refund, and Reclaim validation (no display).
 Screen-capture tests live in the corresponding test_screen*.py files:
@@ -606,7 +606,7 @@ def _assert_schnorr_sig_verifies(psbt: PSBT, result, expected_xonly: bytes,
                                  expected_input: int = 0) -> None:
     """Independently verify a returned signature against the sighash it must commit to.
 
-    Closes Cerberus V-035: the count/index/pubkey/length checks in
+    The count/index/pubkey/length checks in
     _assert_single_schnorr_sig are shape checks, not verification — a regression that
     returned arbitrary 64-byte data, or signed a *different* digest than the PSBT the
     user reviewed, would satisfy every one of them.  This recomputes the BIP-341
@@ -731,7 +731,7 @@ def _build_group_for_test() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# 3-vault helpers (NAPPS-1444)
+# 3-vault helpers
 # ---------------------------------------------------------------------------
 
 _3V_HTLC_VOUTS            = [0, 1, 2]
@@ -1138,7 +1138,7 @@ def _build_payout_finalize_psbt(
 
 
 # ===========================================================================
-# Pre-PegIn signing (NAPPS-1375, NAPPS-1444)
+# Pre-PegIn signing
 # Pre-PegIn is signed silently — no user confirmation screen.
 # The intent approval (Screen 2) already bound all vault parameters.
 # ===========================================================================
@@ -1328,7 +1328,7 @@ def test_sign_psbt_prepegin_3vaults(
 ) -> None:
     """3-vault Pre-PegIn passes validation and is signed silently.
 
-    Acceptance criterion NAPPS-1444: 3-vault Pre-PegIn with correct HTLC outputs and
+    Acceptance criterion: 3-vault Pre-PegIn with correct HTLC outputs and
     OP_RETURN (positioned after all HTLCs) passes device validation and returns one
     BIP-86 Taproot Schnorr signature per wallet input.  The depositor anchor and change
     follow the OP_RETURN, after the last of the three HTLC outputs.
@@ -1675,7 +1675,7 @@ def test_sign_psbt_prepegin_htlc_value_too_low(
 
 
 # ===========================================================================
-# Screen 3 — Refund transaction review negative tests (NAPPS-1375)
+# Screen 3 — Refund transaction review negative tests
 # ===========================================================================
 
 def test_sign_psbt_refund_wrong_fingerprint(
@@ -1726,7 +1726,7 @@ def test_sign_psbt_refund_nonzero_locktime(
 
 
 # ===========================================================================
-# Reclaim transaction validation (NAPPS-1481, Screen 9)
+# Reclaim transaction validation (Screen 9)
 #
 # Reclaim shares its leaf shape byte-for-byte with Claim (<D> OP_CHECKSIG, 34 bytes);
 # the dispatcher tells them apart by output count alone (2 outputs -> Claim, 1 -> Reclaim).
@@ -2183,7 +2183,7 @@ def test_sign_psbt_reclaim_output_exceeds_input_rejected(
 
 
 # ===========================================================================
-# PegIn transaction validation (NAPPS-1375)
+# PegIn transaction validation
 # ===========================================================================
 
 def test_sign_psbt_pegin(
@@ -2194,7 +2194,7 @@ def test_sign_psbt_pegin(
 ) -> None:
     """PegIn validation passes silently and sign_custom_inputs signs the HTLC Leaf 0 input.
 
-    NAPPS-1377: sign_custom_inputs is fully implemented, so the SIGN_PSBT command returns
+    sign_custom_inputs is fully implemented, so the SIGN_PSBT command returns
     SW_OK with the depositor's Schnorr signature over the HTLC Leaf 0 sighash.
     After signing, pegin_signed is incremented; the device remains in VAULT_STATE_INTENT_LOADED.
     """
@@ -2319,7 +2319,7 @@ def test_sign_psbt_pegin_2vault_group_index(
 
 
 # ===========================================================================
-# Pre-PegIn — additional negative tests (NAPPS-1375)
+# Pre-PegIn — additional negative tests
 # ===========================================================================
 
 def _prepegin_bound_to_intent(
@@ -2719,7 +2719,7 @@ def test_sign_psbt_prepegin_change_needs_bip86_signing_wallet(
 
 
 # ===========================================================================
-# Refund — additional negative tests (NAPPS-1375)
+# Refund — additional negative tests
 # ===========================================================================
 
 def test_sign_psbt_refund_wrong_leaf_shape(
@@ -2805,7 +2805,7 @@ def test_sign_psbt_refund_no_output_derivation(
 
 
 # ===========================================================================
-# PegIn — additional negative tests (NAPPS-1375)
+# PegIn — additional negative tests
 # ===========================================================================
 
 def test_sign_psbt_pegin_extra_input(
@@ -2937,7 +2937,7 @@ def test_sign_psbt_pegin_wrong_depositor_claim_amount(
 
 
 # ===========================================================================
-# Payout transaction validation (NAPPS-1376)
+# Payout transaction validation
 # ===========================================================================
 
 VAULT_DUST_LIMIT = 546  # must match vault_constants.h (CPFP anchor = P2TR relay dust limit)
@@ -3130,7 +3130,7 @@ def _setup_payout_state(
                                base_fee_rate=base_fee_rate)
     pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, prepegin_txid)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    # NAPPS-1377: PegIn signing is fully wired; SW_OK advances state to PAYOUT_EXPECTED.
+    # PegIn signing is fully wired; SW_OK advances state to PAYOUT_EXPECTED.
     client.sign_psbt(pegin_psbt, dummy_wallet, None)
     return hashlock
 
@@ -3887,7 +3887,7 @@ def test_sign_psbt_payout_signet_params(
 
 
 # ===========================================================================
-# Maximum-participant memory stress (NAPPS — VAULT_SCRIPT_MAX_LEN ceiling)
+# Maximum-participant memory stress (VAULT_SCRIPT_MAX_LEN ceiling)
 # ===========================================================================
 
 def _distinct_sorted_keys(count: int, exclude: List[bytes]) -> List[bytes]:
@@ -3925,7 +3925,7 @@ def test_sign_psbt_pegin_max_participants(
     equally-large leaf back from the PSBT.  If either buffer were undersized the
     leaf check would fail with SW_INCORRECT_DATA; SW_OK means validation passed,
     the leaf was reconstructed/compared at full size, and sign_custom_inputs
-    (NAPPS-1377) signed the HTLC Leaf 0 input.
+    signed the HTLC Leaf 0 input.
 
     Unlike the captured sample-vector test (which rejects at the state guard
     before any vault buffering), this drives the largest reconstruction path the
@@ -3962,7 +3962,7 @@ def test_sign_psbt_pegin_max_participants(
 
 
 # ===========================================================================
-# CPFP anchor key validation (NAPPS-1445)
+# CPFP anchor key validation
 # ===========================================================================
 
 def test_sign_psbt_payout_vp_wrong_cpfp_anchor_key(
@@ -4013,7 +4013,7 @@ def test_sign_psbt_payout_vk_wrong_cpfp_anchor_key(
 
 
 # ===========================================================================
-# 3-vault batch iteration (NAPPS-1445)
+# 3-vault batch iteration
 # ===========================================================================
 
 def test_sign_psbt_payout_3vault_batch(
@@ -4089,7 +4089,7 @@ def test_sign_psbt_payout_3vault_batch(
 
 
 # ===========================================================================
-# Depositor claimer payout (NAPPS-1462)
+# Depositor claimer payout
 # ===========================================================================
 
 def test_sign_psbt_payout_depositor(
@@ -4147,7 +4147,7 @@ def test_sign_psbt_payout_depositor_wrong_cpfp_anchor_key(
 
 
 # ===========================================================================
-# NoPayout transaction (NAPPS-1462)
+# NoPayout transaction
 # ===========================================================================
 
 # NoPayout amounts, funded from the protocol formula rather than pinned to DUST.

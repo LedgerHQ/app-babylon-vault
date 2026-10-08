@@ -743,7 +743,7 @@ def test_base_fee_rate_overflow_rejected(client: RaggerClient, bitcoin_network: 
 
 
 # ---------------------------------------------------------------------------
-# P1=0x01 vault-group phase — NAPPS-1442 acceptance criteria
+# P1=0x01 vault-group phase — acceptance criteria
 # ---------------------------------------------------------------------------
 
 def test_10_vault_groups_accepted(client: RaggerClient, navigator: Navigator,

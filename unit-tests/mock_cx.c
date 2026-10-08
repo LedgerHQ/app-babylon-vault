@@ -324,7 +324,7 @@ void crypto_tr_combine_taptree_hashes(const uint8_t left[32],
 // crypto_tr_tweak_pubkey — real BIP-341 output-key tweak, via libsecp256k1
 //
 // This was a SHA-256 stub that replaced the EC scalar multiplication entirely and
-// hardcoded y_parity to 0 (Cerberus V-030). It was deterministic and input-sensitive,
+// hardcoded y_parity to 0. It was deterministic and input-sensitive,
 // so tests checking P2TR format and cross-intent uniqueness passed, but the target
 // could not serve as an oracle for the actual output key or the control-block parity
 // bit: an incorrect vault address or parity would have gone unnoticed, and the parity

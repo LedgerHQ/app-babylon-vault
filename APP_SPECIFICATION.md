@@ -1,6 +1,6 @@
 # Babylon Vault — App Specification
 
-> **v22 HLD alignment:** This document reflects the device design as of HLD v22 (NAPPS-1466). For a full change history see [`CHANGELOG.md`](CHANGELOG.md).
+> **v22 HLD alignment:** This document reflects the device design as of HLD v22. For a full change history see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## About
 
@@ -43,7 +43,7 @@ carries no browser or application origin, and the same spec states plainly that 
 any allowed string". Validation here restricts only length and character set
 (`[a-z0-9\-]`), so any caller may claim `babylon-btc-vault`.
 
-Consequences a reviewer and an integrator should both be aware of (Cerberus V-012):
+Consequences a reviewer and an integrator should both be aware of:
 
 - A phishing application that reconstructs a known vault's public context and derivation
   path can produce a Screen 1 indistinguishable from the legitimate one, and on approval
@@ -220,8 +220,8 @@ option 1 of two proposed boundaries) for usability on large intents, where the k
 run to 64 entries.
 
 > ⚠️ **Residual risk acknowledgement: PENDING.** This entry must cite a written Donjon
-> sign-off (Baptistin Boilot) by name and date; none has been recorded on
-> [NAPPS-1483](https://ledgerhq.atlassian.net/browse/NAPPS-1483) at the time of writing.
+> sign-off (Baptistin Boilot) by name and date; none has been recorded
+> at the time of writing.
 > Until it is, the deviation is undocumented in the sense that matters — the next audit
 > finds a reopened finding with no paper trail.
 

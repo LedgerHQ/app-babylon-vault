@@ -45,7 +45,7 @@
 //   G_leaf_meta                 ≤  104 B  (L-11: outside union — leaf hash/prefix must
 //                                         survive a leaf_check reconstruction)
 //                                       ≤ 9289 B  (well within remaining SRAM after min stack)
-// display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
+// display.c per-vault group streaming static buffers: ~270 B outside this union
 // ---------------------------------------------------------------------------
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,

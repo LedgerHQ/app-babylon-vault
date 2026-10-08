@@ -1,4 +1,4 @@
-"""Screen 8 — PayoutFinalize: golden-snapshot and validation tests (NAPPS-1464).
+"""Screen 8 — PayoutFinalize: golden-snapshot and validation tests.
 
 PayoutFinalize is the depositor self-claim after the Claim+Assert chain.  It is
 the only flow in the app that asks the device to sign Input 1 (not Input 0).

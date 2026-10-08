@@ -52,7 +52,7 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 /* Returned when a per-type signature cap is exceeded; intent is nullified on this path */
 #define SW_CAP_EXCEEDED 0xB00Au
 
-/* Payout fee bound constants (NAPPS-1376) */
+/* Payout fee bound constants */
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
 
@@ -1482,7 +1482,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 /*
  * Verify PSBT_IN_WITNESS_UTXO for an input: expected_value and expected_spk must match.
  * The btcext framework does not cross-check PSBT_IN_WITNESS_UTXO against a reconstructed
- * P2TR address for segwit v1 inputs, so the device must do this explicitly (NAPPS-1376).
+ * P2TR address for segwit v1 inputs, so the device must do this explicitly.
  */
 static bool _payout_check_witness_utxo(dispatcher_context_t *dc,
                                        const merkleized_map_commitment_t *input_map,
