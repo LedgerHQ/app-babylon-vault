@@ -77,6 +77,20 @@ def _xdist_worker_index() -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _owned_tmp_dirs(config) -> List[Path]:
+    """The snapshots-tmp device directories this run owns.
+
+    Runs for different targets can share the repository directory (see PARALLEL_RUNS_DIR),
+    so a run clears and scans only its own device; no --device, or --device all, owns every
+    directory present.
+    """
+    tmp_root = TESTS_ROOT_DIR / "snapshots-tmp"
+    requested = config.getoption("device", default=None)
+    if not requested or requested == "all":
+        return sorted(p for p in tmp_root.glob("*") if p.is_dir())
+    return [tmp_root / str(requested)]
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session):
     # snapshots-tmp is the Ragger framework's ephemeral comparison directory,
@@ -84,12 +98,13 @@ def pytest_sessionstart(session):
     # stale per-test subdirs from a previous session causing spurious deletions
     # of golden snapshots that were updated between runs.
     # Only the controller clears it, and before xdist starts the workers: a worker doing
-    # so would delete the captures of the others.
+    # so would delete the captures of the others.  Only this run's own device directories
+    # are cleared: another target's run may be filling its own.
     if _xdist_worker_index() is not None:
         return
-    tmp_root = TESTS_ROOT_DIR / "snapshots-tmp"
-    if tmp_root.exists():
-        shutil.rmtree(tmp_root)
+    for tmp_dir in _owned_tmp_dirs(session.config):
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
 
 
 def _snapshot_the_screen_before_the_reply() -> None:
@@ -398,10 +413,11 @@ def pytest_sessionfinish(session, exitstatus):
     if _xdist_worker_index() is not None or not getattr(session.config.option, "numprocesses", None):
         return
     golden_run = session.config.getoption("--golden_run", default=False)
-    tmp_root = TESTS_ROOT_DIR / "snapshots-tmp"
     golden_root = TESTS_ROOT_DIR / "snapshots"
     problems = []
-    for device_tmp in sorted(p for p in tmp_root.glob("*") if p.is_dir()):
+    # Own device only: another target's directory may be mid-run, its captures incomplete,
+    # and --golden_run would delete the goldens of the pages it has not captured yet.
+    for device_tmp in _owned_tmp_dirs(session.config):
         for tmp_dir in _iter_leaf_snapshot_dirs(device_tmp):
             stale = _stale_goldens(tmp_dir, device_tmp, golden_root / device_tmp.name)
             if stale is None:
