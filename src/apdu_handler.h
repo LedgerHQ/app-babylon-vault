@@ -7,6 +7,7 @@
 // Babylon Vault custom APDU INS codes (>= 0x80 to avoid conflicts with base app)
 #define INS_APPROVE_VAULT_INTENT 0x80
 #define INS_DERIVE_CONTEXT_HASH  0x81
+#define INS_GET_VAULT_STATE      0x82
 
 /**
  * @brief Dispatches Babylon Vault custom APDUs.

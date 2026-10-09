@@ -27,7 +27,8 @@
 //   derivation_path_len    1 B  + padding
 //   app_name              64 B  (VAULT_APP_NAME_MAX_LEN)
 //   app_name_len           1 B  + padding
-//   total               ~557 B  (sizeof verified at compile time)
+//   context_fp, intent_fp  8 B  (2 × VAULT_FINGERPRINT_LEN, GET_VAULT_STATE)
+//   total               ~565 B  (sizeof verified at compile time)
 //
 // Combined globals budget (Nano S+ 40 KB SRAM; Flex/Stax 36 KB SRAM; base app BSS ~8.2 KB):
 //   vault_intent_t              ≤ 3072 B
@@ -38,18 +39,20 @@
 //                                         tap_leaf_script_state_t tls: ~2830 B — in union, grows
 //                                         with VAULT_MAX_TAPTREE_DEPTH display: ~524 B — keys via
 //                                         4-slot callback ring buffer
-//   G_approve_intent_state      ≤    8 B  (outside union — see globals.h for why)
+//   G_approve_intent_state      ≤  120 B  (outside union — see globals.h for why; dominated
+//                                         by the intent-fingerprint cx_sha256_t, 108 B)
 //   G_derive_streaming          ≤    8 B  (N-05 / G#1: outside union to prevent aliasing)
 //   G_leaf_meta                 ≤  104 B  (L-11: outside union — leaf hash/prefix must
 //                                         survive a leaf_check reconstruction)
-//                                       ≤ 9169 B  (well within remaining SRAM after min stack)
-// display.c per-vault group streaming static buffers (NAPPS-1442): ~270 B outside this union
+//                                       ≤ 9289 B  (well within remaining SRAM after min stack)
+// display.c per-vault group streaming static buffers: ~270 B outside this union
 // ---------------------------------------------------------------------------
 
 _Static_assert(sizeof(vault_intent_t) <= 3072,
                "vault_intent_t exceeds 3 KB — review key array sizes or scalar layout");
 _Static_assert(sizeof(vault_context_t) <= 700, "vault_context_t exceeds expected size");
-_Static_assert(sizeof(approve_intent_state_t) <= 8, "approve_intent_state_t unexpectedly large");
+_Static_assert(sizeof(approve_intent_state_t) <= sizeof(cx_sha256_t) + 8,
+               "approve_intent_state_t unexpectedly large");
 /* The standalone leaf dispatcher reads the captured prefix up to VAULT_LEAF_GROUP0_OP_OFF
  * for leaves too large to buffer; a shorter capture would silently hand it a zero byte. */
 _Static_assert(VAULT_LEAF_PREFIX_LEN > VAULT_LEAF_GROUP0_OP_OFF,

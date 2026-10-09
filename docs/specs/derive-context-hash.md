@@ -1,8 +1,8 @@
 > **Captured copy — for reference only.** Canonical source:
 > <https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-context-hash.md>
 > Captured 2026-06-30 (spec revision 2.1, dated 2026-05-13). The upstream document is
-> authoritative — re-fetch before relying on exact bytes. Tracked for device realignment in
-> NAPPS-1422. Note: the host-side three-secret expansion (HTLC hashlock / auth-anchor / WOTS
+> authoritative — re-fetch before relying on exact bytes.
+> Note: the host-side three-secret expansion (HTLC hashlock / auth-anchor / WOTS
 > seed) lives in the referenced `derive-vault-secrets.md`, which is **not** included here.
 
 ---

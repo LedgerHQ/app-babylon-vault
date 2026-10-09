@@ -10,6 +10,7 @@
 |--------|--------------------------|---------------|
 | `0x80` | `APPROVE_VAULT_INTENT`   | Three-phase: P1=0x00 scalar TLV (13 fields), P1=0x01 per-vault group TLV (6 fields × vault_count), P1=0x02 TLV key batch; show approval screen; transition to `INTENT_LOADED`. |
 | `0x81` | `DERIVE_CONTEXT_HASH`    | Derive the 32-byte root via HKDF-SHA-256 at `m/73681862'` over `info = SHA256(appName) ‖ SHA256(networkName) ‖ connectedPubkey ‖ context`; optional Screen 1 (P2=0x00); chunked context up to 1024 B. |
+| `0x82` | `GET_VAULT_STATE`        | Read-only, silent query: returns 4-byte fingerprints of the loaded intent and of the context root, so a host can resume a session still in device memory instead of re-deriving and re-approving. |
 
 ---
 
@@ -19,7 +20,8 @@ Three-phase command (v22). **P1=0x00** must be sent exactly once (13 scalar fiel
 **P1=0x01** is sent in one or more APDUs, each carrying one or more complete group records
 (in ascending `htlc_vout` order), until all `vault_count` groups have been received; **P1=0x02** is
 sent one or more times until all `keeper_count + challenger_count` public keys are delivered.
-Any error from any phase resets the in-flight state; a fresh P1=0x00 is required to retry.
+Once a P1=0x00 has been accepted, any rejection other than `0x6A86` invalidates the session,
+derived root included, so a retry starts again from `DERIVE_CONTEXT_HASH` (see Error conditions).
 
 ### P1=0x00 — Scalar TLV payload
 
@@ -82,21 +84,20 @@ payload for the next group. Tags must arrive in strictly ascending tag-index ord
 streaming (P1=0x02) may begin.
 
 **State context:**
-This command is accepted from any session state. The meaningful distinction is:
+P1=0x00 is accepted only in `HASH_DERIVED`, that is after a successful `DERIVE_CONTEXT_HASH`.
+In any other state — `IDLE`, or `INTENT_LOADED` with an intent already approved — it is
+refused with `0xB007` and the session is left as it was. Loading a new intent therefore
+starts with a new `DERIVE_CONTEXT_HASH`, which invalidates the old one.
 
-- **Called from `HASH_DERIVED`** (after a successful `DERIVE_CONTEXT_HASH`).
-  The 32-byte `root` produced by `DERIVE_CONTEXT_HASH` is copied to a stack buffer before
-  the internal session reset, then restored afterwards. Once all per-vault groups (P1=0x01)
-  and all keys (P1=0x02) are delivered, the device recomputes the on-chain commitments from
-  the root — `htlc_hashlock[i] = SHA256(Expand(root, "hashlock" ‖ I2OSP(htlc_vout_i,4)))`
-  and `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` — and binds them during
-  Pre-PegIn / PegIn validation. The root is zeroed immediately after the on-chain commitments
-  are derived (at the end of P1=0x02); it is not retained in `INTENT_LOADED`. The host already
-  holds the root (returned by `DERIVE_CONTEXT_HASH`) and expands the per-vault secrets itself,
-  so there is **no on-device secret-release step**.
-- **Called from any other state** — intent replacement / no-derive path.
-  The session is reset normally; no root is preserved, so `htlc_hashlock`/`auth_anchor_hash`
-  stay zero and Pre-PegIn/PegIn signing is rejected until a `DERIVE_CONTEXT_HASH` runs first.
+When P1=0x00 is accepted, the 32-byte `root` produced by `DERIVE_CONTEXT_HASH` is copied to a
+stack buffer before the internal session reset, then restored afterwards. Once all per-vault
+groups (P1=0x01) and all keys (P1=0x02) are delivered, the device recomputes the on-chain
+commitments from the root — `htlc_hashlock[i] = SHA256(Expand(root, "hashlock" ‖
+I2OSP(htlc_vout_i,4)))` and `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` — and
+binds them during Pre-PegIn / PegIn validation. The root is zeroed immediately after the
+on-chain commitments are derived (at the end of P1=0x02); it is not retained in
+`INTENT_LOADED`. The host already holds the root (returned by `DERIVE_CONTEXT_HASH`) and
+expands the per-vault secrets itself, so there is **no on-device secret-release step**.
 
 ---
 
@@ -131,7 +132,8 @@ After the final key is accepted the device also derives the depositor public key
 **Response (complete — all keys received):**
 The device displays the vault parameters for user review. On approval the session
 transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
-(`0x6985`) is returned and the session remains `IDLE`.
+(`0x6985`) is returned and the session is invalidated, back to `IDLE` with the derived root
+discarded.
 
 ---
 
@@ -142,8 +144,15 @@ transitions to `INTENT_LOADED` and `SW_OK` is returned. On rejection `SW_DENY`
 | `0x6A80` | Duplicate tag, unknown tag, field validation failure, wrong field length, malformed TLV entry, key ordering/uniqueness violation, tag phase mismatch (keeper tag where challenger expected or vice versa), extra keys beyond declared count, extra vault groups beyond `vault_count`, `htlc_vout` not strictly ascending across groups, depositor path in intent does not match path used in `DERIVE_CONTEXT_HASH` |
 | `0x6A86` | P2 is not `0x00` (checked before P1); or P1 is not `0x00`, `0x01`, or `0x02` |
 | `0x6985` | User rejected the approval screen |
-| `0xB007` | P1=0x01 (groups) received before P1=0x00 scalars, or P1=0x02 (key batch) received before all P1=0x01 groups are delivered, or P1=0x02 received before `DERIVE_CONTEXT_HASH` completes |
+| `0xB007` | P1=0x00 outside `HASH_DERIVED` (no prior `DERIVE_CONTEXT_HASH`, or an intent already loaded); P1=0x01 (groups) or P1=0x02 (key batch) with no accepted P1=0x00; P1=0x02 received before all P1=0x01 groups are delivered |
 | `0x6F00` | BIP-32 derivation of depositor key failed |
+
+**Which rejections invalidate the session.** A P1=0x00 that fails validation (`0x6A80`),
+and — once a P1=0x00 has been accepted — every rejection of a P1=0x01 or P1=0x02 APDU
+(`0x6A80`, `0x6F00`, the ordering `0xB007`, and `0x6985` from the review screen) invalidate
+the session, derived root included; `DERIVE_CONTEXT_HASH` must then run again. The session is
+left untouched by `0x6A86`, by a P1=0x00 outside `HASH_DERIVED`, and by a P1=0x01 or P1=0x02
+with no accepted P1=0x00 (both `0xB007`).
 
 ---
 
@@ -236,6 +245,116 @@ Implementation: `src/handler/derive_context_hash_core.h` (static inline, unit-te
 Upstream specs (captured in `docs/specs/`):
 [derive-context-hash.md](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-context-hash.md),
 [derive-vault-secrets.md](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-vault-secrets.md)
+
+---
+
+## INS 0x82 — GET_VAULT_STATE — Wire Format
+
+Read-only session query (ADR-001). It needs no user presence, shows no screen, and changes
+no state: the session, the signature counters and the dedup masks are untouched, and
+repeated queries return identical bytes.
+
+### Command
+
+| CLA    | INS    | P1     | P2     | CData |
+|--------|--------|--------|--------|-------|
+| `0xE1` | `0x82` | `0x00` | `0x00` | empty |
+
+### Response
+
+```
+[ len_i: 1 B ][ intent_fp: len_i B ][ len_r: 1 B ][ context_fp: len_r B ]
+```
+
+Each length byte is `0x00` (not held; the fingerprint that follows is absent) or `0x04`.
+SW is `0x9000` for every well-formed call. What is reported depends on the session state
+alone:
+
+| Session state | Reached by | Response |
+|---------------|------------|----------|
+| `IDLE` | fresh start, or an invalidation: a signature cap exceeded or a signature replayed (`0xB00A`), an error while signing a Payout or NoPayout, an `APPROVE_VAULT_INTENT` that fails validation or that the user rejects, a new `DERIVE_CONTEXT_HASH` stream | `00 00` |
+| `HASH_DERIVED` | `DERIVE_CONTEXT_HASH` complete (P2=`0x00` or `0x01`), including while an `APPROVE_VAULT_INTENT` is in flight | `00 04 <context_fp>` |
+| `INTENT_LOADED` | `APPROVE_VAULT_INTENT` approved by the user | `04 <intent_fp> 04 <context_fp>` |
+
+An intent that is still streaming, or that is on the review screen, is not reported: the
+intent fingerprint appears only once the user has approved it. Other `SIGN_PSBT` rejections
+— a PSBT that fails validation, for instance — keep the session, so query again rather than
+assume it is gone.
+
+While an intent is loaded, every `APPROVE_VAULT_INTENT` APDU is refused with `0xB007` and
+the session is kept, so the loaded intent is still reported afterwards. Replacing an intent
+takes a new `DERIVE_CONTEXT_HASH`, which does invalidate. Which `APPROVE_VAULT_INTENT`
+rejections invalidate is listed under its error conditions above.
+
+### Fingerprint definitions
+
+Both fingerprints are the **last 4 bytes** (bytes 28..31) of a SHA-256 digest.
+
+- **`context_fp` = `SHA-256(context_root)[28..32]`**, where `context_root` is the 32-byte
+  root `DERIVE_CONTEXT_HASH` P2=`0x00` returns. P2=`0x01` returns no root, but for the same
+  inputs it derives the same root and so reports the same fingerprint.
+- **`intent_fp` = `SHA-256(CData₀ ‖ CData₁ ‖ … ‖ CDataₙ)[28..32]`**: the CData of every
+  `APPROVE_VAULT_INTENT` APDU of the approved intent, concatenated in the order sent — the
+  P1=`0x00` scalars, then each P1=`0x01` group APDU, then each P1=`0x02` key batch. The CLA,
+  INS, P1, P2 and Lc bytes are not included, and an empty CData contributes nothing.
+
+Because only the concatenation is hashed, the fingerprint does not depend on how the host
+splits the groups or keys across APDUs. It does depend on every byte sent, including the
+TLV order the host chose for the scalar fields, so the host must hash exactly the bytes it
+sent. It is not a hash of the device's parsed intent, which holds padding and device-derived
+fields (`depositor_pk`) the host cannot reproduce.
+
+Worked example (mainnet): the 1-keeper / 1-challenger intent built by the Ragger suite
+(`tests/test_approve_vault_intent.py` `_make_scalars` and `_make_group`, keys
+`TEST_VALID_KEYS[0]` and `[1]`) has `intent_fp = 44 a9 9b 57`; the root
+`f82ced3b…455df008` of derive-context-hash §4.2 has `context_fp = d1 f8 ec da`. Both are
+pinned in `unit-tests/test_vault_context.c`.
+
+**Why the context fingerprint is captured at derivation.** The device zeroes the root as
+soon as `APPROVE_VAULT_INTENT` has derived `htlc_hashlock` and `auth_anchor_hash` from it,
+so in `INTENT_LOADED` there is no root left to hash. `context_fp` is therefore computed in
+`DERIVE_CONTEXT_HASH` when the root is produced and kept alongside the session (see the
+`context_root` lifetime note in [`APP_SPECIFICATION.md`](../APP_SPECIFICATION.md)).
+
+### Malformed calls
+
+ADR-001's "no failure mode" covers the well-formed call only. A malformed call is rejected
+with a status word, returns no data, and leaves the session exactly as it was:
+
+| SW | Condition |
+|----|-----------|
+| `0x6A86` | P1 ≠ `0x00` or P2 ≠ `0x00` (checked first) |
+| `0x6A87` | CData not empty |
+
+Rejecting rather than answering follows the app's fail-closed rule, and it keeps the command
+extensible: a later revision can assign a meaning to a non-zero P1 or P2, and a host that
+uses it against this version gets `0x6A86` instead of an answer it would misread.
+
+Unreachable in practice: if the session state were ever outside the three values above the
+device returns `0xB007` rather than guess an answer.
+
+### Security
+
+The caller is unauthenticated and needs no approval, so any host can poll this command. It
+learns whether a session exists and two 4-byte truncated SHA-256 values. For the host that
+ran the session they disclose nothing new: it sent the intent bytes itself and received the
+root from `DERIVE_CONTEXT_HASH` P2=`0x00`.
+
+A host that never obtained an approval can still read `context_fp` for a root it derived
+silently with P2=`0x01`, from inputs it chose. That is 32 bits of a hash of a 256-bit secret;
+it cannot be inverted and `SHA-256(root)` is used nowhere else, so it confirms nothing
+actionable.
+
+Both fingerprints are check values, not authenticators. At 32 bits a hostile host can grind
+an intent with a colliding fingerprint in about 2³² hashes, so a match tells the host that
+the device holds an intent with that fingerprint, not that it holds the host's own. The
+device is unaffected: it signs only within the intent the user approved on screen. A host
+should therefore treat a match as a hint to resume, never as proof: what keeps signing bound
+to the approved intent is the device's validation of each PSBT, not the fingerprint.
+
+Signature counters are deliberately not returned (ADR-001 Option 3). The session also
+survives a transport disconnection on battery-powered devices, a pending divergence from
+HLD v23. See [`APP_SPECIFICATION.md`](../APP_SPECIFICATION.md) for both notes.
 
 ---
 

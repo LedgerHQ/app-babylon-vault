@@ -2,8 +2,8 @@
 > <https://github.com/babylonlabs-io/babylon-toolkit/blob/main/docs/specs/derive-vault-secrets.md>
 > Captured 2026-06-30 (spec revision 0.1 draft, dated 2026-04-22). The upstream document is
 > authoritative — re-fetch before relying on exact bytes. Companion to
-> [`derive-context-hash.md`](derive-context-hash.md); both tracked for device realignment in
-> NAPPS-1422. Device-relevant point: the on-chain hashlock is
+> [`derive-context-hash.md`](derive-context-hash.md).
+> Device-relevant point: the on-chain hashlock is
 > `SHA256(HKDF-Expand(root, info("hashlock", I2OSP(htlcVout,4)), 32))`, **not** `SHA256(root)`.
 
 ---

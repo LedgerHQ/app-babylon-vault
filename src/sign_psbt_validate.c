@@ -52,7 +52,7 @@ _Static_assert(AUTH_ANCHOR_SPK_LEN == VAULT_P2TR_SCRIPTPUBKEY_LEN,
 /* Returned when a per-type signature cap is exceeded; intent is nullified on this path */
 #define SW_CAP_EXCEEDED 0xB00Au
 
-/* Payout fee bound constants (NAPPS-1376) */
+/* Payout fee bound constants */
 #define MAX_PAYOUT_VSIZE_BASE            500u
 #define MAX_PAYOUT_VSIZE_PER_PARTICIPANT 55u
 
@@ -508,6 +508,158 @@ static bool _compute_prepegin_txid(dispatcher_context_t *dc,
 static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
                             uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]);
 
+/* Per vault group: verify htlc_vout range, HTLC scriptPubKey, and amount. */
+static bool _validate_prepegin_htlc_outputs(dispatcher_context_t *dc,
+                                            const sign_psbt_state_t *st,
+                                            const vault_intent_t *intent) {
+    for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
+        if (intent->groups[gi].htlc_vout >= st->n_outputs) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint8_t actual_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t htlc_value;
+        if (!_read_output(dc,
+                          st->outputs_root,
+                          st->n_outputs,
+                          intent->groups[gi].htlc_vout,
+                          actual_spk,
+                          &htlc_value)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        if (!vault_build_htlc_scriptpubkey(intent,
+                                           gi,
+                                           G_vault_context.htlc_hashlock[gi],
+                                           expected_spk)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (memcmp(actual_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        uint64_t min_htlc =
+            intent->groups[gi].vault_amount + intent->groups[gi].depositor_claim_value;
+        if (min_htlc < intent->groups[gi].vault_amount) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* Include P2A anchor: the PegIn funds this output from the HTLC value. */
+        min_htlc += P2A_ANCHOR_VALUE;
+        if (min_htlc < P2A_ANCHOR_VALUE) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint64_t max_htlc = min_htlc + intent->groups[gi].pegin_max_fee;
+        if (max_htlc < min_htlc) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (htlc_value < min_htlc || htlc_value > max_htlc) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Every non-HTLC output must be one of, strictly after all HTLC outputs:
+ *   - the single shared auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>";
+ *   - the single CPFP anchor paying P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT;
+ *   - after that anchor, at most one change output paying P2TR(depositor_pk) above
+ *     VAULT_DUST_LIMIT, when depositor_path is the first receive address of the BIP-86
+ *     account the inputs are signed from.
+ * Change on the wallet policy's change branch (internal outputs) is refused: the
+ * depositor's own key is where the dApp looks for funds.  Outputs to depositor_pk
+ * return value to a key the device derived itself from depositor_path.  That path is
+ * host-chosen and never shown, so change is only accepted where a wallet looks for it.
+ * The anchor and the change share one scriptPubKey, so the anchor-first order is the only
+ * way for a reader of the transaction to tell them apart.
+ *
+ * groups are in ascending htlc_vout order, so the last group has the highest htlc_vout. */
+static bool _validate_prepegin_outputs(
+    dispatcher_context_t *dc,
+    const sign_psbt_state_t *st,
+    const vault_intent_t *intent,
+    const uint8_t internal_outputs[static BITVECTOR_REAL_SIZE(MAX_N_OUTPUTS_CAN_SIGN)]) {
+    uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
+    expected_anchor_spk[0] = 0x6A;  // OP_RETURN
+    expected_anchor_spk[1] = OP_PUSHBYTES_32;
+    memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
+
+    uint8_t expected_cpfp_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    if (!_bip86_p2tr_spk(intent->depositor_pk, expected_cpfp_spk)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Assert vault_count ∈ [1, VAULT_MAX_VAULTS] enforced at parse time.
+     * Guards against a false-positive [security.ArrayBound] warning: the analyzer cannot
+     * prove the invariant across the parse/validate boundary and flags the -1 index path. */
+    LEDGER_ASSERT(intent->vault_count >= 1 && intent->vault_count <= VAULT_MAX_VAULTS,
+                  "vault_count out of range");
+    const unsigned int max_htlc_vout = intent->groups[intent->vault_count - 1].htlc_vout;
+
+    bool anchor_found = false;
+    prepegin_depositor_outputs_t depositor_outputs = {false, false};
+    const bool change_allowed =
+        st->account.is_default && prepegin_change_path_ok(intent->depositor_path,
+                                                          VAULT_DEPOSITOR_PATH_LEN,
+                                                          (uint32_t) st->account.bip44_purpose,
+                                                          st->account.bip44_account);
+    for (unsigned int i = 0; i < st->n_outputs; i++) {
+        bool is_htlc_output = false;
+        for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
+            if (intent->groups[gi].htlc_vout == i) {
+                is_htlc_output = true;
+                break;
+            }
+        }
+        if (is_htlc_output) continue;
+        if (bitvector_get(internal_outputs, i)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+
+        /* Non-HTLC output: must appear strictly after all HTLC outputs. */
+        if (i <= max_htlc_vout) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+        uint64_t out_value;
+        if (!_read_output(dc, st->outputs_root, st->n_outputs, i, out_spk, &out_value)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (out_value == 0 && memcmp(out_spk, expected_anchor_spk, AUTH_ANCHOR_SPK_LEN) == 0) {
+            /* OP_RETURN auth-anchor: provably unspendable, at most one permitted. */
+            if (anchor_found) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+            anchor_found = true;
+        } else if (memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
+            if (!prepegin_depositor_output_accept(&depositor_outputs, out_value, change_allowed)) {
+                SEND_SW(dc, SW_INCORRECT_DATA);
+                return false;
+            }
+        } else {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+    /* Every optional output is enforced at-most-once within the loop; their final
+     * values are intentionally not checked — none is mandatory. */
+    (void) anchor_found;
+    return true;
+}
+
 static bool _validate_prepegin(
     dispatcher_context_t *dc,
     sign_psbt_state_t *st,
@@ -570,133 +722,8 @@ static bool _validate_prepegin(
         /* PSBT_FIELD_ABSENT means no PSBT_IN_SIGHASH_TYPE → SIGHASH_DEFAULT → OK */
     }
 
-    /* Per vault group: verify htlc_vout range, HTLC scriptPubKey, and amount. */
-    for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
-        if (intent->groups[gi].htlc_vout >= st->n_outputs) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint8_t actual_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        uint64_t htlc_value;
-        if (!_read_output(dc,
-                          st->outputs_root,
-                          st->n_outputs,
-                          intent->groups[gi].htlc_vout,
-                          actual_spk,
-                          &htlc_value)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint8_t expected_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        if (!vault_build_htlc_scriptpubkey(intent,
-                                           gi,
-                                           G_vault_context.htlc_hashlock[gi],
-                                           expected_spk)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (memcmp(actual_spk, expected_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-
-        uint64_t min_htlc =
-            intent->groups[gi].vault_amount + intent->groups[gi].depositor_claim_value;
-        if (min_htlc < intent->groups[gi].vault_amount) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        /* Include P2A anchor: the PegIn funds this output from the HTLC value. */
-        min_htlc += P2A_ANCHOR_VALUE;
-        if (min_htlc < P2A_ANCHOR_VALUE) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint64_t max_htlc = min_htlc + intent->groups[gi].pegin_max_fee;
-        if (max_htlc < min_htlc) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (htlc_value < min_htlc || htlc_value > max_htlc) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
-
-    /* Every non-HTLC output must be either BIP-86 change (internal), the single shared
-     * auth-anchor OP_RETURN = "OP_RETURN <SHA256(authAnchor)>", or the single CPFP anchor
-     * P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT. Both optional outputs must appear
-     * strictly after all HTLC outputs.
-     *
-     * groups are in ascending htlc_vout order, so the last group has the highest htlc_vout. */
-    uint8_t expected_anchor_spk[AUTH_ANCHOR_SPK_LEN];
-    expected_anchor_spk[0] = 0x6A;  // OP_RETURN
-    expected_anchor_spk[1] = OP_PUSHBYTES_32;
-    memcpy(expected_anchor_spk + 2, G_vault_context.auth_anchor_hash, VAULT_HASH256_LEN);
-
-    uint8_t expected_cpfp_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-    if (!_bip86_p2tr_spk(intent->depositor_pk, expected_cpfp_spk)) {
-        SEND_SW(dc, SW_INCORRECT_DATA);
-        return false;
-    }
-
-    /* Assert vault_count ∈ [1, VAULT_MAX_VAULTS] enforced at parse time.
-     * Guards against a false-positive [security.ArrayBound] warning: the analyzer cannot
-     * prove the invariant across the parse/validate boundary and flags the -1 index path. */
-    LEDGER_ASSERT(intent->vault_count >= 1 && intent->vault_count <= VAULT_MAX_VAULTS,
-                  "vault_count out of range");
-    const unsigned int max_htlc_vout = intent->groups[intent->vault_count - 1].htlc_vout;
-
-    bool anchor_found = false;
-    bool cpfp_anchor_found = false;
-    for (unsigned int i = 0; i < st->n_outputs; i++) {
-        bool is_htlc_output = false;
-        for (unsigned int gi = 0; gi < intent->vault_count; gi++) {
-            if (intent->groups[gi].htlc_vout == i) {
-                is_htlc_output = true;
-                break;
-            }
-        }
-        if (is_htlc_output) continue;
-        if (bitvector_get(internal_outputs, i)) continue;  // BIP-86 change
-
-        /* Non-internal, non-HTLC output: must appear strictly after all HTLC outputs. */
-        if (i <= max_htlc_vout) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t out_spk[VAULT_P2TR_SCRIPTPUBKEY_LEN];
-        uint64_t out_value;
-        if (!_read_output(dc, st->outputs_root, st->n_outputs, i, out_spk, &out_value)) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        if (out_value == 0 && memcmp(out_spk, expected_anchor_spk, AUTH_ANCHOR_SPK_LEN) == 0) {
-            /* OP_RETURN auth-anchor: provably unspendable, at most one permitted. */
-            if (anchor_found) {
-                SEND_SW(dc, SW_INCORRECT_DATA);
-                return false;
-            }
-            anchor_found = true;
-        } else if (out_value == VAULT_DUST_LIMIT &&
-                   memcmp(out_spk, expected_cpfp_spk, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0) {
-            /* CPFP anchor: P2TR(depositor_pk) at exactly VAULT_DUST_LIMIT, at most one. */
-            if (cpfp_anchor_found) {
-                SEND_SW(dc, SW_INCORRECT_DATA);
-                return false;
-            }
-            cpfp_anchor_found = true;
-        } else {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-    }
-    /* Both optional anchors are enforced at-most-once within the loop; their final
-     * values are intentionally not checked — neither is mandatory. */
-    (void) anchor_found;
-    (void) cpfp_anchor_found;
+    if (!_validate_prepegin_htlc_outputs(dc, st, intent)) return false;
+    if (!_validate_prepegin_outputs(dc, st, intent, internal_outputs)) return false;
 
     if (st->outputs.total_amount > st->inputs_total_amount) {
         SEND_SW(dc, SW_INCORRECT_DATA);
@@ -1455,7 +1482,7 @@ static bool _validate_pegin(dispatcher_context_t *dc, sign_psbt_state_t *st) {
 /*
  * Verify PSBT_IN_WITNESS_UTXO for an input: expected_value and expected_spk must match.
  * The btcext framework does not cross-check PSBT_IN_WITNESS_UTXO against a reconstructed
- * P2TR address for segwit v1 inputs, so the device must do this explicitly (NAPPS-1376).
+ * P2TR address for segwit v1 inputs, so the device must do this explicitly.
  */
 static bool _payout_check_witness_utxo(dispatcher_context_t *dc,
                                        const merkleized_map_commitment_t *input_map,
@@ -1540,6 +1567,15 @@ static bool _bip86_p2tr_spk(const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN],
     out[1] = OP_PUSHBYTES_32;
     memcpy(out + 2, tweaked, VAULT_XONLY_PUBKEY_LEN);
     return true;
+}
+
+/* True iff spk is exactly the BIP-86 key-path-only P2TR scriptPubKey of xonly_key.  Used for
+ * every output the device pins to the depositor's own key D, so the check is never open-coded. */
+static bool _spk_is_bip86_p2tr_of(const uint8_t spk[VAULT_P2TR_SCRIPTPUBKEY_LEN],
+                                  const uint8_t xonly_key[VAULT_XONLY_PUBKEY_LEN]) {
+    uint8_t expected[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    return _bip86_p2tr_spk(xonly_key, expected) &&
+           memcmp(spk, expected, VAULT_P2TR_SCRIPTPUBKEY_LEN) == 0;
 }
 
 /*
@@ -2304,16 +2340,13 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
         return false;
     }
 
-    /* G_scratch.tls already populated; dispatcher guarantees leaf is 34 bytes <D> OP_CHECKSIG.
-     * Check buffered before the length assert so an oversized leaf is rejected cleanly
-     * rather than tripping the assert. */
+    /* G_scratch.tls already populated; dispatcher guarantees leaf is 34 bytes <D> OP_CHECKSIG. */
     if (!_require_buffered_leaf(dc)) return false;
-    LEDGER_ASSERT(G_scratch.tls.leaf_script_len == VAULT_DEPOSITOR_CLAIM_LEAF_LEN,
-                  "unexpected claim leaf length");
-    const uint8_t *leaf = G_scratch.tls.leaf_script;
-    /* Extract D key into a local copy before any use of G_scratch.leaf_check */
     uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
-    memcpy(d_key, leaf + 1, VAULT_XONLY_PUBKEY_LEN);
+    if (!parse_claim_leaf_script(G_scratch.tls.leaf_script, G_scratch.tls.leaf_script_len, d_key)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
 
     /* Open Input 0 map */
     merkleized_map_commitment_t input_map;
@@ -2364,7 +2397,6 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
     /* Verify D key via BIP-32 derivation path in Input 0.
      * G_scratch.tls is consumed above; use G_scratch.sign_standalone for the large
      * buffers (xpub 78 B, deriv_val 89 B) to keep them off the call stack. */
-    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN]; /* BIP-86 P2TR(D) for output check */
     {
         G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
         memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
@@ -2402,11 +2434,6 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        uint8_t bip86_parity;
-        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
     }
 
     /* Output 1: value == VAULT_DUST_LIMIT, script == BIP-86 P2TR(D) */
@@ -2421,8 +2448,7 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out_spk[0] != OP_1 || out_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (!_spk_is_bip86_p2tr_of(out_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2479,6 +2505,206 @@ static bool _validate_display_claim(dispatcher_context_t *dc, sign_psbt_state_t 
                                    G_scratch.display_tx.addr_str))
         return false;
     return true;
+}
+
+/* -------------------------------------------------------------------------
+ * Standalone Reclaim validation + display (Screen 9)
+ *
+ * Precondition: G_scratch.tls is populated by the leaf-based dispatcher.
+ * Input 0: PegIn Output 1 (depositor claim reserve) — leaf <D> OP_CHECKSIG, byte-identical
+ * to Claim; the dispatcher tells the two apart by output count alone.
+ * Output 0: BIP-86 P2TR(<D>), the depositor's own address, as in Claim, WC and PayoutFinalize.
+ *
+ * No intent is loaded for this flow, so the device cannot tell whether PegIn Output 0 has
+ * already been spent and cannot bind an expected PegIn txid or bound how early the sweep
+ * happens.  Screen 9 carries that risk to the user; this validator only proves the funds
+ * go to the depositor's own key.
+ * ---------------------------------------------------------------------- */
+
+static bool _validate_display_reclaim(dispatcher_context_t *dc, sign_psbt_state_t *st) {
+    if (st->n_inputs != 1 || st->n_outputs != 1) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    if (st->tx_version < 2 || st->locktime != 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    if (!_require_buffered_leaf(dc)) return false;
+    uint8_t d_key[VAULT_XONLY_PUBKEY_LEN];
+    if (!parse_claim_leaf_script(G_scratch.tls.leaf_script, G_scratch.tls.leaf_script_len, d_key)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    /* PegIn Output 1 is a single-leaf tree, so its control block is exactly depth 0.  The
+     * commitment check alone admits more: a sibling proves some other tree, and trailing
+     * bytes short of a whole sibling hash are never read. */
+    if (G_scratch.tls.control_block_len != 1 + VAULT_XONLY_PUBKEY_LEN) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    merkleized_map_commitment_t input_map;
+    if (call_get_merkleized_map(dc, st->inputs_root, 1, 0, &input_map) < 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Reclaim is the first accepted pattern with an RBF sequence — see RECLAIM_SEQUENCE.
+     * reclaim_sequence_ok requires the field present: an absent PSBT_IN_SEQUENCE decodes as
+     * SEQUENCE_FINAL, which is not replaceable, so defaulting it would sign a transaction
+     * outside the specified RBF shape. */
+    {
+        uint32_t seq = 0;
+        psbt_field_status_t status = psbt_get_input_sequence(dc, &input_map, &seq);
+        if (!reclaim_sequence_ok(status == PSBT_FIELD_PRESENT, seq)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    {
+        uint32_t sighash_type = 0;
+        psbt_field_status_t res = psbt_get_input_sighash_type(dc, &input_map, &sighash_type);
+        if (res == PSBT_FIELD_ERROR ||
+            (res == PSBT_FIELD_PRESENT && sighash_type != SIGHASH_DEFAULT)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* WITNESS_UTXO: read value and verify taproot commitment first.
+     * _refund_verify_taproot_commitment reads G_scratch.tls.control_block and
+     * .leaf_script, fully consuming tls.  After this block, G_scratch.sign_standalone
+     * is free for the BIP32 locals to save stack, exactly as in Claim. */
+    uint64_t input_value;
+    {
+        uint8_t witness_utxo[MAX_WITNESS_UTXO_LEN];
+        int wu_len = call_get_merkleized_map_value(dc,
+                                                   &input_map,
+                                                   (uint8_t[]) {PSBT_IN_WITNESS_UTXO},
+                                                   1,
+                                                   witness_utxo,
+                                                   sizeof(witness_utxo));
+        if (wu_len < 9) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        input_value = read_u64_le(witness_utxo, 0);
+        uint8_t spk_len = witness_utxo[8];
+        if (wu_len != 9 + spk_len || spk_len != VAULT_P2TR_SCRIPTPUBKEY_LEN) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        /* Plausibility only: SIGHASH_DEFAULT commits to this value, so a false one
+         * yields nothing worse than an unusable signature (DoS, no fund redirection). */
+        if (input_value <= VAULT_DUST_LIMIT) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (!_refund_verify_taproot_commitment(dc, witness_utxo + 9)) return false;
+    }
+
+    /* Verify D key via BIP-32 derivation path in Input 0 — same reasoning as Claim. */
+    {
+        G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
+        memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
+        int deriv_len = call_get_merkleized_map_value(dc,
+                                                      &input_map,
+                                                      G_scratch.sign_standalone.deriv_key,
+                                                      1 + VAULT_XONLY_PUBKEY_LEN,
+                                                      G_scratch.sign_standalone.deriv_val,
+                                                      sizeof(G_scratch.sign_standalone.deriv_val));
+        if (deriv_len < 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        uint32_t fingerprint;
+        int path_len = parse_tap_bip32_deriv_value(G_scratch.sign_standalone.deriv_val,
+                                                   deriv_len,
+                                                   &fingerprint,
+                                                   G_scratch.sign_standalone.sign_path,
+                                                   VAULT_STANDALONE_PATH_LEN);
+        if (path_len < 0 || fingerprint != st->master_key_fingerprint ||
+            !check_bip86_path(G_scratch.sign_standalone.sign_path, path_len)) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        serialized_extended_pubkey_t *xpub =
+            (serialized_extended_pubkey_t *) G_scratch.sign_standalone.xpub_bytes;
+        if (get_extended_pubkey_at_path(G_scratch.sign_standalone.sign_path,
+                                        (uint8_t) path_len,
+                                        BIP32_PUBKEY_VERSION,
+                                        xpub) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+        if (memcmp(xpub->compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+            SEND_SW(dc, SW_INCORRECT_DATA);
+            return false;
+        }
+    }
+
+    /* Output 0: BIP-86 P2TR(D), the depositor's own address.  The host supplies no path for
+     * it, so no PSBT_OUT_TAP_BIP32_DERIVATION is read: any other BIP-86 address of this
+     * device would sit where no wallet looks for it. */
+    merkleized_map_commitment_t out_map;
+    if (call_get_merkleized_map(dc, st->outputs_root, 1, 0, &out_map) < 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint8_t out_script[VAULT_P2TR_SCRIPTPUBKEY_LEN];
+    int slen = call_get_merkleized_map_value(dc,
+                                             &out_map,
+                                             (uint8_t[]) {PSBT_OUT_SCRIPT},
+                                             1,
+                                             out_script,
+                                             VAULT_P2TR_SCRIPTPUBKEY_LEN);
+    if (slen != VAULT_P2TR_SCRIPTPUBKEY_LEN || !_spk_is_bip86_p2tr_of(out_script, d_key)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint8_t raw8[8];
+    if (8 !=
+        call_get_merkleized_map_value(dc, &out_map, (uint8_t[]) {PSBT_OUT_AMOUNT}, 1, raw8, 8)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+    uint64_t out_value = read_u64_le(raw8, 0);
+
+    uint64_t fee;
+    if (!reclaim_fee_ok(input_value, out_value, &fee)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    /* Prevout binding is not enforced: without an intent the device cannot compute the
+     * expected PegIn txid.  Displayed on Screen 9 for the user to check by eye. */
+    uint8_t pegin_txid[VAULT_HASH256_LEN];
+    if (VAULT_HASH256_LEN != call_get_merkleized_map_value(dc,
+                                                           &input_map,
+                                                           (uint8_t[]) {PSBT_IN_PREVIOUS_TXID},
+                                                           1,
+                                                           pegin_txid,
+                                                           VAULT_HASH256_LEN)) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    if (get_script_address(out_script,
+                           VAULT_P2TR_SCRIPTPUBKEY_LEN,
+                           G_scratch.display_tx.addr_str,
+                           sizeof(G_scratch.display_tx.addr_str)) < 0) {
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
+
+    return display_reclaim_transaction(dc,
+                                       out_value,
+                                       fee,
+                                       pegin_txid,
+                                       G_scratch.display_tx.addr_str);
 }
 
 /* -------------------------------------------------------------------------
@@ -2692,7 +2918,6 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
     }
 
     /* Verify D key via BIP-32 derivation in Input 0 */
-    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN];
     {
         uint8_t deriv_key[1 + VAULT_XONLY_PUBKEY_LEN];
         deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
@@ -2723,11 +2948,6 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
             return false;
         }
         if (memcmp(xpub.compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t bip86_parity;
-        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -2764,8 +2984,7 @@ static bool _validate_display_wc(dispatcher_context_t *dc, sign_psbt_state_t *st
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out_spk[0] != OP_1 || out_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (!_spk_is_bip86_p2tr_of(out_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3189,7 +3408,6 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
 
     /* Verify D key via BIP-32 derivation in Input 1.
      * G_scratch.tls is consumed above; use G_scratch.sign_standalone for large buffers. */
-    uint8_t bip86_out_key[VAULT_XONLY_PUBKEY_LEN];
     {
         G_scratch.sign_standalone.deriv_key[0] = PSBT_IN_TAP_BIP32_DERIVATION;
         memcpy(G_scratch.sign_standalone.deriv_key + 1, d_key, VAULT_XONLY_PUBKEY_LEN);
@@ -3224,11 +3442,6 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             return false;
         }
         if (memcmp(xpub->compressed_pubkey + 1, d_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
-            SEND_SW(dc, SW_INCORRECT_DATA);
-            return false;
-        }
-        uint8_t bip86_parity;
-        if (crypto_tr_tweak_pubkey(d_key, NULL, 0, &bip86_parity, bip86_out_key) != 0) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3267,8 +3480,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out0_spk[0] != OP_1 || out0_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out0_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (!_spk_is_bip86_p2tr_of(out0_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3300,9 +3512,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        if (out1_value != VAULT_DUST_LIMIT || out1_spk[0] != OP_1 ||
-            out1_spk[1] != OP_PUSHBYTES_32 ||
-            memcmp(out1_spk + 2, bip86_out_key, VAULT_XONLY_PUBKEY_LEN) != 0) {
+        if (out1_value != VAULT_DUST_LIMIT || !_spk_is_bip86_p2tr_of(out1_spk, d_key)) {
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
@@ -3335,10 +3545,7 @@ static bool _validate_display_payout_finalize(dispatcher_context_t *dc, sign_psb
             SEND_SW(dc, SW_INCORRECT_DATA);
             return false;
         }
-        format_hex(vault_txid,
-                   VAULT_HASH256_LEN,
-                   G_scratch.display_tx.txid_str,
-                   TX_DISPLAY_TXID_STR_SIZE);
+        format_txid_hex(vault_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
     }
 
     /* Fee cap (enforcement only, HLD "PayoutFinalize"): attested from the sole group's
@@ -3568,9 +3775,15 @@ bool validate_and_display_transaction(
         return false;
     }
 
-    /* Claim: <D> OP_CHECKSIG */
-    if (leaf_len == VAULT_DEPOSITOR_CLAIM_LEAF_LEN && leaf[33] == (uint8_t) OP_CHECKSIG)
-        return _validate_display_claim(dc, st);
+    /* Claim / Reclaim: <D> OP_CHECKSIG. The leaf alone cannot separate the two — it is
+     * byte-identical — so the pattern rule is on the pair (leaf script, output count):
+     * 2 outputs is Claim, 1 output is Reclaim, anything else matches neither. */
+    if (leaf_len == VAULT_DEPOSITOR_CLAIM_LEAF_LEN && leaf[33] == (uint8_t) OP_CHECKSIG) {
+        if (st->n_outputs == 2) return _validate_display_claim(dc, st);
+        if (st->n_outputs == 1) return _validate_display_reclaim(dc, st);
+        SEND_SW(dc, SW_INCORRECT_DATA);
+        return false;
+    }
 
     if (leaf_len > (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN &&
         leaf[33] == (uint8_t) OP_CHECKSIGVERIFY) {

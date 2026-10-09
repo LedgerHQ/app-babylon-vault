@@ -1,19 +1,20 @@
 """
-Silent-flow validation tests for SIGN_PSBT (NAPPS-1375/1376/1462).
+Silent-flow validation tests for SIGN_PSBT.
 
-Covers Pre-PegIn, PegIn, Payout, NoPayout, and Refund validation (no display).
+Covers Pre-PegIn, PegIn, Payout, NoPayout, Refund, and Reclaim validation (no display).
 Screen-capture tests live in the corresponding test_screen*.py files:
   test_screen3_refund.py  — Screen 3 (Refund)
   test_screen4_claim.py  — Screen 4 (Claim)
   test_screen5_assert.py — Screen 5 (Assert)
   test_screen6_wc.py     — Screen 6 (WC)
+  test_screen9_reclaim.py — Screen 9 (Reclaim), incl. cross-flow and session-state cases
 """
 
 from __future__ import annotations
 
 import hashlib
 import struct
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional, Sequence
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
@@ -23,7 +24,9 @@ from ledgered.devices import Device
 from ragger.error import ExceptionRAPDU
 from ragger.navigator import Navigator
 
+import ledger_bitcoin.client as ledger_bitcoin_client
 from ledger_bitcoin import WalletPolicy
+from ledger_bitcoin.client_command import ClientCommandInterpreter
 from ledger_bitcoin.common import hash160
 from ledger_bitcoin.key import ExtendedKey, KeyOriginInfo
 from ledger_bitcoin.psbt import PSBT, PartiallySignedInput, PartiallySignedOutput
@@ -41,6 +44,7 @@ from .vault_client import (
     SW_BAD_STATE,
     SW_BAD_CPFP_ANCHOR,
     SW_CAP_EXCEEDED,
+    SW_DENY,
     SW_INCORRECT_DATA,
     CLA_VAULT,
     INS_APPROVE_VAULT_INTENT,
@@ -161,6 +165,13 @@ VAULT_SCRIPT_MAX_LEN  = 2560
 # Pre-PegIn txid committed in the intent; used by PegIn/Payout validators.
 _PREPEGIN_TXID = bytes(range(32))
 
+# Pre-PegIn fee cap committed in the intent (prepegin_max_fee), and the fee
+# _build_prepegin_psbt funds its input for (3_456 sat = 0.00003456 BTC).
+_PREPEGIN_MAX_FEE     = 500_000
+_PREPEGIN_DEFAULT_FEE = 3_456
+_PREPEGIN_DEPOSITOR_CHANGE = 250_000  # change returned to P2TR(depositor_pk)
+_OP_RETURN_PUSH32 = bytes([0x6A, 0x20])  # OP_RETURN OP_PUSHBYTES_32: auth-anchor script prefix
+
 # Assert txid spent by NoPayout Input 0. Arbitrary on purpose: the device cannot
 # reconstruct the Assert txid (Assert:0 embeds Council keys and the connectors embed fresh
 # WOTS chain tips, none of them carried in the intent), so it never checks this value.
@@ -258,7 +269,8 @@ def _htlc_output(depositor_pk: bytes, vp_pk: bytes,
 # ---------------------------------------------------------------------------
 
 def _standard_single_key_wallet(client: "RaggerClient", coin_type: int,
-                                purpose: int, descriptor_template: str) -> WalletPolicy:
+                                purpose: int, descriptor_template: str,
+                                account: int = 0) -> WalletPolicy:
     """Default (HMAC-less) single-key wallet policy for the test device.
 
     wallet_id != all-zeros → has_no_wallet_policy = false → SIGN_PSBT routes to the
@@ -266,17 +278,17 @@ def _standard_single_key_wallet(client: "RaggerClient", coin_type: int,
     the key origin is m/purpose'/coin_type'/account', so purpose must match the template.
     """
     fingerprint = client.get_master_fingerprint()
-    xpub = client.get_extended_pubkey(f"m/{purpose}'/{coin_type}'/0'", display=False)
+    xpub = client.get_extended_pubkey(f"m/{purpose}'/{coin_type}'/{account}'", display=False)
     return WalletPolicy(
         name="",
         descriptor_template=descriptor_template,
-        keys_info=[f"[{fingerprint.hex()}/{purpose}'/{coin_type}'/0']{xpub}"],
+        keys_info=[f"[{fingerprint.hex()}/{purpose}'/{coin_type}'/{account}']{xpub}"],
     )
 
 
-def _standard_taproot_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
-    """BIP-86 tr() wallet — SegWit v1, empty scriptSig."""
-    return _standard_single_key_wallet(client, coin_type, BIP86_TAPROOT, "tr(@0/**)")
+def _standard_taproot_wallet(client: "RaggerClient", coin_type: int, account: int = 0) -> WalletPolicy:
+    """BIP-86 tr() wallet of the given account — SegWit v1, empty scriptSig."""
+    return _standard_single_key_wallet(client, coin_type, BIP86_TAPROOT, "tr(@0/**)", account)
 
 
 def _standard_native_segwit_wallet(client: "RaggerClient", coin_type: int) -> WalletPolicy:
@@ -311,24 +323,19 @@ def _build_prepegin_psbt(
     input_coin_type: int = 0,
     auth_anchor: Optional[bytes] = None,
     auth_anchor_value: int = 0,
-    cpfp_anchor_spk: Optional[bytes] = None,
-    cpfp_anchor_value: int = _VAULT_DUST_LIMIT,
+    input_account: int = 0,
 ) -> PSBT:
-    """Pre-PegIn PSBTv0: HTLC output at htlc_vout, plus optional trailing outputs.
+    """Pre-PegIn PSBTv0: HTLC output at htlc_vout, plus an optional OP_RETURN.
 
     The device accepts an optional OP_RETURN = "OP_RETURN <SHA256(authAnchor)>"
     (= 0x6A 0x20 || auth_anchor); pass auth_anchor=vault_auth_anchor(root) to include
-    it.
-
-    The device also accepts an optional CPFP anchor: P2TR(depositor_pk) at exactly
-    VAULT_DUST_LIMIT (546 sat).  Pass cpfp_anchor_spk=_bip86_depositor_spk(dep_pk) to
-    include it; cpfp_anchor_value overrides the value for negative tests.
+    it.  Depositor outputs (CPFP anchor, change) are added by _prepegin_bound_to_intent.
 
     When input_internal_key and input_fingerprint are provided the input is a
     proper BIP-86 key-path P2TR UTXO (required for the 'all inputs internal'
     validation check in _validate_prepegin).
     """
-    input_value = htlc_value + 3_456  # pre-pegin tx fee = 3456 sats = 0.00003456 BTC
+    input_value = htlc_value + _PREPEGIN_DEFAULT_FEE
 
     if input_internal_key is not None and input_fingerprint is not None:
         _, input_tweaked = taproot_tweak_pubkey(input_internal_key, b'')
@@ -346,11 +353,7 @@ def _build_prepegin_psbt(
     if auth_anchor is not None:
         # Shared auth-anchor OP_RETURN: OP_RETURN OP_PUSHBYTES_32 <SHA256(authAnchor)>.
         # Value is 0 on the happy path; auth_anchor_value > 0 exercises the burn guard.
-        tx.vout.append(CTxOut(auth_anchor_value, bytes([0x6A, 0x20]) + auth_anchor))
-    if cpfp_anchor_spk is not None:
-        # CPFP anchor: P2TR(depositor_pk) at VAULT_DUST_LIMIT; cpfp_anchor_value lets
-        # negative tests exercise wrong-value rejection.
-        tx.vout.append(CTxOut(cpfp_anchor_value, cpfp_anchor_spk))
+        tx.vout.append(CTxOut(auth_anchor_value, _OP_RETURN_PUSH32 + auth_anchor))
     tx.wit = CTxWitness()
 
     psbt = PSBT()
@@ -366,7 +369,7 @@ def _build_prepegin_psbt(
             set(),
             KeyOriginInfo(
                 input_fingerprint,
-                [HARDENED | 86, HARDENED | input_coin_type, HARDENED | 0, 0, 0],
+                [HARDENED | 86, HARDENED | input_coin_type, HARDENED | input_account, 0, 0],
             ),
         )
 
@@ -440,6 +443,7 @@ def _build_prepegin_psbt_ecdsa(
     coin_type: int,
     auth_anchor: bytes,
     htlc_value: int = _HTLC_VALUE,
+    extra_outputs: Sequence[CTxOut] = (),
 ) -> PSBT:
     """Pre-PegIn PSBTv0 whose single wallet input belongs to a non-Taproot standard policy.
 
@@ -454,7 +458,7 @@ def _build_prepegin_psbt_ecdsa(
     reject a segwitv0 input whose previous transaction is absent.
 
     Outputs are the HTLC and the auth-anchor OP_RETURN, both 34 bytes, which is what the
-    device's txid reconstruction expects.
+    device's txid reconstruction expects, then `extra_outputs`, which the input funds.
     """
     redeem_script = b''
     if purpose == BIP44_LEGACY:
@@ -467,7 +471,7 @@ def _build_prepegin_psbt_ecdsa(
     else:
         raise ValueError(f"unsupported BIP-44 purpose for an ECDSA input: {purpose}")
 
-    input_value = htlc_value + 3_456  # pre-pegin tx fee = 3456 sats = 0.00003456 BTC
+    input_value = htlc_value + _PREPEGIN_DEFAULT_FEE + sum(out.nValue for out in extra_outputs)
     prev_tx = _funding_tx(input_spk, input_value)
 
     tx = CTransaction()
@@ -478,7 +482,8 @@ def _build_prepegin_psbt_ecdsa(
     tx.vin[0].nSequence = 0xFFFFFFFF
     tx.vout = [
         CTxOut(htlc_value, htlc_spk),
-        CTxOut(0, bytes([0x6A, 0x20]) + auth_anchor),
+        CTxOut(0, _OP_RETURN_PUSH32 + auth_anchor),
+        *extra_outputs,
     ]
     tx.wit = CTxWitness()
 
@@ -574,8 +579,8 @@ def _build_pegin_psbt(
 # Pre-PegIn input key helpers
 # ---------------------------------------------------------------------------
 
-def _prepegin_input_key(client: "RaggerClient", coin_type: int):
-    """Return (fingerprint, internal_key) for a BIP-86 P2TR input at m/86'/{coin_type}'/0'/0/0.
+def _prepegin_input_key(client: "RaggerClient", coin_type: int, account: int = 0):
+    """Return (fingerprint, internal_key) for a BIP-86 P2TR input at m/86'/{coin_type}'/{account}'/0/0.
 
     The 'all inputs internal' check in _validate_prepegin requires the
     input witness_utxo to have a BIP-86 tweaked key derived from this device's
@@ -584,7 +589,7 @@ def _prepegin_input_key(client: "RaggerClient", coin_type: int):
     """
     fingerprint = client.get_master_fingerprint()
     internal_key = ExtendedKey.deserialize(
-        client.get_extended_pubkey(f"m/86'/{coin_type}'/0'/0/0", display=False)
+        client.get_extended_pubkey(f"m/86'/{coin_type}'/{account}'/0/0", display=False)
     ).pubkey[1:]
     return fingerprint, internal_key
 
@@ -601,7 +606,7 @@ def _assert_schnorr_sig_verifies(psbt: PSBT, result, expected_xonly: bytes,
                                  expected_input: int = 0) -> None:
     """Independently verify a returned signature against the sighash it must commit to.
 
-    Closes Cerberus V-035: the count/index/pubkey/length checks in
+    The count/index/pubkey/length checks in
     _assert_single_schnorr_sig are shape checks, not verification — a regression that
     returned arbitrary 64-byte data, or signed a *different* digest than the PSBT the
     user reviewed, would satisfy every one of them.  This recomputes the BIP-341
@@ -649,13 +654,51 @@ def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: in
         _assert_schnorr_sig_verifies(psbt, result, expected_xonly, expected_input)
 
 
+def _assert_refused_unsigned(expected_sw: int, send: Callable[[], object]) -> None:
+    """Assert `send()` fails with `expected_sw` and the device yielded nothing first.
+
+    A status word alone does not prove nothing was signed: the device returns each
+    signature as a YIELD during the exchange, before the final status word, so a flow that
+    signed and then failed would still end in an error.  client.sign_psbt drops the yields
+    when it raises, so this records them from the command interpreter it creates.
+    """
+    interpreters: List[ClientCommandInterpreter] = []
+
+    class _RecordingInterpreter(ClientCommandInterpreter):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            interpreters.append(self)
+
+    ledger_bitcoin_client.ClientCommandInterpreter = _RecordingInterpreter
+    try:
+        with pytest.raises(ExceptionRAPDU) as exc:
+            send()
+    finally:
+        ledger_bitcoin_client.ClientCommandInterpreter = ClientCommandInterpreter
+
+    assert exc.value.status == expected_sw
+    assert interpreters, "SIGN_PSBT was never sent"
+    yielded = [value for interp in interpreters for value in interp.yielded]
+    assert not yielded, f"device yielded {len(yielded)} value(s) before refusing: {yielded}"
+
+
+def _depositor_path_at(coin_type: int, depositor_index: int, depositor_account: int = 0) -> List[int]:
+    """Depositor path m/86'/coin_type'/depositor_account'/0/depositor_index.
+
+    Account 0, index 0 is the address the dApp shows.
+    """
+    return [HARDENED | 86, HARDENED | coin_type, HARDENED | depositor_account, 0, depositor_index]
+
+
 def _build_intent_tlv_for_test(
     coin_type: int,
     prepegin_txid: bytes,
     keeper_pks: Optional[List[bytes]] = None,
     challenger_pks: Optional[List[bytes]] = None,
-    prepegin_max_fee: int = 500_000,
+    prepegin_max_fee: int = _PREPEGIN_MAX_FEE,
     base_fee_rate: int = _BASE_FEE_RATE,
+    depositor_index: int = 0,
+    depositor_account: int = 0,
 ) -> bytes:
     if keeper_pks is None:
         keeper_pks = _TEST_KEEPER_PKS
@@ -668,7 +711,7 @@ def _build_intent_tlv_for_test(
         payout_timelock=_PAYOUT_TIMELOCK,
         prepegin_txid=prepegin_txid,
         htlc_refund_timelock=_HTLC_REFUND_TIMELOCK,
-        depositor_path=depositor_path(coin_type),
+        depositor_path=_depositor_path_at(coin_type, depositor_index, depositor_account),
         keeper_count=len(keeper_pks),
         challenger_count=len(challenger_pks),
         prepegin_max_fee=prepegin_max_fee,
@@ -688,7 +731,7 @@ def _build_group_for_test() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# 3-vault helpers (NAPPS-1444)
+# 3-vault helpers
 # ---------------------------------------------------------------------------
 
 _3V_HTLC_VOUTS            = [0, 1, 2]
@@ -753,7 +796,7 @@ def _setup_s1_state_3vault(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
-        prepegin_max_fee=500_000,
+        prepegin_max_fee=_PREPEGIN_MAX_FEE,
         vault_count=3,
     )
     approve_vault_intent_with_nav(
@@ -772,14 +815,18 @@ def _build_prepegin_psbt_multi_vault(
     input_internal_key: Optional[bytes] = None,
     input_fingerprint: Optional[bytes] = None,
     input_coin_type: int = 0,
+    depositor_spk: Optional[bytes] = None,
+    depositor_values: Sequence[int] = (),
 ) -> PSBT:
     """Pre-PegIn PSBTv0 with one HTLC output per vault group.
 
     group_htlc_outputs[i] = (htlc_spk, htlc_value) for vault group i at htlc_vout=i.
-    The OP_RETURN is appended after all HTLC outputs when auth_anchor is given.
+    The OP_RETURN is appended after all HTLC outputs when auth_anchor is given, then one
+    depositor_spk output per entry of depositor_values; the input is funded for them, so
+    the fee stays at _PREPEGIN_DEFAULT_FEE.
     """
     total_htlc = sum(v for _, v in group_htlc_outputs)
-    input_value = total_htlc + 3_456
+    input_value = total_htlc + sum(depositor_values) + _PREPEGIN_DEFAULT_FEE
 
     if input_internal_key is not None and input_fingerprint is not None:
         _, input_tweaked = taproot_tweak_pubkey(input_internal_key, b'')
@@ -795,7 +842,8 @@ def _build_prepegin_psbt_multi_vault(
     tx.vin[0].nSequence = 0xFFFFFFFF
     tx.vout = [CTxOut(htlc_value, htlc_spk) for htlc_spk, htlc_value in group_htlc_outputs]
     if auth_anchor is not None:
-        tx.vout.append(CTxOut(auth_anchor_value, bytes([0x6A, 0x20]) + auth_anchor))
+        tx.vout.append(CTxOut(auth_anchor_value, _OP_RETURN_PUSH32 + auth_anchor))
+    tx.vout += [CTxOut(value, depositor_spk) for value in depositor_values]
     tx.wit = CTxWitness()
 
     psbt = PSBT()
@@ -829,10 +877,13 @@ _DERIVE_CONTEXT = bytes(range(72))  # fixed non-empty vaultContext-shaped blob
 _DERIVED_ROOT: bytes = b""
 
 
-def _derive_root_and_hashlock(client: "RaggerClient", navigator: "Navigator", device, coin_type: int) -> bytes:
+def _derive_root_and_hashlock(client: "RaggerClient", navigator: "Navigator", device, coin_type: int,
+                              depositor_index: int = 0, depositor_account: int = 0) -> bytes:
     """Run DERIVE_CONTEXT_HASH, stash the root, and return the per-vault hashlock h."""
     global _DERIVED_ROOT
-    _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME, depositor_path(coin_type),
+    _DERIVED_ROOT = derive_context_hash(client, VAULT_APP_NAME,
+                                        _depositor_path_at(coin_type, depositor_index,
+                                                           depositor_account),
                                         _DERIVE_CONTEXT, navigator, device)
     return vault_hashlock(_DERIVED_ROOT, _HTLC_VOUT)
 
@@ -926,7 +977,7 @@ def _setup_s2_state_2vault(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
-        prepegin_max_fee=500_000,
+        prepegin_max_fee=_PREPEGIN_MAX_FEE,
         vault_count=2,
     )
     approve_vault_intent_with_nav(
@@ -1087,7 +1138,7 @@ def _build_payout_finalize_psbt(
 
 
 # ===========================================================================
-# Pre-PegIn signing (NAPPS-1375, NAPPS-1444)
+# Pre-PegIn signing
 # Pre-PegIn is signed silently — no user confirmation screen.
 # The intent approval (Screen 2) already bound all vault parameters.
 # ===========================================================================
@@ -1154,8 +1205,11 @@ def _setup_prepegin_ecdsa_case(
     device: Device,
     bitcoin_network: str,
     purpose: int,
+    depositor_values: Sequence[int] = (),
 ):
     """Approve an intent bound to a Pre-PegIn PSBT spending a `purpose` wallet input.
+
+    Each entry of depositor_values pays P2TR(depositor_pk) after the auth-anchor.
 
     Returns (psbt, coin_type, pubkey) where pubkey is the input's compressed wallet key.
     """
@@ -1169,9 +1223,11 @@ def _setup_prepegin_ecdsa_case(
     )
 
     fingerprint, pubkey = _ecdsa_input_key(client, purpose, coin_type)
+    depositor_spk = _bip86_depositor_spk(dep_pk)
     psbt = _build_prepegin_psbt_ecdsa(
         htlc_spk, purpose, fingerprint, pubkey, coin_type,
         auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
+        extra_outputs=[CTxOut(value, depositor_spk) for value in depositor_values],
     )
 
     scalars_tlv = _build_intent_tlv_for_test(
@@ -1259,17 +1315,23 @@ def test_sign_psbt_prepegin_legacy_wallet_rejected(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+@pytest.mark.parametrize("depositor_values", [
+    pytest.param([], id="no_depositor_outputs"),
+    pytest.param([_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], id="anchor_then_change"),
+])
 def test_sign_psbt_prepegin_3vaults(
     client: "RaggerClient",
     navigator: Navigator,
     device: Device,
     bitcoin_network: str,
+    depositor_values: List[int],
 ) -> None:
     """3-vault Pre-PegIn passes validation and is signed silently.
 
-    Acceptance criterion NAPPS-1444: 3-vault Pre-PegIn with correct HTLC outputs and
+    Acceptance criterion: 3-vault Pre-PegIn with correct HTLC outputs and
     OP_RETURN (positioned after all HTLCs) passes device validation and returns one
-    BIP-86 Taproot Schnorr signature per wallet input.
+    BIP-86 Taproot Schnorr signature per wallet input.  The depositor anchor and change
+    follow the OP_RETURN, after the last of the three HTLC outputs.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -1297,6 +1359,8 @@ def test_sign_psbt_prepegin_3vaults(
         input_internal_key=input_key,
         input_fingerprint=fingerprint,
         input_coin_type=coin_type,
+        depositor_spk=_bip86_depositor_spk(dep_pk),
+        depositor_values=depositor_values,
     )
 
     # Approve intent with the txid the device will compute from this PSBT.
@@ -1310,7 +1374,7 @@ def test_sign_psbt_prepegin_3vaults(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
-        prepegin_max_fee=500_000,
+        prepegin_max_fee=_PREPEGIN_MAX_FEE,
         vault_count=3,
     )
     approve_vault_intent_with_nav(
@@ -1369,16 +1433,19 @@ def test_sign_psbt_prepegin_wrong_htlc_spk_vault1(
     assert exc.value.status == SW_INCORRECT_DATA
 
 
-def test_sign_psbt_prepegin_op_return_before_htlcs(
+@pytest.mark.parametrize("misplaced_output", ["op_return", "cpfp_anchor"])
+def test_sign_psbt_prepegin_non_htlc_output_before_htlcs(
     client: "RaggerClient",
     navigator: Navigator,
     bitcoin_network: str,
     device,
+    misplaced_output: str,
 ) -> None:
-    """Pre-PegIn fails when the OP_RETURN is positioned before the last HTLC output.
+    """Pre-PegIn fails when a non-HTLC output is positioned before the last HTLC output.
 
     Uses a 2-vault intent where group 0 has htlc_vout=0 and group 1 has htlc_vout=2.
-    The PSBT places the OP_RETURN at vout 1, which is before the last HTLC at vout 2.
+    The PSBT places the OP_RETURN or the depositor's CPFP anchor at vout 1, which is before
+    the last HTLC at vout 2.
     """
     coin_type = 0 if bitcoin_network == "main" else 1
     dep_pk = _depositor_pk(bitcoin_network)
@@ -1387,7 +1454,7 @@ def test_sign_psbt_prepegin_op_return_before_htlcs(
     _DERIVED_ROOT = derive_context_hash(
         client, VAULT_APP_NAME, depositor_path(coin_type), _DERIVE_CONTEXT, navigator, device
     )
-    # Two groups: htlc_vout 0 and 2 (gap at 1 where the OP_RETURN will sit).
+    # Two groups: htlc_vout 0 and 2 (gap at 1 where the misplaced output will sit).
     hl0 = vault_hashlock(_DERIVED_ROOT, 0)
     hl2 = vault_hashlock(_DERIVED_ROOT, 2)
 
@@ -1401,7 +1468,7 @@ def test_sign_psbt_prepegin_op_return_before_htlcs(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
-        prepegin_max_fee=500_000,
+        prepegin_max_fee=_PREPEGIN_MAX_FEE,
         vault_count=2,
     )
     groups_tlv = [
@@ -1426,10 +1493,14 @@ def test_sign_psbt_prepegin_op_return_before_htlcs(
         dep_pk, _VP_KEYS[1], _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS, _HTLC_REFUND_TIMELOCK, hl2,
     )
     htlc_value = _VAULT_AMOUNT + _DEPOSITOR_CLAIM_VALUE + _PEGIN_ANCHOR_VALUE + 10_000
-    anchor_spk = bytes([0x6A, 0x20]) + vault_auth_anchor(_DERIVED_ROOT)
+    misplaced = {
+        "op_return": CTxOut(0, _OP_RETURN_PUSH32 + vault_auth_anchor(_DERIVED_ROOT)),
+        "cpfp_anchor": CTxOut(_VAULT_DUST_LIMIT, _bip86_depositor_spk(dep_pk)),
+    }[misplaced_output]
 
-    # Build PSBT manually: [htlc_0, op_return, htlc_2] — OP_RETURN is before last HTLC.
-    input_value = htlc_value * 2 + 3_456
+    # Build PSBT manually: [htlc_0, misplaced, htlc_2] — the misplaced output is before the
+    # last HTLC.
+    input_value = htlc_value * 2 + misplaced.nValue + _PREPEGIN_DEFAULT_FEE
     fingerprint, input_key = _prepegin_input_key(client, coin_type)
     _, input_tweaked = taproot_tweak_pubkey(input_key, b'')
     input_spk = bytes([0x51, 0x20]) + input_tweaked
@@ -1442,7 +1513,7 @@ def test_sign_psbt_prepegin_op_return_before_htlcs(
     tx.vin[0].nSequence = 0xFFFFFFFF
     tx.vout = [
         CTxOut(htlc_value, htlc_spk0),   # vout 0: HTLC group 0
-        CTxOut(0, anchor_spk),             # vout 1: OP_RETURN before last HTLC — INVALID
+        misplaced,                         # vout 1: before the last HTLC — INVALID
         CTxOut(htlc_value, htlc_spk2),   # vout 2: HTLC group 1
     ]
     tx.wit = CTxWitness()
@@ -1604,7 +1675,7 @@ def test_sign_psbt_prepegin_htlc_value_too_low(
 
 
 # ===========================================================================
-# Screen 3 — Refund transaction review negative tests (NAPPS-1375)
+# Screen 3 — Refund transaction review negative tests
 # ===========================================================================
 
 def test_sign_psbt_refund_wrong_fingerprint(
@@ -1655,7 +1726,448 @@ def test_sign_psbt_refund_nonzero_locktime(
 
 
 # ===========================================================================
-# PegIn transaction validation (NAPPS-1375)
+# Reclaim transaction validation (Screen 9)
+#
+# Reclaim shares its leaf shape byte-for-byte with Claim (<D> OP_CHECKSIG, 34 bytes);
+# the dispatcher tells them apart by output count alone (2 outputs -> Claim, 1 -> Reclaim).
+# Every case below is refused by _validate_display_reclaim before Screen 9 is shown, so
+# none needs navigation; each asserts the status word and that nothing was signed.  The
+# happy path, the user rejection, the cross-flow collisions and the session-state cases
+# live in test_screen9_reclaim.py.
+# ===========================================================================
+
+_RECLAIM_SEQUENCE = 0xFFFFFFFD
+# PegIn txid in PSBT_IN_PREVIOUS_TXID byte order.  Not a palindrome, so Screen 9 goldens
+# pin the byte order the txid is displayed in.
+_RECLAIM_PEGIN_TXID = hashlib.sha256(b"reclaim pegin txid").digest()
+_DEPOSITOR_CLAIM_VOUT = 1  # PegIn Output 1 holds the depositor claim reserve
+_RECLAIM_D_INDEX = 1  # D sits at m/86'/coin'/0'/0/<this>
+
+
+def _own_xonly_key(client: "RaggerClient", coin_type: int, account: int, change: int,
+                   index: int) -> bytes:
+    """X-only key this device derives at m/86'/coin_type'/account'/change/index."""
+    path = f"m/86'/{coin_type}'/{account}'/{change}/{index}"
+    return ExtendedKey.deserialize(client.get_extended_pubkey(path, display=False)).pubkey[1:]
+
+
+def _build_reclaim_psbt(
+    fingerprint: bytes,
+    leaf_key: bytes,
+    coin_type: int,
+    input_value: int = 1_200_000,
+    reclaimed_value: int = 1_199_000,
+    nsequence: int = _RECLAIM_SEQUENCE,
+    leaf_key_index: int = _RECLAIM_D_INDEX,
+    pegin_txid: bytes = _RECLAIM_PEGIN_TXID,
+    out_key: Optional[bytes] = None,
+    out_origin: Optional[KeyOriginInfo] = None,
+) -> PSBT:
+    """Build a Reclaim PSBTv0 (Screen 9).
+
+    Input 0: PegIn Output 1 (depositor claim reserve) -- leaf <D> OP_CHECKSIG (34 bytes),
+             byte-identical to Claim; single-leaf P2TR with NUMS internal key.  D is
+             proven via the input's own TAP_BIP32_DERIVATION.
+    Output 0: BIP-86 P2TR of `out_key`, which is D unless overridden -- the only output the
+              device accepts.  It carries no TAP_BIP32_DERIVATION, since the device reads
+              none for it; `out_origin` attaches one anyway.
+    """
+    reclaim_leaf = _depositor_claim_leaf(leaf_key)  # <D> OP_CHECKSIG, 34 bytes
+    leaf_hash = _tapleaf_hash(reclaim_leaf)
+    parity, tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
+    in_spk = bytes([0x51, 0x20]) + tweaked
+    control_block = bytes([0xC0 | parity]) + VAULT_NUMS_XONLY
+
+    _, bip86_out_key = taproot_tweak_pubkey(leaf_key if out_key is None else out_key, b'')
+    out_script = bytes([0x51, 0x20]) + bip86_out_key
+
+    tx = CTransaction()
+    tx.nVersion = 2
+    tx.nLockTime = 0
+    tx.vin = [CTxIn()]
+    tx.vin[0].prevout = COutPoint(int.from_bytes(pegin_txid, 'little'), _DEPOSITOR_CLAIM_VOUT)
+    tx.vin[0].nSequence = nsequence
+    tx.vout = [CTxOut(reclaimed_value, out_script)]
+    tx.wit = CTxWitness()
+
+    psbt = PSBT()
+    psbt.version = 0
+    psbt.tx = tx
+    psbt.inputs = [PartiallySignedInput(0)]
+    psbt.outputs = [PartiallySignedOutput(0)]
+
+    psbt.inputs[0].witness_utxo = CTxOut(input_value, in_spk)
+    psbt.inputs[0].tap_scripts[(reclaim_leaf, 0xC0)] = {control_block}
+    psbt.inputs[0].tap_bip32_paths[leaf_key] = (
+        {leaf_hash},
+        KeyOriginInfo(
+            fingerprint,
+            [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, leaf_key_index],
+        ),
+    )
+
+    if out_origin is not None:
+        psbt.outputs[0].tap_bip32_paths[bip86_out_key] = (set(), out_origin)
+
+    return psbt
+
+
+def _reclaim_keys(client: "RaggerClient", bitcoin_network: str):
+    """Return (fingerprint, leaf_key, coin_type) for the standard Reclaim: D at
+    m/86'/coin'/0'/0/_RECLAIM_D_INDEX."""
+    coin_type = 0 if bitcoin_network == "main" else 1
+    fingerprint = client.get_master_fingerprint()
+    leaf_key = _own_xonly_key(client, coin_type, 0, 0, _RECLAIM_D_INDEX)
+    return fingerprint, leaf_key, coin_type
+
+
+def _standard_reclaim_psbt(client: "RaggerClient", bitcoin_network: str, **overrides) -> PSBT:
+    """_build_reclaim_psbt over the standard keys; `overrides` go to the builder."""
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    return _build_reclaim_psbt(fingerprint, leaf_key, coin_type, **overrides)
+
+
+def _add_foreign_p2tr_input(psbt: PSBT, value: int, tag: int) -> None:
+    """Append a well-formed external P2TR input.
+
+    It carries a WITNESS_UTXO because the base app refuses an input with neither UTXO
+    field during input preprocessing, so a test built on one would never reach the vault
+    validator it targets.
+    """
+    txin = CTxIn()
+    txin.prevout = COutPoint(int.from_bytes(bytes([tag]) * 32, 'little'), 0)
+    txin.nSequence = 0xFFFFFFFF
+    psbt.tx.vin.append(txin)
+    psbt.inputs.append(PartiallySignedInput(0))
+    psbt.inputs[-1].witness_utxo = CTxOut(value, bytes([0x51, 0x20]) + bytes([tag]) * 32)
+
+
+def _add_p2tr_output(psbt: PSBT, value: int, spk: bytes) -> None:
+    psbt.tx.vout.append(CTxOut(value, spk))
+    psbt.outputs.append(PartiallySignedOutput(0))
+
+
+def _replace_reclaim_tap_script(psbt: PSBT, control_block: bytes,
+                                witness_spk: Optional[bytes] = None) -> None:
+    """Swap Input 0's control block, and optionally the spent scriptPubKey."""
+    (leaf, leaf_ver), _ = next(iter(psbt.inputs[0].tap_scripts.items()))
+    psbt.inputs[0].tap_scripts = {(leaf, leaf_ver): {control_block}}
+    if witness_spk is not None:
+        psbt.inputs[0].witness_utxo = CTxOut(psbt.inputs[0].witness_utxo.nValue, witness_spk)
+
+
+def _assert_reclaim_refused(client: "RaggerClient", psbt: PSBT,
+                            expected_sw: int = SW_INCORRECT_DATA) -> None:
+    """Send `psbt` with no wallet policy; assert it is refused and nothing was signed."""
+    wallet = _NoWalletPolicy("", "tr(@0/**)", [])
+    _assert_refused_unsigned(expected_sw, lambda: client.sign_psbt(psbt, wallet, None))
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher: the leaf must be exactly <D> OP_CHECKSIG
+# ---------------------------------------------------------------------------
+
+def test_sign_psbt_reclaim_dispatch_wrong_leaf_shape(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """A single-output PSBT whose Input 0 leaf is not exactly <D> OP_CHECKSIG (e.g. the
+    terminal opcode is OP_CHECKSIGVERIFY instead) matches no dispatch pattern."""
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    (orig_leaf, leaf_ver), control_blocks = next(iter(psbt.inputs[0].tap_scripts.items()))
+    wrong_leaf = orig_leaf[:33] + bytes([0xAD])  # OP_CHECKSIG (0xAC) -> OP_CHECKSIGVERIFY
+    psbt.inputs[0].tap_scripts = {(wrong_leaf, leaf_ver): control_blocks}
+    _assert_reclaim_refused(client, psbt)
+
+
+# ---------------------------------------------------------------------------
+# Validator: rejection matrix.  Each PSBT differs from a signable Reclaim in one rule.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("version", [1, 0])
+def test_sign_psbt_reclaim_wrong_version(
+    client: "RaggerClient",
+    bitcoin_network: str,
+    version: int,
+) -> None:
+    """Reclaim fails when nVersion < 2.
+
+    Version 1 is refused by Reclaim's own version rule.  Version 0 is the Proof-of-Possession
+    discriminator, so it is routed to the PoP validator and refused on its shape rules; the
+    test asserts that a version-0 Reclaim-shaped PSBT is never signed.
+    """
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    psbt.tx.nVersion = version
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_nonzero_locktime(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when nLockTime != 0."""
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    psbt.tx.nLockTime = 1
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_extra_input(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Outside INTENT_LOADED a 2-input Reclaim-shaped PSBT reaches Reclaim's own
+    input-count gate (the INTENT_LOADED case, caught by Payout's gate, is in
+    test_screen9_reclaim.py)."""
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    _add_foreign_p2tr_input(psbt, 10_000, tag=0x42)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_wrong_sighash(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when PSBT_IN_SIGHASH_TYPE is set to SIGHASH_ALL (1); only DEFAULT
+    is accepted.  SIGHASH_ALL is the only other value that gets this far: the base app
+    refuses every other type with SW_NOT_SUPPORTED before any vault validator runs."""
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    psbt.inputs[0].sighash = 1  # SIGHASH_ALL
+    _assert_reclaim_refused(client, psbt)
+
+
+@pytest.mark.parametrize("nsequence", [0, 1, 144, 0x0040_0090, 0xFFFF_FFFB,
+                                       0xFFFF_FFFE, 0xFFFF_FFFF])
+def test_sign_psbt_reclaim_wrong_nsequence(
+    client: "RaggerClient",
+    bitcoin_network: str,
+    nsequence: int,
+) -> None:
+    """Reclaim requires Input 0 nSequence == 0xFFFFFFFD exactly and rejects everything
+    else, including the SEQUENCE_FINAL that Claim requires for the very same leaf shape."""
+    psbt = _standard_reclaim_psbt(client, bitcoin_network, nsequence=nsequence)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_sequence_absent(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when PSBT_IN_SEQUENCE is absent.
+
+    An absent field decodes as 0xFFFFFFFF, which is not replaceable, so defaulting it would
+    sign a final transaction under a screen for an RBF one.  PSBTv0 always carries the
+    sequence in its unsigned tx, so this is sent as PSBTv2 with the field removed.
+    """
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    psbt.convert_to_v2()
+    psbt.inputs[0].sequence = None
+    _assert_reclaim_refused(client, psbt)
+
+
+@pytest.mark.parametrize("below_dust_by", [0, 1])
+def test_sign_psbt_reclaim_input_value_at_or_below_dust(
+    client: "RaggerClient",
+    bitcoin_network: str,
+    below_dust_by: int,
+) -> None:
+    """Reclaim fails when Input 0's WITNESS_UTXO value is not strictly above dust."""
+    input_value = VAULT_DUST_LIMIT - below_dust_by
+    psbt = _standard_reclaim_psbt(client, bitcoin_network,
+                                  input_value=input_value, reclaimed_value=input_value - 1)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_tampered_control_block(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the control block internal key is not VAULT_NUMS_XONLY
+    (taproot commitment mismatch)."""
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    _replace_reclaim_tap_script(psbt, bytes([0xC0]) + bytes([0x01] * 32))
+    _assert_reclaim_refused(client, psbt)
+
+
+@pytest.mark.parametrize("tamper", ["flipped_parity", "spk_commits_other_leaf"])
+def test_sign_psbt_reclaim_wrong_taproot_commitment(
+    client: "RaggerClient",
+    bitcoin_network: str,
+    tamper: str,
+) -> None:
+    """Reclaim fails when a 33-byte NUMS control block does not commit the leaf to the
+    spent scriptPubKey: a wrong output-key parity bit, or a scriptPubKey built for a
+    different leaf."""
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type)
+    leaf_hash = _tapleaf_hash(_depositor_claim_leaf(leaf_key))
+    parity, _ = taproot_tweak_pubkey(VAULT_NUMS_XONLY, leaf_hash)
+    if tamper == "flipped_parity":
+        _replace_reclaim_tap_script(psbt, bytes([0xC0 | (parity ^ 1)]) + VAULT_NUMS_XONLY)
+    else:
+        other_spk = _p2tr_from_single_leaf(_depositor_claim_leaf(TEST_VALID_KEYS[0]))
+        _replace_reclaim_tap_script(psbt, bytes([0xC0 | parity]) + VAULT_NUMS_XONLY,
+                                    witness_spk=other_spk)
+    _assert_reclaim_refused(client, psbt)
+
+
+@pytest.mark.parametrize("shape", ["with_sibling", "trailing_bytes"])
+def test_sign_psbt_reclaim_control_block_not_33_bytes(
+    client: "RaggerClient",
+    bitcoin_network: str,
+    shape: str,
+) -> None:
+    """Reclaim fails unless the control block is exactly 33 bytes (depth 0).
+
+    PegIn Output 1 is a single-leaf tree, so both cases carry a commitment check could
+    otherwise pass: "with_sibling" is a valid depth-1 proof for a scriptPubKey that really
+    is a two-leaf tree, and "trailing_bytes" appends 7 bytes that are not a whole sibling
+    hash, which a proof walk that stops at the last full 32 bytes never reads.  Sent as
+    PSBTv2 because the client's PSBTv0 round-trip refuses a 40-byte control block itself.
+    """
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type)
+    reclaim_leaf = _depositor_claim_leaf(leaf_key)
+    if shape == "with_sibling":
+        sibling_leaf = _depositor_claim_leaf(TEST_VALID_KEYS[0])
+        root = _taptree2_root(reclaim_leaf, sibling_leaf)
+        parity, tweaked = taproot_tweak_pubkey(VAULT_NUMS_XONLY, root)
+        _replace_reclaim_tap_script(
+            psbt,
+            bytes([0xC0 | parity]) + VAULT_NUMS_XONLY + _tapleaf_hash(sibling_leaf),
+            witness_spk=bytes([0x51, 0x20]) + tweaked,
+        )
+    else:
+        parity, _ = taproot_tweak_pubkey(VAULT_NUMS_XONLY, _tapleaf_hash(reclaim_leaf))
+        _replace_reclaim_tap_script(psbt, bytes([0xC0 | parity]) + VAULT_NUMS_XONLY + bytes(7))
+    psbt.convert_to_v2()
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_wrong_fingerprint(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Input 0's TAP_BIP32_DERIVATION fingerprint belongs to a
+    foreign device."""
+    _, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(b'\xff\xff\xff\xff', leaf_key, coin_type)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_foreign_key(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the leaf's D key is not derived from this device's seed."""
+    fingerprint, _, coin_type = _reclaim_keys(client, bitcoin_network)
+    foreign_key = TEST_VALID_KEYS[0]  # valid EC point, not derived from this device
+    psbt = _build_reclaim_psbt(fingerprint, foreign_key, coin_type)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_input_no_derivation(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Input 0 carries no TAP_BIP32_DERIVATION: without it the device
+    cannot prove D is its own key."""
+    psbt = _standard_reclaim_psbt(client, bitcoin_network)
+    psbt.inputs[0].tap_bip32_paths = {}
+    _assert_reclaim_refused(client, psbt)
+
+
+@pytest.mark.parametrize("account, change, index, with_derivation", [
+    (0, 0, 0, True),      # another receive address of D's own account
+    (0, 0, 0, False),     # the same, with no derivation entry at all
+    (0, 1, 0, True),      # the account's change branch
+    (99, 1, 9999, True),  # a path no wallet scans
+])
+def test_sign_psbt_reclaim_output_not_depositor_address(
+    client: "RaggerClient",
+    bitcoin_network: str,
+    account: int,
+    change: int,
+    index: int,
+    with_derivation: bool,
+) -> None:
+    """Reclaim fails when Output 0 pays any BIP-86 address of this device other than
+    P2TR(D), whatever derivation entry comes with it.
+
+    The host picks that path and the device never shows it, so funds sent elsewhere would
+    be safe on the seed but sit where no wallet looks.  Output 0 is therefore pinned to D
+    itself rather than to a device-derived key at a host-supplied path.
+    """
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    other_key = _own_xonly_key(client, coin_type, account, change, index)
+    assert other_key != leaf_key
+    origin = KeyOriginInfo(
+        fingerprint,
+        [HARDENED | 86, HARDENED | coin_type, HARDENED | account, change, index],
+    ) if with_derivation else None
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type,
+                               out_key=other_key, out_origin=origin)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_output_script_tree(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Output 0 is not BIP-86: its key is D, but tweaked with a script
+    tree rather than the empty one, so the output is also spendable by whoever controls
+    the tree's leaf."""
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type)
+    script_tree_root = _tapleaf_hash(_depositor_claim_leaf(TEST_VALID_KEYS[0]))
+    _, tree_out_key = taproot_tweak_pubkey(leaf_key, script_tree_root)
+    psbt.tx.vout[0].scriptPubKey = bytes([0x51, 0x20]) + tree_out_key
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_output_foreign_key(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when Output 0 pays a BIP-86 key this device did not derive, even with
+    a derivation entry claiming this device's fingerprint and a valid BIP-86 path."""
+    fingerprint, leaf_key, coin_type = _reclaim_keys(client, bitcoin_network)
+    origin = KeyOriginInfo(
+        fingerprint,
+        [HARDENED | 86, HARDENED | coin_type, HARDENED | 0, 0, _RECLAIM_D_INDEX],
+    )
+    psbt = _build_reclaim_psbt(fingerprint, leaf_key, coin_type,
+                               out_key=TEST_VALID_KEYS[0], out_origin=origin)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_zero_fee_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the output value equals the input value (zero fee)."""
+    input_value = 1_000_000
+    psbt = _standard_reclaim_psbt(client, bitcoin_network,
+                                  input_value=input_value, reclaimed_value=input_value)
+    _assert_reclaim_refused(client, psbt)
+
+
+def test_sign_psbt_reclaim_output_exceeds_input_rejected(
+    client: "RaggerClient",
+    bitcoin_network: str,
+) -> None:
+    """Reclaim fails when the output value exceeds the input value (fee would underflow).
+
+    End to end this is refused by the base app's outputs-exceed-inputs check before
+    _validate_display_reclaim runs; reclaim_fee_ok's own underflow rejection is pinned by
+    the unit tests in unit-tests/test_sign_psbt_validate.c."""
+    input_value = 1_000_000
+    psbt = _standard_reclaim_psbt(client, bitcoin_network,
+                                  input_value=input_value, reclaimed_value=input_value + 1)
+    _assert_reclaim_refused(client, psbt)
+
+
+# ===========================================================================
+# PegIn transaction validation
 # ===========================================================================
 
 def test_sign_psbt_pegin(
@@ -1666,7 +2178,7 @@ def test_sign_psbt_pegin(
 ) -> None:
     """PegIn validation passes silently and sign_custom_inputs signs the HTLC Leaf 0 input.
 
-    NAPPS-1377: sign_custom_inputs is fully implemented, so the SIGN_PSBT command returns
+    sign_custom_inputs is fully implemented, so the SIGN_PSBT command returns
     SW_OK with the depositor's Schnorr signature over the HTLC Leaf 0 sighash.
     After signing, pegin_signed is incremented; the device remains in VAULT_STATE_INTENT_LOADED.
     """
@@ -1791,8 +2303,103 @@ def test_sign_psbt_pegin_2vault_group_index(
 
 
 # ===========================================================================
-# Pre-PegIn — additional negative tests (NAPPS-1375)
+# Pre-PegIn — additional negative tests
 # ===========================================================================
+
+def _prepegin_bound_to_intent(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device,
+    bitcoin_network: str,
+    depositor_values: Sequence[int] = (),
+    foreign_outputs: Sequence[CTxOut] = (),
+    internal_change_value: Optional[int] = None,
+    extra_fee: int = 0,
+    depositor_index: int = 0,
+    depositor_account: int = 0,
+    signing_account: int = 0,
+):
+    """Build a Pre-PegIn, then approve the intent committed to its txid.  Returns (psbt, wallet).
+
+    Outputs: HTLC, auth-anchor OP_RETURN, then one P2TR(depositor_pk) output per entry of
+    depositor_values (in order), then the wallet's own change-branch output
+    (m/86'/coin'/0'/1/0, marked internal through its derivation) when internal_change_value
+    is given, then foreign_outputs.  The input is funded for the extra outputs, so the fee
+    stays at the builder's default (_PREPEGIN_DEFAULT_FEE) unless extra_fee raises it.
+
+    Binding the txid is what lets a rejection be attributed to output validation: an intent
+    committed to any other txid rejects the PSBT whatever its outputs are.  extra_fee only
+    grows the input's value, which the txid does not cover, so the binding stays valid.
+
+    The depositor is m/86'/coin'/depositor_account'/0/depositor_index; account 0 index 0 is the
+    address the dApp shows.  The inputs are signed from signing_account.
+    """
+    coin_type = 0 if bitcoin_network == "main" else 1
+    if depositor_index == 0 and depositor_account == 0:
+        dep_pk = _depositor_pk(bitcoin_network)
+    else:
+        dep_path = f"m/86'/{coin_type}'/{depositor_account}'/0/{depositor_index}"
+        dep_pk = ExtendedKey.deserialize(
+            client.get_extended_pubkey(dep_path, display=False)
+        ).pubkey[1:]
+
+    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type,
+                                         depositor_index, depositor_account)
+    _, _, _, _, htlc_spk = _htlc_output(
+        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        _HTLC_REFUND_TIMELOCK, hashlock,
+    )
+    fingerprint, input_key = _prepegin_input_key(client, coin_type, signing_account)
+    psbt = _build_prepegin_psbt(
+        htlc_spk,
+        input_internal_key=input_key,
+        input_fingerprint=fingerprint,
+        input_coin_type=coin_type,
+        auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
+        input_account=signing_account,
+    )
+
+    depositor_spk = _bip86_depositor_spk(dep_pk)
+    extra = [CTxOut(value, depositor_spk) for value in depositor_values]
+    change_out = None
+    if internal_change_value is not None:
+        change_key = ExtendedKey.deserialize(
+            client.get_extended_pubkey(f"m/86'/{coin_type}'/{signing_account}'/1/0", display=False)
+        ).pubkey[1:]
+        _, change_tweaked = taproot_tweak_pubkey(change_key, b'')
+        change_out = PartiallySignedOutput(0)
+        # Keyed by the tweaked output key; the path records the internal key's position.
+        change_out.tap_bip32_paths[change_tweaked] = (
+            set(),
+            KeyOriginInfo(
+                fingerprint,
+                [HARDENED | 86, HARDENED | coin_type, HARDENED | signing_account, 1, 0],
+            ),
+        )
+        extra.append(CTxOut(internal_change_value, bytes([0x51, 0x20]) + change_tweaked))
+    extra += list(foreign_outputs)
+    for out in extra:
+        psbt.tx.vout.append(out)
+        psbt.outputs.append(
+            change_out if change_out is not None and out.scriptPubKey[2:] == change_tweaked
+            else PartiallySignedOutput(0)
+        )
+    funding = psbt.inputs[0].witness_utxo
+    psbt.inputs[0].witness_utxo = CTxOut(
+        funding.nValue + sum(out.nValue for out in extra) + extra_fee, funding.scriptPubKey,
+    )
+
+    scalars_tlv = _build_intent_tlv_for_test(
+        coin_type, _hash256(psbt.tx.serialize_without_witness()),
+        depositor_index=depositor_index, depositor_account=depositor_account,
+    )
+    approve_vault_intent_with_nav(
+        client, navigator, device,
+        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
+        groups=[_build_group_for_test()],
+    )
+    return psbt, _standard_taproot_wallet(client, coin_type, signing_account)
+
 
 def test_sign_psbt_prepegin_external_output(
     client: "RaggerClient",
@@ -1801,25 +2408,11 @@ def test_sign_psbt_prepegin_external_output(
     device,
 ) -> None:
     """Pre-PegIn fails when a non-HTLC output is external (not owned by this device)."""
-    coin_type = 0 if bitcoin_network == "main" else 1
-    dep_pk = _depositor_pk(bitcoin_network)
-
-    hashlock = _setup_s1_state(client, navigator, device, coin_type)
-    _, _, _, _, htlc_spk = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
-        _HTLC_REFUND_TIMELOCK, hashlock,
+    # No TAP_BIP32_DERIVATION and not the depositor's script — btcext marks it external.
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        foreign_outputs=[CTxOut(1000, bytes([0x51, 0x20]) + bytes(32))],
     )
-
-    fingerprint, input_key = _prepegin_input_key(client, coin_type)
-    psbt = _build_prepegin_psbt(htlc_spk,
-                                input_internal_key=input_key,
-                                input_fingerprint=fingerprint,
-                                input_coin_type=coin_type)
-    # Append a second output with no TAP_BIP32_DERIVATION — btcext marks it external.
-    psbt.tx.vout.append(CTxOut(1000, bytes([0x51, 0x20]) + bytes(32)))
-    psbt.outputs.append(PartiallySignedOutput(0))
-
-    wallet = _standard_taproot_wallet(client, coin_type)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
@@ -1832,36 +2425,10 @@ def test_sign_psbt_prepegin_cpfp_anchor_accepted(
     bitcoin_network: str,
 ) -> None:
     """Pre-PegIn with a P2TR(depositor_pk) CPFP anchor at VAULT_DUST_LIMIT is accepted."""
-    coin_type = 0 if bitcoin_network == "main" else 1
-    dep_pk = _depositor_pk(bitcoin_network)
-
-    hashlock = _derive_root_and_hashlock(client, navigator, device, coin_type)
-    _, _, _, _, htlc_spk = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
-        _HTLC_REFUND_TIMELOCK, hashlock,
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=[_VAULT_DUST_LIMIT],
     )
-
-    fingerprint, input_key = _prepegin_input_key(client, coin_type)
-    cpfp_spk = _bip86_depositor_spk(dep_pk)
-    psbt = _build_prepegin_psbt(
-        htlc_spk,
-        input_internal_key=input_key,
-        input_fingerprint=fingerprint,
-        input_coin_type=coin_type,
-        auth_anchor=vault_auth_anchor(_DERIVED_ROOT),
-        cpfp_anchor_spk=cpfp_spk,
-    )
-
-    scalars_tlv = _build_intent_tlv_for_test(
-        coin_type, _hash256(psbt.tx.serialize_without_witness())
-    )
-    approve_vault_intent_with_nav(
-        client, navigator, device,
-        scalars_tlv, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
-        groups=[_build_group_for_test()],
-    )
-
-    wallet = _standard_taproot_wallet(client, coin_type)
     result = client.sign_psbt(psbt, wallet, None)
 
     assert len(result) == 1
@@ -1877,29 +2444,10 @@ def test_sign_psbt_prepegin_duplicate_cpfp_anchor_rejected(
     bitcoin_network: str,
 ) -> None:
     """Pre-PegIn fails when two CPFP anchor outputs are present."""
-    coin_type = 0 if bitcoin_network == "main" else 1
-    dep_pk = _depositor_pk(bitcoin_network)
-
-    hashlock = _setup_s1_state(client, navigator, device, coin_type)
-    _, _, _, _, htlc_spk = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
-        _HTLC_REFUND_TIMELOCK, hashlock,
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=[_VAULT_DUST_LIMIT, _VAULT_DUST_LIMIT],
     )
-
-    fingerprint, input_key = _prepegin_input_key(client, coin_type)
-    cpfp_spk = _bip86_depositor_spk(dep_pk)
-    psbt = _build_prepegin_psbt(
-        htlc_spk,
-        input_internal_key=input_key,
-        input_fingerprint=fingerprint,
-        input_coin_type=coin_type,
-        cpfp_anchor_spk=cpfp_spk,
-    )
-    # Append a second CPFP anchor — must be rejected.
-    psbt.tx.vout.append(CTxOut(_VAULT_DUST_LIMIT, cpfp_spk))
-    psbt.outputs.append(PartiallySignedOutput(0))
-
-    wallet = _standard_taproot_wallet(client, coin_type)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
@@ -1911,35 +2459,251 @@ def test_sign_psbt_prepegin_cpfp_anchor_wrong_value_rejected(
     device: Device,
     bitcoin_network: str,
 ) -> None:
-    """Pre-PegIn fails when CPFP anchor value differs from VAULT_DUST_LIMIT."""
-    coin_type = 0 if bitcoin_network == "main" else 1
-    dep_pk = _depositor_pk(bitcoin_network)
+    """Pre-PegIn fails when a depositor output is below VAULT_DUST_LIMIT.
 
-    hashlock = _setup_s1_state(client, navigator, device, coin_type)
-    _, _, _, _, htlc_spk = _htlc_output(
-        dep_pk, TEST_VP_KEY, _TEST_KEEPER_PKS, _TEST_CHALLENGER_PKS,
-        _HTLC_REFUND_TIMELOCK, hashlock,
+    Above the limit, a depositor output is change and accepted (see
+    test_sign_psbt_prepegin_depositor_change_accepted); below it, it is neither.
+    """
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=[_VAULT_DUST_LIMIT - 1],  # off by one — must be rejected
     )
-
-    fingerprint, input_key = _prepegin_input_key(client, coin_type)
-    cpfp_spk = _bip86_depositor_spk(dep_pk)
-    psbt = _build_prepegin_psbt(
-        htlc_spk,
-        input_internal_key=input_key,
-        input_fingerprint=fingerprint,
-        input_coin_type=coin_type,
-        cpfp_anchor_spk=cpfp_spk,
-        cpfp_anchor_value=_VAULT_DUST_LIMIT + 1,  # off by one — must be rejected
-    )
-
-    wallet = _standard_taproot_wallet(client, coin_type)
     with pytest.raises(ExceptionRAPDU) as exc:
         client.sign_psbt(psbt, wallet, None)
     assert exc.value.status == SW_INCORRECT_DATA
 
 
+@pytest.mark.parametrize("depositor_values", [
+    pytest.param([_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], id="anchor_then_change"),
+    pytest.param([_VAULT_DUST_LIMIT, _VAULT_DUST_LIMIT + 1], id="change_one_above_dust"),
+])
+def test_sign_psbt_prepegin_depositor_change_accepted(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    depositor_values: List[int],
+) -> None:
+    """Pre-PegIn accepts change to P2TR(depositor_pk) above VAULT_DUST_LIMIT, next to the anchor.
+
+    This is the receive address the dApp shows, so change sent there stays visible to the
+    user; the device derived depositor_pk itself, so no value leaves the depositor.
+    """
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network, depositor_values=depositor_values,
+    )
+    result = client.sign_psbt(psbt, wallet, None)
+
+    assert len(result) == 1
+    input_index, partial_sig = result[0]
+    assert input_index == 0
+    assert len(partial_sig.signature) == 64
+
+
+@pytest.mark.parametrize("depositor_values", [
+    pytest.param([_PREPEGIN_DEPOSITOR_CHANGE, _VAULT_DUST_LIMIT], id="change_before_anchor"),
+    pytest.param([_PREPEGIN_DEPOSITOR_CHANGE], id="change_without_anchor"),
+    pytest.param([_VAULT_DUST_LIMIT + 1], id="change_one_above_dust_without_anchor"),
+    pytest.param(
+        [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE, _VAULT_DUST_LIMIT],
+        id="second_anchor_after_change",
+    ),
+])
+def test_sign_psbt_prepegin_depositor_change_layout_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    depositor_values: List[int],
+) -> None:
+    """Pre-PegIn fails when depositor change is not preceded by exactly one CPFP anchor.
+
+    The anchor and the change share one scriptPubKey, so the layout is what tells them
+    apart: [anchor, change].  Change first, change alone, or a second anchor after the
+    change is rejected.
+    """
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network, depositor_values=depositor_values,
+    )
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.parametrize("depositor_values", [
+    pytest.param([], id="without_anchor"),
+    pytest.param([_VAULT_DUST_LIMIT], id="with_anchor"),
+])
+def test_sign_psbt_prepegin_change_branch_output_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    depositor_values: List[int],
+) -> None:
+    """Pre-PegIn fails when an output pays the wallet's change branch (m/86'/coin'/0'/1/0).
+
+    Change goes to the depositor's own address; an output on the wallet policy's change
+    branch matches no accepted output kind.
+    """
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=depositor_values,
+        internal_change_value=_PREPEGIN_DEPOSITOR_CHANGE,
+    )
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+def test_sign_psbt_prepegin_two_depositor_changes_rejected(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+) -> None:
+    """Pre-PegIn fails when two depositor outputs above VAULT_DUST_LIMIT are present."""
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=[_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE, _PREPEGIN_DEPOSITOR_CHANGE],
+    )
+    with pytest.raises(ExceptionRAPDU) as exc:
+        client.sign_psbt(psbt, wallet, None)
+    assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.parametrize("fee_over_cap, accepted", [
+    pytest.param(0, True, id="fee_at_cap_accepted"),
+    pytest.param(1, False, id="fee_one_above_cap_rejected"),
+])
+def test_sign_psbt_prepegin_depositor_change_fee_cap(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    fee_over_cap: int,
+    accepted: bool,
+) -> None:
+    """Pre-PegIn with anchor and depositor change keeps the prepegin_max_fee cap.
+
+    A fee equal to the cap is signed, one satoshi above it is refused.  The change is funded
+    by the input, so it never counts as fee.  The two cases differ only by one satoshi of
+    input value, which the txid does not cover, so the rejection can only come from the
+    fee check.
+    """
+    # The builder funds the input for _PREPEGIN_DEFAULT_FEE; top it up to the cap.
+    extra_fee = _PREPEGIN_MAX_FEE - _PREPEGIN_DEFAULT_FEE + fee_over_cap
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=[_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE],
+        extra_fee=extra_fee,
+    )
+    # Guard the premise: the PSBT sits exactly on the boundary under test.
+    fee = psbt.inputs[0].witness_utxo.nValue - sum(out.nValue for out in psbt.tx.vout)
+    assert fee == _PREPEGIN_MAX_FEE + fee_over_cap
+
+    if accepted:
+        result = client.sign_psbt(psbt, wallet, None)
+
+        assert len(result) == 1
+        input_index, partial_sig = result[0]
+        assert input_index == 0
+        assert len(partial_sig.signature) == 64
+    else:
+        with pytest.raises(ExceptionRAPDU) as exc:
+            client.sign_psbt(psbt, wallet, None)
+        assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.parametrize(
+    "depositor_index, depositor_account, signing_account, depositor_values, accepted", [
+        pytest.param(1, 0, 0, [_VAULT_DUST_LIMIT], True, id="other_index_anchor_only_accepted"),
+        pytest.param(1, 0, 0, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
+                     id="other_index_change_rejected"),
+        pytest.param(1, 1, 0, [_VAULT_DUST_LIMIT], True, id="other_account_anchor_only_accepted"),
+        pytest.param(0, 1, 0, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
+                     id="other_account_change_rejected"),
+        pytest.param(0, 1, 1, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], True,
+                     id="signing_account_1_change_accepted"),
+        pytest.param(0, 0, 1, [_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False,
+                     id="signing_account_1_depositor_account_0_change_rejected"),
+    ])
+def test_sign_psbt_prepegin_change_needs_signing_accounts_first_receive_address(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    depositor_index: int,
+    depositor_account: int,
+    signing_account: int,
+    depositor_values: List[int],
+    accepted: bool,
+) -> None:
+    """Pre-PegIn change is accepted only at m/86'/coin'/account'/0/0 of the signing account.
+
+    The depositor path is the host's choice and is not shown on the device, so change to any
+    other address of the depositor would land where a wallet does not look: another address
+    index of the signing account, or the first address of an account the inputs are not
+    signed from.  The signing account is taken from the wallet policy, so both a zero and a
+    nonzero account are exercised.  The anchor is not affected by the path.
+    """
+    psbt, wallet = _prepegin_bound_to_intent(
+        client, navigator, device, bitcoin_network,
+        depositor_values=depositor_values,
+        depositor_index=depositor_index, depositor_account=depositor_account,
+        signing_account=signing_account,
+    )
+    if accepted:
+        result = client.sign_psbt(psbt, wallet, None)
+
+        assert len(result) == 1
+        input_index, partial_sig = result[0]
+        assert input_index == 0
+        assert len(partial_sig.signature) == 64
+    else:
+        with pytest.raises(ExceptionRAPDU) as exc:
+            client.sign_psbt(psbt, wallet, None)
+        assert exc.value.status == SW_INCORRECT_DATA
+
+
+@pytest.mark.parametrize("depositor_values, accepted", [
+    pytest.param([_VAULT_DUST_LIMIT], True, id="anchor_only_accepted"),
+    pytest.param([_VAULT_DUST_LIMIT, _PREPEGIN_DEPOSITOR_CHANGE], False, id="change_rejected"),
+])
+def test_sign_psbt_prepegin_change_needs_bip86_signing_wallet(
+    client: "RaggerClient",
+    navigator: Navigator,
+    device: Device,
+    bitcoin_network: str,
+    depositor_values: List[int],
+    accepted: bool,
+) -> None:
+    """Pre-PegIn change is refused when the inputs are signed from a non-BIP-86 wallet.
+
+    The account matches the depositor's; the anchor alone is signed, so the change is the
+    only reason for the refusal.
+    """
+    psbt, coin_type, pubkey = _setup_prepegin_ecdsa_case(
+        client, navigator, device, bitcoin_network, BIP84_NATIVE_SEGWIT,
+        depositor_values=depositor_values,
+    )
+    wallet = _standard_native_segwit_wallet(client, coin_type)
+
+    if accepted:
+        result = client.sign_psbt(psbt, wallet, None)
+
+        assert len(result) == 1
+        input_index, partial_sig = result[0]
+        assert input_index == 0
+        assert partial_sig.pubkey == pubkey
+    else:
+        with pytest.raises(ExceptionRAPDU) as exc:
+            client.sign_psbt(psbt, wallet, None)
+        assert exc.value.status == SW_INCORRECT_DATA
+
+
 # ===========================================================================
-# Refund — additional negative tests (NAPPS-1375)
+# Refund — additional negative tests
 # ===========================================================================
 
 def test_sign_psbt_refund_wrong_leaf_shape(
@@ -2025,7 +2789,7 @@ def test_sign_psbt_refund_no_output_derivation(
 
 
 # ===========================================================================
-# PegIn — additional negative tests (NAPPS-1375)
+# PegIn — additional negative tests
 # ===========================================================================
 
 def test_sign_psbt_pegin_extra_input(
@@ -2157,7 +2921,7 @@ def test_sign_psbt_pegin_wrong_depositor_claim_amount(
 
 
 # ===========================================================================
-# Payout transaction validation (NAPPS-1376)
+# Payout transaction validation
 # ===========================================================================
 
 VAULT_DUST_LIMIT = 546  # must match vault_constants.h (CPFP anchor = P2TR relay dust limit)
@@ -2350,7 +3114,7 @@ def _setup_payout_state(
                                base_fee_rate=base_fee_rate)
     pegin_psbt = _build_pegin_psbt(dep_pk, hashlock, prepegin_txid)
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
-    # NAPPS-1377: PegIn signing is fully wired; SW_OK advances state to PAYOUT_EXPECTED.
+    # PegIn signing is fully wired; SW_OK advances state to PAYOUT_EXPECTED.
     client.sign_psbt(pegin_psbt, dummy_wallet, None)
     return hashlock
 
@@ -2588,7 +3352,7 @@ def test_sign_psbt_payout_host_spk_op_return_rejected(
     _setup_payout_state(client, navigator, device, coin_type)
 
     psbt = _build_payout_psbt(dep_pk, _PREPEGIN_TXID, claimer_idx=1)
-    psbt.tx.vout[0].scriptPubKey = bytes([0x6A, 0x20]) + bytes(32)
+    psbt.tx.vout[0].scriptPubKey = _OP_RETURN_PUSH32 + bytes(32)
 
     dummy_wallet = _NoWalletPolicy("", "tr(@0/**)", [])
     with pytest.raises(ExceptionRAPDU) as exc:
@@ -2930,7 +3694,7 @@ def _setup_signet_payout_state(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_SIGNET_KEEPER_PKS),
         challenger_count=len(_SIGNET_CHALLENGER_PKS),
-        prepegin_max_fee=500_000,
+        prepegin_max_fee=_PREPEGIN_MAX_FEE,
         vault_count=1,
     )
     group_tlv = build_group_tlv(
@@ -3107,7 +3871,7 @@ def test_sign_psbt_payout_signet_params(
 
 
 # ===========================================================================
-# Maximum-participant memory stress (NAPPS — VAULT_SCRIPT_MAX_LEN ceiling)
+# Maximum-participant memory stress (VAULT_SCRIPT_MAX_LEN ceiling)
 # ===========================================================================
 
 def _distinct_sorted_keys(count: int, exclude: List[bytes]) -> List[bytes]:
@@ -3145,7 +3909,7 @@ def test_sign_psbt_pegin_max_participants(
     equally-large leaf back from the PSBT.  If either buffer were undersized the
     leaf check would fail with SW_INCORRECT_DATA; SW_OK means validation passed,
     the leaf was reconstructed/compared at full size, and sign_custom_inputs
-    (NAPPS-1377) signed the HTLC Leaf 0 input.
+    signed the HTLC Leaf 0 input.
 
     Unlike the captured sample-vector test (which rejects at the state guard
     before any vault buffering), this drives the largest reconstruction path the
@@ -3182,7 +3946,7 @@ def test_sign_psbt_pegin_max_participants(
 
 
 # ===========================================================================
-# CPFP anchor key validation (NAPPS-1445)
+# CPFP anchor key validation
 # ===========================================================================
 
 def test_sign_psbt_payout_vp_wrong_cpfp_anchor_key(
@@ -3233,7 +3997,7 @@ def test_sign_psbt_payout_vk_wrong_cpfp_anchor_key(
 
 
 # ===========================================================================
-# 3-vault batch iteration (NAPPS-1445)
+# 3-vault batch iteration
 # ===========================================================================
 
 def test_sign_psbt_payout_3vault_batch(
@@ -3268,7 +4032,7 @@ def test_sign_psbt_payout_3vault_batch(
         depositor_path=depositor_path(coin_type),
         keeper_count=len(_TEST_KEEPER_PKS),
         challenger_count=len(_TEST_CHALLENGER_PKS),
-        prepegin_max_fee=500_000,
+        prepegin_max_fee=_PREPEGIN_MAX_FEE,
         vault_count=3,
     )
     uniform_groups = [
@@ -3309,7 +4073,7 @@ def test_sign_psbt_payout_3vault_batch(
 
 
 # ===========================================================================
-# Depositor claimer payout (NAPPS-1462)
+# Depositor claimer payout
 # ===========================================================================
 
 def test_sign_psbt_payout_depositor(
@@ -3367,7 +4131,7 @@ def test_sign_psbt_payout_depositor_wrong_cpfp_anchor_key(
 
 
 # ===========================================================================
-# NoPayout transaction (NAPPS-1462)
+# NoPayout transaction
 # ===========================================================================
 
 # NoPayout amounts, funded from the protocol formula rather than pinned to DUST.
@@ -4956,7 +5720,7 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
         depositor_path=depositor_path(coin_type),
         keeper_count=_N,
         challenger_count=_C,
-        prepegin_max_fee=500_000,
+        prepegin_max_fee=_PREPEGIN_MAX_FEE,
         vault_count=_V,
     )
     groups_tlv = [
@@ -4971,9 +5735,9 @@ def test_sign_psbt_payout_slot_formula_max_no_overflow(
         for gi in range(_V)
     ]
     # Intent approval here is setup, not the assertion, and no snapshots are captured, so
-    # navigate to the finish page by title rather than pinning a swipe count.  A fixed count has
-    # to be recalibrated whenever NBGL repacks pairs per page — which it did when
-    # SKIPPABLE_OPERATION was removed from the intent review, freeing header space.
+    # navigate to the finish page by title rather than pinning a swipe count.  A fixed count
+    # has to be recalibrated whenever NBGL repacks pairs per page, which the phase-2 Skip
+    # header changes; navigating by title is immune to that.
     approve_vault_intent_with_nav(
         client, navigator, device,
         scalars_tlv, keeper_pks, challenger_pks,

@@ -68,3 +68,83 @@ bool parse_payout_leaf_script(const uint8_t *script,
  * @param prefix      At least VAULT_LEAF_PREFIX_LEN captured leading bytes.
  */
 bool leaf_has_assert_shape(int script_len, const uint8_t *prefix, uint8_t last_byte);
+
+/**
+ * Parse a Claim/Reclaim leaf script: <OP_PUSHBYTES_32> <32B key D> <OP_CHECKSIG>, exactly
+ * VAULT_DEPOSITOR_CLAIM_LEAF_LEN (34) bytes.
+ *
+ * Claim and Reclaim share this leaf byte-for-byte; the dispatcher tells them apart by
+ * output count alone.  Extracts D into d_key_out.
+ * Returns true if the script has the expected shape, false otherwise.
+ */
+bool parse_claim_leaf_script(const uint8_t *script,
+                             int script_len,
+                             uint8_t d_key_out[VAULT_XONLY_PUBKEY_LEN]);
+
+/**
+ * Report whether a Reclaim Input 0 nSequence is exactly the RBF signal RECLAIM_SEQUENCE
+ * (0xFFFFFFFD), requiring the PSBT_IN_SEQUENCE field to be present.
+ *
+ * An absent field decodes as SEQUENCE_FINAL (non-replaceable) per BIP-370, which is not
+ * RECLAIM_SEQUENCE — so omitting the field is already rejected by the equality check.
+ * `present` is still taken explicitly so callers cannot default a PSBT_FIELD_ERROR read
+ * into an accepted comparison value.
+ */
+bool reclaim_sequence_ok(bool present, uint32_t seq);
+
+/**
+ * Compute the Reclaim fee as in_value - out_value with a strictly-positive result.
+ *
+ * Returns false (fee_out left unset) when out_value >= in_value, covering both the
+ * zero-fee case and the case that would otherwise underflow the subtraction.
+ */
+bool reclaim_fee_ok(uint64_t in_value, uint64_t out_value, uint64_t *fee_out);
+
+/**
+ * The optional Pre-PegIn outputs paying P2TR(depositor_pk) accepted so far.  Zero-initialise
+ * before the first output and update only through prepegin_depositor_output_accept.
+ */
+typedef struct {
+    bool anchor_seen;
+    bool change_seen;
+} prepegin_depositor_outputs_t;
+
+/**
+ * Accept a Pre-PegIn output whose scriptPubKey is already known to be P2TR(depositor_pk), and
+ * record it in `seen`:
+ *
+ *   value == VAULT_DUST_LIMIT  CPFP anchor; at most one.
+ *   value  > VAULT_DUST_LIMIT  depositor change; at most one, and only once the anchor has
+ *                              been seen.
+ *   value  < VAULT_DUST_LIMIT  rejected.
+ *
+ * The anchor and the change share one scriptPubKey, so the anchor-first order is the only way
+ * for a reader of the transaction to tell them apart.
+ *
+ * @param change_allowed  Whether the depositor path accepts change (prepegin_change_path_ok).
+ *                        The anchor is accepted regardless.
+ *
+ * Returns false, leaving `seen` unchanged, for any output that is not acceptable in the given
+ * state.  change_seen without anchor_seen cannot arise from a caller that updates `seen` only
+ * through this function, and is rejected for every value.
+ */
+bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen,
+                                      uint64_t value,
+                                      bool change_allowed);
+
+/**
+ * Report whether a Pre-PegIn may return change to the key at `path`: the first receive
+ * address, m/86'/coin_type'/account'/0/0, of the BIP-86 account the transaction is signed from.
+ * That is the address a wallet shows and scans.  The depositor path is chosen by the host and
+ * never shown on the device, so change paid anywhere else in the BIP-86 space (the change
+ * branch, a high address index, another account) would sit where wallets do not look.
+ *
+ * @param signing_purpose  BIP-44 purpose of the wallet policy the inputs are signed from; only
+ *                         BIP86_PURPOSE qualifies.
+ * @param signing_account  Unhardened account index of the wallet policy the inputs are signed
+ *                         from, as verified against the device's own key by the base app.
+ */
+bool prepegin_change_path_ok(const uint32_t *path,
+                             int path_len,
+                             uint32_t signing_purpose,
+                             uint32_t signing_account);

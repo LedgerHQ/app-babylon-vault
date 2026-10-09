@@ -1,10 +1,15 @@
 /**
- * Unit tests for sign_psbt_validate_helpers.c — the three pure helper
- * functions extracted from the PSBT validation layer:
+ * Unit tests for sign_psbt_validate_helpers.c — the pure helper functions
+ * extracted from the PSBT validation layer:
  *
  *   check_bip86_path              — BIP-86 derivation path shape check
  *   parse_tap_bip32_deriv_value   — TAP_BIP32_DERIVATION value parser
  *   parse_refund_leaf_script      — Refund HTLC leaf script shape checker
+ *   parse_claim_leaf_script       — Claim/Reclaim leaf script shape checker
+ *   reclaim_sequence_ok           — Reclaim Input 0 nSequence rule
+ *   reclaim_fee_ok                — Reclaim fee arithmetic (checked subtraction)
+ *   prepegin_depositor_output_accept — Pre-PegIn CPFP anchor / depositor change classification
+ *   prepegin_change_path_ok       — depositor paths that may receive Pre-PegIn change
  *
  * Tests verify both acceptance of valid inputs and rejection of every
  * distinct invalid shape. BIP44_COIN_TYPE=1 is set via CMake compile def.
@@ -868,6 +873,412 @@ static void test_pegin_fee_sum_overflow_guards(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — helpers
+ * ------------------------------------------------------------------------- */
+
+/* Build script: OP_PUSHBYTES_32 <key[32]> <last_op> */
+static int build_claim_script(uint8_t *buf, size_t buf_len,
+                              const uint8_t key[32], uint8_t first_op, uint8_t last_op) {
+    int total = 1 + 32 + 1;
+    if ((size_t) total > buf_len) return -1;
+    int pos = 0;
+    buf[pos++] = first_op;
+    memcpy(buf + pos, key, 32); pos += 32;
+    buf[pos++] = last_op;
+    return total;
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+static void test_claim_valid_34_bytes(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    assert_int_equal(len, (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN);
+
+    uint8_t d_key[32];
+    assert_true(parse_claim_leaf_script(script, len, d_key));
+    assert_memory_equal(d_key, key, 32);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_claim_reject_33_bytes(void **state) {
+    (void) state;
+    /* One byte short of the required 34; content is irrelevant, only length matters. */
+    uint8_t key[32];
+    memset(key, 0xDD, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len - 1, d_key));
+}
+
+static void test_claim_reject_35_bytes(void **state) {
+    (void) state;
+    /* One byte past the required 34; content is irrelevant, only length matters. */
+    uint8_t key[32];
+    memset(key, 0xEE, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    script[len] = OP_CHECKSIG; /* trailing byte */
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len + 1, d_key));
+}
+
+static void test_claim_reject_wrong_first_opcode(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xBB, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_33, OP_CHECKSIG);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len, d_key));
+}
+
+static void test_claim_reject_wrong_terminal_opcode(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xCC, 32);
+    uint8_t script[64];
+    int len =
+        build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIGVERIFY);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len, d_key));
+}
+
+/* ---------------------------------------------------------------------------
+ * reclaim_sequence_ok
+ * ------------------------------------------------------------------------- */
+
+static void test_reclaim_sequence_accept_rbf_signal(void **state) {
+    (void) state;
+    assert_true(reclaim_sequence_ok(true, 0xFFFFFFFDu));
+}
+
+static void test_reclaim_sequence_reject_locktime_enabling(void **state) {
+    (void) state;
+    /* 0xFFFFFFFE enables nLockTime; not the Reclaim RBF signal. */
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFEu));
+}
+
+static void test_reclaim_sequence_reject_off_by_two(void **state) {
+    (void) state;
+    /* 0xFFFFFFFB is another RBF-signaling value one bit away from the accepted one;
+     * only exact equality to 0xFFFFFFFD is accepted, not "close enough". */
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFBu));
+}
+
+static void test_reclaim_sequence_reject_sequence_final(void **state) {
+    (void) state;
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFFu));
+}
+
+static void test_reclaim_sequence_reject_zero(void **state) {
+    (void) state;
+    assert_false(reclaim_sequence_ok(true, 0x00000000u));
+}
+
+static void test_reclaim_sequence_reject_absent_field(void **state) {
+    (void) state;
+    /* Field absent: even though 0xFFFFFFFD is the value that would decode by default
+     * elsewhere, present=false must be rejected regardless of seq. */
+    assert_false(reclaim_sequence_ok(false, 0xFFFFFFFDu));
+}
+
+/* ---------------------------------------------------------------------------
+ * reclaim_fee_ok
+ * ------------------------------------------------------------------------- */
+
+static void test_reclaim_fee_accept_positive(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_true(reclaim_fee_ok(1000000ull, 999000ull, &fee));
+    assert_int_equal((int) fee, 1000);
+}
+
+static void test_reclaim_fee_reject_zero(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(1000000ull, 1000000ull, &fee));
+}
+
+static void test_reclaim_fee_reject_output_exceeds_input(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(1000000ull, 1000001ull, &fee));
+}
+
+static void test_reclaim_fee_reject_no_wraparound(void **state) {
+    (void) state;
+    /* in_value = 0, out_value = 1: would wrap to UINT64_MAX under unchecked subtraction. */
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(0, 1, &fee));
+}
+
+/* ---------------------------------------------------------------------------
+ * prepegin_depositor_output_accept
+ * ------------------------------------------------------------------------- */
+
+/* Every (anchor_seen, change_seen) combination, including the unreachable one. */
+static const prepegin_depositor_outputs_t k_seen_states[] = {
+    {false, false},
+    {true, false},
+    {true, true},
+    {false, true},
+};
+
+/* Values strictly below the anchor value, which can never be accepted. */
+static const uint64_t k_sub_dust_values[] = {0, 1, VAULT_DUST_LIMIT - 1u};
+
+static void assert_seen(const prepegin_depositor_outputs_t *seen,
+                        bool anchor_seen,
+                        bool change_seen) {
+    assert_int_equal(seen->anchor_seen, anchor_seen);
+    assert_int_equal(seen->change_seen, change_seen);
+}
+
+/* Feed outputs in order through the helper; returns false at the first rejected output. */
+static bool accept_depositor_outputs(const uint64_t *values, size_t n_values) {
+    prepegin_depositor_outputs_t seen = {false, false};
+    for (size_t i = 0; i < n_values; i++) {
+        if (!prepegin_depositor_output_accept(&seen, values[i], true)) return false;
+    }
+    return true;
+}
+
+static void test_depositor_output_accept_anchor_at_dust_limit(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_accept_change_just_above_dust_limit(void **state) {
+    (void) state;
+    /* 547 sat is the smallest change; it is distinguished from the anchor by value alone. */
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_accept_change_max_value(void **state) {
+    (void) state;
+    /* No upper bound on change here: the transaction's fee bound is enforced separately. */
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_true(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_change_without_anchor(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
+    assert_seen(&seen, false, false);
+}
+
+static void test_depositor_output_reject_second_anchor(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_reject_anchor_after_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, true};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_second_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, true};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_below_dust_limit_in_every_state(void **state) {
+    (void) state;
+    /* 545 is the boundary just under the anchor value; 0 is the other extreme. */
+    for (size_t v = 0; v < sizeof(k_sub_dust_values) / sizeof(k_sub_dust_values[0]); v++) {
+        for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
+            prepegin_depositor_outputs_t seen = k_seen_states[s];
+            assert_false(prepegin_depositor_output_accept(&seen, k_sub_dust_values[v], true));
+            assert_seen(&seen, k_seen_states[s].anchor_seen, k_seen_states[s].change_seen);
+        }
+    }
+}
+
+static void test_depositor_output_reject_change_seen_without_anchor_seen(void **state) {
+    (void) state;
+    /* Unreachable for a caller that updates the state only through the helper; refused for
+     * every value, including the anchor value that would otherwise be accepted here. */
+    const uint64_t values[] = {0,
+                               VAULT_DUST_LIMIT - 1u,
+                               VAULT_DUST_LIMIT,
+                               VAULT_DUST_LIMIT + 1u,
+                               UINT64_MAX};
+    for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+        prepegin_depositor_outputs_t seen = {false, true};
+        assert_false(prepegin_depositor_output_accept(&seen, values[v], true));
+        assert_seen(&seen, false, true);
+    }
+}
+
+static void test_depositor_output_state_only_moves_forward(void **state) {
+    (void) state;
+    /* Whatever the value and path policy, an accepted output sets exactly one new flag and
+     * clears none; a rejected one changes nothing; change is never set when it is not allowed. */
+    const uint64_t values[] =
+        {0, 1, VAULT_DUST_LIMIT - 1u, VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + 1u, UINT64_MAX};
+    const bool change_allowed_cases[] = {false, true};
+    for (size_t c = 0; c < sizeof(change_allowed_cases) / sizeof(change_allowed_cases[0]); c++) {
+        for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
+            for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+                const prepegin_depositor_outputs_t before = k_seen_states[s];
+                prepegin_depositor_outputs_t seen = before;
+                if (prepegin_depositor_output_accept(&seen, values[v], change_allowed_cases[c])) {
+                    assert_true(seen.anchor_seen >= before.anchor_seen);
+                    assert_true(seen.change_seen >= before.change_seen);
+                    assert_int_equal((seen.anchor_seen != before.anchor_seen) +
+                                         (seen.change_seen != before.change_seen),
+                                     1);
+                    if (!change_allowed_cases[c]) {
+                        assert_int_equal(seen.change_seen, before.change_seen);
+                    }
+                } else {
+                    assert_seen(&seen, before.anchor_seen, before.change_seen);
+                }
+            }
+        }
+    }
+}
+
+static void test_depositor_output_reject_change_when_path_disallows_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, false));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, false));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_accept_anchor_when_path_disallows_change(void **state) {
+    (void) state;
+    /* The path restriction concerns change only; an anchor at any depositor path is kept. */
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, false));
+    assert_seen(&seen, true, false);
+}
+
+static void test_change_path_accept_first_receive_address(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+    /* The account must be the one the inputs are signed from, whichever it is. */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 7, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 7));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 100));
+}
+
+static void test_change_path_reject_other_account(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 1, 0, 0);
+    /* depositor in another account */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    /* signing from another account */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 1));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 99));
+}
+
+static void test_change_path_reject_other_signing_purpose(void **state) {
+    (void) state;
+    /* 0 is the purpose of a state with no wallet policy; a hardened 86 is no purpose. */
+    const uint32_t purposes[] = {0u, 44u, 49u, 84u, 87u, BIP86_PURPOSE | 0x80000000u};
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    for (size_t i = 0; i < sizeof(purposes) / sizeof(purposes[0]); i++) {
+        assert_false(prepegin_change_path_ok(path, 5, purposes[i], 0));
+    }
+}
+
+static void test_change_path_reject_hardened_signing_account(void **state) {
+    (void) state;
+    /* The signing account is unhardened by contract; a hardened value would otherwise
+     * collide with the hardened account level of the path. */
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0x80000000u));
+}
+
+static void test_change_path_reject_other_positions(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 1);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* second receive address */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 10000);
+    /* last permitted address index */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* wallet change branch */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 1);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+}
+
+static void test_change_path_reject_malformed_path(void **state) {
+    (void) state;
+    uint32_t path[6];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[5] = 0;
+    assert_false(prepegin_change_path_ok(path, 4, BIP86_PURPOSE, 0)); /* too short */
+    assert_false(prepegin_change_path_ok(path, 6, BIP86_PURPOSE, 0)); /* too long */
+    make_bip86_path(path, 84, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* not BIP-86 */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[2] &= ~0x80000000u;
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* unhardened account */
+}
+
+static void test_depositor_output_sequence_accept_anchor_then_change(void **state) {
+    (void) state;
+    const uint64_t anchor_only[] = {VAULT_DUST_LIMIT};
+    const uint64_t anchor_then_change[] = {VAULT_DUST_LIMIT, 1000000u};
+    assert_true(accept_depositor_outputs(anchor_only, 1));
+    assert_true(accept_depositor_outputs(anchor_then_change, 2));
+}
+
+static void test_depositor_output_sequence_reject_change_before_anchor(void **state) {
+    (void) state;
+    const uint64_t change_only[] = {1000000u};
+    const uint64_t change_then_anchor[] = {1000000u, VAULT_DUST_LIMIT};
+    assert_false(accept_depositor_outputs(change_only, 1));
+    assert_false(accept_depositor_outputs(change_then_anchor, 2));
+}
+
+static void test_depositor_output_sequence_reject_repeats(void **state) {
+    (void) state;
+    const uint64_t two_anchors[] = {VAULT_DUST_LIMIT, VAULT_DUST_LIMIT};
+    const uint64_t anchor_change_anchor[] = {VAULT_DUST_LIMIT, 1000000u, VAULT_DUST_LIMIT};
+    const uint64_t two_changes[] = {VAULT_DUST_LIMIT, 1000000u, 2000000u};
+    assert_false(accept_depositor_outputs(two_anchors, 2));
+    assert_false(accept_depositor_outputs(anchor_change_anchor, 3));
+    assert_false(accept_depositor_outputs(two_changes, 3));
+}
+
+/* ---------------------------------------------------------------------------
  * Test runner
  * ------------------------------------------------------------------------- */
 
@@ -940,6 +1351,50 @@ int main(void) {
         cmocka_unit_test(test_payout_reject_vault_utxo_leaf),
         cmocka_unit_test(test_payout_reject_csv_below_min),
         cmocka_unit_test(test_payout_reject_csv_above_max),
+
+        /* parse_claim_leaf_script */
+        cmocka_unit_test(test_claim_valid_34_bytes),
+        cmocka_unit_test(test_claim_reject_33_bytes),
+        cmocka_unit_test(test_claim_reject_35_bytes),
+        cmocka_unit_test(test_claim_reject_wrong_first_opcode),
+        cmocka_unit_test(test_claim_reject_wrong_terminal_opcode),
+
+        /* reclaim_sequence_ok */
+        cmocka_unit_test(test_reclaim_sequence_accept_rbf_signal),
+        cmocka_unit_test(test_reclaim_sequence_reject_locktime_enabling),
+        cmocka_unit_test(test_reclaim_sequence_reject_off_by_two),
+        cmocka_unit_test(test_reclaim_sequence_reject_sequence_final),
+        cmocka_unit_test(test_reclaim_sequence_reject_zero),
+        cmocka_unit_test(test_reclaim_sequence_reject_absent_field),
+
+        /* reclaim_fee_ok */
+        cmocka_unit_test(test_reclaim_fee_accept_positive),
+        cmocka_unit_test(test_reclaim_fee_reject_zero),
+        cmocka_unit_test(test_reclaim_fee_reject_output_exceeds_input),
+        cmocka_unit_test(test_reclaim_fee_reject_no_wraparound),
+
+        /* prepegin_depositor_output_accept */
+        cmocka_unit_test(test_depositor_output_accept_anchor_at_dust_limit),
+        cmocka_unit_test(test_depositor_output_accept_change_just_above_dust_limit),
+        cmocka_unit_test(test_depositor_output_accept_change_max_value),
+        cmocka_unit_test(test_depositor_output_reject_change_without_anchor),
+        cmocka_unit_test(test_depositor_output_reject_second_anchor),
+        cmocka_unit_test(test_depositor_output_reject_anchor_after_change),
+        cmocka_unit_test(test_depositor_output_reject_second_change),
+        cmocka_unit_test(test_depositor_output_reject_below_dust_limit_in_every_state),
+        cmocka_unit_test(test_depositor_output_reject_change_seen_without_anchor_seen),
+        cmocka_unit_test(test_depositor_output_state_only_moves_forward),
+        cmocka_unit_test(test_depositor_output_reject_change_when_path_disallows_change),
+        cmocka_unit_test(test_depositor_output_accept_anchor_when_path_disallows_change),
+        cmocka_unit_test(test_change_path_accept_first_receive_address),
+        cmocka_unit_test(test_change_path_reject_other_account),
+        cmocka_unit_test(test_change_path_reject_other_signing_purpose),
+        cmocka_unit_test(test_change_path_reject_hardened_signing_account),
+        cmocka_unit_test(test_change_path_reject_other_positions),
+        cmocka_unit_test(test_change_path_reject_malformed_path),
+        cmocka_unit_test(test_depositor_output_sequence_accept_anchor_then_change),
+        cmocka_unit_test(test_depositor_output_sequence_reject_change_before_anchor),
+        cmocka_unit_test(test_depositor_output_sequence_reject_repeats),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

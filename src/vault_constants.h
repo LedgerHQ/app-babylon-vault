@@ -135,6 +135,11 @@
 #define PEGIN_TX_SEQUENCE 0xFFFFFFFEu /* enables nLockTime; one below SEQUENCE_FINAL */
 #define SEQUENCE_FINAL    0xFFFFFFFFu /* RBF-disabled, no CSV, no nLockTime */
 
+/* Reclaim Input 0 sequence (BIP-125 RBF signal, no CSV/nLockTime dependence).  Reclaim is
+ * the first accepted pattern with an RBF sequence; Claim keeps SEQUENCE_FINAL per the
+ * Babylon rule for graph transactions — both are correct for their own pattern. */
+#define RECLAIM_SEQUENCE 0xFFFFFFFDu
+
 /* Maximum taptree depth for host-provided connector UTXOs.
  * A Huffman tree over 2 + (VAULT_MAX_KEEPERS + VAULT_MAX_CHALLENGERS) = 66 leaves
  * has max depth ceil(log2(66)) = 7. */

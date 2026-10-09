@@ -28,6 +28,8 @@ typedef struct {
     bool scalars_loaded;
     /** Total number of x-only keys stored so far (keepers then challengers). */
     uint8_t keys_received;
+    /** Rolling hash over each accepted APDU's CData; finalized into G_vault_context.intent_fp. */
+    cx_sha256_t intent_hash;
 } approve_intent_state_t;
 
 /* sizeof(nbgl_layoutTagValue_t) — verified at compile time in display.c */
@@ -37,7 +39,7 @@ typedef struct {
  * Key pairs are formatted on demand via callback; they are not stored here. */
 #define VAULT_SCALAR_PAIRS_MAX 9
 
-/* Scratch layout shared by Screen 2–8 transaction display functions.
+/* Scratch layout shared by Screen 2–9 transaction display functions.
  * String sizes verified by static asserts in display.c. */
 #define TX_DISPLAY_MAX_PAIRS       6
 #define TX_DISPLAY_AMOUNT_STR_SIZE 28 /* MAX_AMOUNT_LENGTH + 1 */
@@ -81,7 +83,7 @@ typedef struct {
 } display_vault_intent_scratch_t;
 
 /**
- * Scratch buffers shared by Screen 2–8 transaction display functions.
+ * Scratch buffers shared by Screen 2–9 transaction display functions.
  * All are mutually exclusive and block on io_ui_process(), so they share
  * one union member.
  *
@@ -302,7 +304,7 @@ typedef struct {
  * Each member is live in exactly one handler and is zeroed before use:
  *   - script_scratch    vault_build_* signing hooks
  *   - display           display_vault_intent only (blocks on io_ui_process)
- *   - display_tx        Screen 2–8 transaction display functions
+ *   - display_tx        Screen 2–9 transaction display functions
  *   - derive_ctx        handler_derive_context_hash (large buffers only; streaming
  *                       accumulators live in G_derive_streaming outside this union)
  *   - leaf_check        _validate_display_refund leaf-script comparison

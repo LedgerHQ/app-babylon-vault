@@ -1,6 +1,6 @@
 # Babylon Vault — App Specification
 
-> **v22 HLD alignment:** This document reflects the device design as of HLD v22 (NAPPS-1466). For a full change history see [`CHANGELOG.md`](CHANGELOG.md).
+> **v22 HLD alignment:** This document reflects the device design as of HLD v22. For a full change history see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## About
 
@@ -10,9 +10,10 @@ The app is a dedicated btcext extension for the [Babylon protocol](https://babyl
 
 - Derive a 32-byte session root and bind it to on-chain commitments (`DERIVE_CONTEXT_HASH`)
 - Review and approve vault parameters and participant keys (`APPROVE_VAULT_INTENT`)
-- Sign eight Bitcoin transaction types: Pre-PegIn, PegIn, Payout, Refund, Claim, Assert, Wrongly-Challenged (WC), NoPayout
+- Report whether that session is still in device memory, so the host can resume it (`GET_VAULT_STATE`)
+- Sign ten Bitcoin transaction types: Pre-PegIn, PegIn, Payout, PayoutFinalize, Refund, Claim, Reclaim, Assert, Wrongly-Challenged (WC), NoPayout
 
-The app extends [app-btcext-boilerplate](https://github.com/LedgerHQ/app-btcext-boilerplate). Standard btcext APDUs (e.g. `GET_EXTENDED_PUBKEY`, `SIGN_PSBT`) are handled by the base app. Only the two custom INS codes below are specific to this app.
+The app extends [app-btcext-boilerplate](https://github.com/LedgerHQ/app-btcext-boilerplate). Standard btcext APDUs (e.g. `GET_EXTENDED_PUBKEY`, `SIGN_PSBT`) are handled by the base app. Only the three custom INS codes below are specific to this app.
 
 For full wire-format details see [`docs/apdu.md`](docs/apdu.md).
 
@@ -26,6 +27,7 @@ All custom APDUs use **CLA `0xE1`**.
 |--------|-------------------------|-------------|
 | `0x80` | `APPROVE_VAULT_INTENT`  | Three-phase APDU. **P1=`0x00`**: parse and validate 13 scalar TLV fields. **P1=`0x01`**: receive per-vault group TLV (6 fields per vault group, repeated `vault_count` times). **P1=`0x02`**: stream keeper then challenger x-only public keys (TLV-wrapped; tag `2B` + length `1B` + 32-byte key). After all keys are received the device displays the vault parameters for user approval and, on confirmation, transitions the session to `INTENT_LOADED`. |
 | `0x81` | `DERIVE_CONTEXT_HASH`   | Chunked streaming APDU (**P1=`0x00`** initial chunk, **P1=`0x01`** continuation). Derives a 32-byte context root from the device's BIP-32 key at `m/73681862'` via HKDF-SHA-256 and stores it in the session context. **P2=`0x00`**: shows a user approval screen ("Allow derivation?") and, on confirmation, returns the raw 32-byte root to the host. **P2=`0x01`**: silent re-derivation; returns `SW_OK` with no data. |
+| `0x82` | `GET_VAULT_STATE`       | Read-only and silent (ADR-001). **P1=P2=`0x00`**, empty CData. Returns `len_i ‖ intent_fp ‖ len_r ‖ context_fp`, each length `0` (not held) or `4`: `00 00` in `IDLE`, `00 04 <context_fp>` in `HASH_DERIVED`, `04 <intent_fp> 04 <context_fp>` in `INTENT_LOADED`. `context_fp` is the last 4 bytes of `SHA-256(context_root)`; `intent_fp` the last 4 bytes of SHA-256 over the concatenated CData of every `APPROVE_VAULT_INTENT` APDU. No user presence, no screen, no state change. A malformed call gets `0x6A86` (P1/P2 ≠ `0x00`) or `0x6A87` (CData not empty). Wire format and fingerprint definitions: [`docs/apdu.md`](docs/apdu.md#ins-0x82--get_vault_state--wire-format). |
 
 #### DERIVE_CONTEXT_HASH — caller identity is not authenticated
 
@@ -41,7 +43,7 @@ carries no browser or application origin, and the same spec states plainly that 
 any allowed string". Validation here restricts only length and character set
 (`[a-z0-9\-]`), so any caller may claim `babylon-btc-vault`.
 
-Consequences a reviewer and an integrator should both be aware of (Cerberus V-012):
+Consequences a reviewer and an integrator should both be aware of:
 
 - A phishing application that reconstructs a known vault's public context and derivation
   path can produce a Screen 1 indistinguishable from the legitimate one, and on approval
@@ -59,6 +61,77 @@ display the connected public key (or a short fingerprint of it) and a digest of 
 context, and reword the prompt to state that a secret root will be exported. That changes
 Screen 1, so it requires HLD sign-off and golden-snapshot regeneration across all five
 devices and both networks; it is not implemented.
+
+#### GET_VAULT_STATE — answers an unauthenticated caller
+
+`GET_VAULT_STATE` answers any host, with no user interaction and no screen, so a host can
+poll it at will. This is **accepted by design** (ADR-001) rather than a deviation, and is
+recorded here for the same reason as the Screen 1 entry above: the next reviewer should find
+the reasoning next to the command, not reconstruct it.
+
+What an arbitrary caller learns:
+
+- Whether a session exists, and whether it has reached `HASH_DERIVED` or `INTENT_LOADED`.
+- `context_fp`, 4 bytes of `SHA-256(context_root)`. The host that ran the session received
+  the full root from `DERIVE_CONTEXT_HASH` P2=`0x00`, so it learns nothing new.
+- `intent_fp`, 4 bytes of SHA-256 over bytes the legitimate host sent. It confirms knowledge
+  of the intent, it does not reveal it.
+
+**A host with no approval at all can read a root-derived value.** `DERIVE_CONTEXT_HASH`
+P2=`0x01` derives a root silently, from an app name, path and context the host chooses,
+and `GET_VAULT_STATE` then returns `SHA-256(root)[28..32]` for it — before, a silent
+derivation returned nothing. This is accepted: it is 32 bits of a hash of a 256-bit secret,
+it cannot be inverted, and `SHA-256(root)` is used nowhere else (the on-chain commitments are
+`SHA-256(Expand(root, …))`), so it confirms nothing a host could act on. As a per-seed tag it
+adds no linkability beyond the silent `GET_EXTENDED_PUBKEY` the base app already allows.
+ADR-001's "not a new disclosure" holds only for the P2=`0x00` case.
+
+Signature counters are not returned (ADR-001 Option 3): without the host's own record of
+what it signed they give no aid, and they would tell a polling caller how far the vault
+flow has progressed.
+
+The fingerprints are an aid to resumption, not an authenticator. A match means the host may
+skip re-derivation and re-approval; it grants nothing the loaded session did not already
+allow, and every signature remains bound to the approved intent and its caps. At 32 bits a
+hostile host can grind an intent with a colliding fingerprint in about 2³² hashes, so a match
+tells a host that the device holds an intent with that fingerprint, not that it holds the
+host's own.
+
+#### Session lifetime across a disconnection — open divergence from HLD v23
+
+HLD v23 §Safety UX nullifies the intent, the root, the counters and the state machine when
+"the device connection is lost (app switch, unplug, power-off)", and requires that "a new
+connection requires re-derivation and a fresh intent approval". The app nullifies only when
+the app exits or the device loses power. Nothing handles a USB or BLE disconnection, so on a
+battery-powered device (Nano X, Stax, Flex, Apex P) left in the app the session survives an
+unplug. A Nano S+ loses power when unplugged, so there the HLD holds.
+
+ADR-001 depends on exactly this: `GET_VAULT_STATE` exists so a host can resume after "the USB
+connection returns while the application still runs". It also lets any host that connects
+next see that a session is live. That host can then sign silently within the remaining caps
+of the approved intent, without the fresh approval the HLD requires. The signatures stay
+bound to the intent the user approved, so funds cannot be redirected; what is lost is the
+HLD's second bound on silent signing, "the intent approval on the same connection".
+
+> ⚠️ **Decision: PENDING.** Either this divergence is accepted — citing Arch (Pierre Pollastri)
+> and Donjon (Baptistin Boilot) sign-off here by name and date — or the app nullifies the
+> session on transport loss, which leaves `GET_VAULT_STATE` useful only after an auto-lock.
+> The behaviour predates `GET_VAULT_STATE`; the command makes it load-bearing.
+
+#### `context_root` lifetime — divergence from HLD v23
+
+HLD v23 describes the root as held in session memory for the whole session: "The device
+stores the context_root in session memory and derives the following from it", with the
+Pre-PegIn and PegIn checks "recomputed by the device from the `context_root`", and the
+invalidation list nullifying "the stored secret `context_root`". The app is stricter. It
+zeroes the root as soon as `APPROVE_VAULT_INTENT` has derived the two on-chain commitments
+(`htlc_hashlock` per vault, `auth_anchor_hash`), and the signing checks compare against those
+commitments. In `INTENT_LOADED` no root is held.
+
+This is why `GET_VAULT_STATE` cannot compute `context_fp` on demand: the fingerprint is
+captured in `DERIVE_CONTEXT_HASH` at the moment the root is produced, and carried across the
+`APPROVE_VAULT_INTENT` reset alongside the root it describes. The hardening is kept; the HLD
+is not being amended.
 
 ### APPROVE_VAULT_INTENT — intent fields
 
@@ -106,11 +179,90 @@ The key batch must deliver exactly `keeper_count` keeper keys followed by `chall
 - pairwise disjoint with `vault_provider_pk` (per group) and the depositor key
 - sorted in ascending lexicographic order within each group
 
+#### Screen 2 — the intent review is only partly mandatory
+
+On touch devices the review is split into two streaming phases, and only the first is
+mandatory. This is a **known, accepted deviation** from HLD v23 §Safety UX, which is not
+being amended and continues to read:
+
+> Screen 2 "Displays the intent fields marked ✅ in the TLV table. The user must approve
+> before any signing can proceed."
+
+| Phase | Rows displayed | Skippable |
+|---|---|---|
+| 1 | The global scalars: app name, base fee rate, PegIn timelock, Payout timelock, Refund timelock, max Pre-PegIn fee | No |
+| 2 | Per-vault groups (VP key, vault amount, commission fee, depositor claim, max PegIn fee), repeated `vault_count` times, then the full keeper/challenger key list | **Yes** |
+
+Of those six rows, the app name comes from the session context established by
+`DERIVE_CONTEXT_HASH` (so it is shown even when P2=`0x01` suppressed Screen 1) and the other
+five are scalar `P1=0x00` fields. The remaining scalar TLV fields are validated without
+being displayed, which this deviation does not change.
+
+Every phase-2 row is marked ✅ in the HLD's TLV table, so the deviation is precisely that
+the VP key, all per-vault amounts and the entire participant set may be bypassed. Nano
+devices are unaffected — the SDK offers no skip affordance there, so the whole review is
+mandatory.
+
+Approval itself is never bypassed: Skip lands on the approve/reject page, so "chose not to
+read the details" stays distinct from "never approved". The split into two streaming reviews
+exists solely to keep this boundary enforceable — NBGL arms `SKIPPABLE_OPERATION` for a
+whole streaming review and excludes per-page narrowing for `STREAMING_NAV`.
+
+What the boundary preserves: `prepegin_max_fee` is a phase-1 row, so the fee bound governing
+the *silent* Pre-PegIn signing that follows approval is still guaranteed to have been shown.
+The timelocks and base fee rate, which likewise constrain later silent signing, are phase-1
+rows too. What phase 2 gives up is the per-vault amounts and the participant set.
+
+**This reverses an earlier audit fix** (S-01 / Govard #5 / D7), which removed the affordance
+on the grounds that Screen 2 is the sole anchor for the *silent* signing that follows it —
+Pre-PegIn signs with no further screen. Restoring it was requested by Babylon (Jerome Wang,
+option 1 of two proposed boundaries) for usability on large intents, where the key list can
+run to 64 entries.
+
+**This is the intended behaviour.** Phase 2 is skippable by design, phase 1 stays mandatory,
+and Skip always lands on the approve/reject page, so approval is never bypassed.
+
+**Interaction with Assert.** The Assert leaf binding is session-scoped, and the note under
+[Assert](#7-assert-standalone) identifies the user's review of the key list on Screen 2 as
+what prevents a substituted challenger set. That review is now skippable, so a user who
+skips phase 2 loses that protection. The binding still holds against the intent loaded in
+the session; what weakens is the assurance that the loaded intent is the funded one.
+Displaying the challenger set on Screen 5 would remove the dependency on phase 2 entirely;
+it is not implemented.
+
+---
+
+## User-facing screens
+
+The app has **nine** user-facing screens. Every other command and signature is silent.
+
+| Screen | Shown by | Specified in |
+|---|---|---|
+| 1 | `DERIVE_CONTEXT_HASH` with P2=`0x00` | [DERIVE_CONTEXT_HASH](#derive_context_hash--caller-identity-is-not-authenticated) |
+| 2 | `APPROVE_VAULT_INTENT` | [Screen 2](#screen-2--the-intent-review-is-only-partly-mandatory) |
+| 3 | Refund | [§4](#4-refund-standalone) |
+| 4 | Claim | [§6](#6-claim-standalone) |
+| 5 | Assert | [§7](#7-assert-standalone) |
+| 6 | Wrongly Challenged | [§8](#8-wrongly-challenged--wc-standalone) |
+| 7 | Proof of Possession (BIP-322) | — |
+| 8 | PayoutFinalize | — |
+| 9 | Reclaim | [§9](#9-reclaim-standalone) |
+
+Screen 9 is the only consent screen: it asks the user to judge what the device cannot see —
+whether the vault is redeemed — rather than to confirm values the device has checked.
+
+#### Screen 9 — divergence from HLD v23
+
+HLD v23 §Safety UX specifies exactly 8 user-facing screens. ADR-002 adds Screen 9 for
+Reclaim. The divergence is recorded here; the HLD is not amended.
+
 ---
 
 ## Transaction Types
 
-The app recognises eight Bitcoin transaction types via the `SIGN_PSBT` hook. The device independently reconstructs the expected scripts from the loaded `vault_intent_t` and rejects any PSBT whose scripts do not match.
+The app recognises ten Bitcoin transaction types via the `SIGN_PSBT` hook. The device independently reconstructs the expected scripts from the loaded `vault_intent_t` and rejects any PSBT whose scripts do not match.
+
+For the standalone flows (no wallet policy), the leaf script alone does not always pick a unique pattern: Claim and Reclaim share the exact same 34-byte `<D> OP_CHECKSIG` leaf. Where that happens, the dispatch rule is stated on the pair (leaf script, output count), not on the leaf script alone — see Claim and Reclaim below.
 
 ### 1. Pre-PegIn
 
@@ -122,12 +274,23 @@ The depositor creates one or more HTLC outputs (one per vault group) that lock B
 - Inputs: wallet inputs (BIP-86 P2TR), signed by the base app
 - Output at `htlc_vout` (per group): P2TR matching the 2-leaf HTLC reconstructed from the intent; value in `[vault_amount + depositor_claim_value + 240, vault_amount + depositor_claim_value + 240 + pegin_max_fee]` (the minimum covers `vault_amount`, `depositor_claim_value`, and the 240-sat P2A anchor funded by the PegIn transaction)
 - Optional OP_RETURN output (positioned strictly after all HTLC outputs): 34-byte scriptPubKey `0x6A 0x20 <auth_anchor_hash>`, value `0`; when present the device validates the 32-byte payload against `auth_anchor_hash = SHA256(Expand(root, "auth-anchor"))` computed at `APPROVE_VAULT_INTENT` time. At most one such output is permitted.
-- Optional CPFP anchor output (positioned strictly after all HTLC outputs): P2TR(depositor_pk) BIP-86 key-path scriptPubKey, value exactly `VAULT_DUST_LIMIT` (546 sat). At most one such output is permitted.
-- All other outputs: BIP-86 change outputs owned by this device (verified via `TAP_BIP32_DERIVATION`)
+- Optional depositor outputs (positioned strictly after all HTLC outputs), paying P2TR(depositor_pk) — the BIP-86 key-path scriptPubKey of the key the device derived from `depositor_path`, i.e. the address the dApp shows:
+  - at most one CPFP anchor, value exactly `VAULT_DUST_LIMIT` (546 sat);
+  - after the anchor, at most one change output, value above `VAULT_DUST_LIMIT`, and only when `depositor_path` is the first receive address (`m/86'/coin'/account'/0/0`) of the BIP-86 account the inputs are signed from, which the base app verifies against the device's own key: the path is chosen by the host and never shown on the device, so change is accepted only where a wallet looks for it;
+  - a change output with no preceding anchor, a second anchor, a change output under any other `depositor_path` (another address index, the change branch, or another account), and a depositor output below `VAULT_DUST_LIMIT` are rejected. The anchor does not depend on the path.
+- No other output is accepted. In particular, change on the wallet policy's change branch (`…/1/*`) is rejected. The base app treats receive-branch outputs (`…/0/*`) as external, which is why change to the depositor's own address is matched by script above instead.
+- Ordering: the device enforces that every non-HTLC output follows all HTLC outputs and that the change follows the anchor. The anchor and the change share one scriptPubKey, so that order is what lets a reader of the transaction tell them apart. The device does not order the auth-anchor OP_RETURN against the depositor outputs; the canonical layout, which btc-vault builds and reads, is `[HTLC…, OP_RETURN?, anchor, change?]`.
 - Sighash: `SIGHASH_ALL` or `SIGHASH_DEFAULT`; version ≥ 2; locktime = 0
 - Fee: `total_inputs − total_outputs ≤ prepegin_max_fee`
 
 **User display:** Pre-PegIn signing is silent — no per-signing screen is shown. The fee bound (`prepegin_max_fee`) is displayed on the intent approval screen (Screen 2).
+
+**Relation to HLD v23.** The HLD admits "Depositor outputs (zero or more)" under any BIP-86 path and
+does not distinguish change from the anchor. The device is narrower, never looser: a depositor output
+must pay `depositor_pk` itself, at most one anchor and one change output are accepted, the change
+must follow the anchor, and the change is accepted only when `depositor_path` is `m/86'/coin'/account'/0/0` of a BIP-86 signing account.
+Every depositor output returns value to a key the device derived, so the count
+and order limits do not affect where value goes; the fee remains bounded by `prepegin_max_fee`.
 
 **HTLC scripts (2-leaf P2TR, NUMS internal key):**
 - *Leaf 0 — Hashlock + All-Party:* `OP_SIZE <32> OP_EQUALVERIFY / OP_SHA256 <h> OP_EQUALVERIFY / <D> OP_CHECKSIGVERIFY / <VP> OP_CHECKSIGVERIFY / <VK N-of-N> / <UC M-of-M>`
@@ -249,7 +412,7 @@ The depositor pre-signs a NoPayout leaf for a specific challenger, authorising t
 
 The depositor spends the Depositor Claim UTXO created by the PegIn transaction.
 
-**Requires:** any state (including `IDLE`); no wallet policy; 34-byte leaf `<D> OP_CHECKSIG`.
+**Requires:** any state (including `IDLE`); no wallet policy; 34-byte leaf `<D> OP_CHECKSIG` with exactly 2 outputs. The same leaf with exactly 1 output is Reclaim (below) instead; any other output count matches neither pattern and is rejected.
 
 **PSBT requirements:**
 
@@ -325,6 +488,11 @@ alone only binds the leaf to the output being spent.
 > host supplies a fresh intent and could substitute the challenger set. The user's review of the key
 > list on Screen 2 is what prevents that, and is therefore load-bearing for Assert safety rather
 > than informational.
+>
+> **That review can be skipped.** The key list sits in Screen 2's skippable phase 2 (see
+> [Screen 2](#screen-2--the-intent-review-is-only-partly-mandatory)), so this protection is
+> contingent on the user not skipping it. Nano devices offer no skip affordance and always
+> review it in full.
 
 Real leaf size is **11,526–13,636 bytes** (11,662 for the 3 local / 3 universal challenger
 configuration in `tests/vectors/depositor-as-claimer/assert.txt`). The body is fixed at compile
@@ -401,6 +569,67 @@ The depositor reclaims funds from a wrongly-challenged vault by spending the Cha
 
 ---
 
+### 9. Reclaim (standalone)
+
+Reclaim sweeps the depositor claim reserve (PegIn Output 1) back to the depositor once the
+vault is redeemed and the reserve would otherwise be lost. It shares its leaf byte-for-byte
+with Claim; the dispatcher tells them apart by output count alone.
+
+**Consent, not validation.** The device cannot know whether PegIn Output 0 has been spent, so
+it cannot establish that the sweep is safe — reclaiming early permanently kills the
+depositor's self-claim path. The review screen carries that risk to the user; the device
+guarantees only that the funds go to the depositor's own proven key.
+
+**Requires:** any state (including `IDLE`); no wallet policy; 34-byte leaf `<D> OP_CHECKSIG`
+with exactly 1 output. The same leaf with exactly 2 outputs is Claim instead; any other
+output count matches neither pattern and is rejected.
+
+**PSBT requirements:**
+
+| Field | Rule |
+|---|---|
+| Input count | Exactly 1 |
+| Output count | Exactly 1 |
+| Version / locktime | ≥ 2 / 0 — the PegIn is deeply confirmed by reclaim time, so the TRUC constraints on PegIn do not apply |
+| Input 0 leaf shape | 34 bytes: `<D>(32B) OP_CHECKSIG` — byte-identical to Claim's leaf |
+| Internal key | NUMS (single-leaf P2TR) |
+| `<D>` key | Verified via `TAP_BIP32_DERIVATION`; BIP-86 path; derived key must match leaf key |
+| Control block | Exactly 33 bytes (depth 0): PegIn Output 1 is a single-leaf tree, so a sibling proves some other tree. Must produce a valid commitment to the leaf |
+| Input 0 sequence | Exactly `0xFFFFFFFD` (unmasked equality); the field **must be present** — an absent `PSBT_IN_SEQUENCE` decodes as `0xFFFFFFFF`, which is not replaceable |
+| Input 0 value | Plausibility only: `WITNESS_UTXO` value strictly above `VAULT_DUST_LIMIT`. `SIGHASH_DEFAULT` commits it, so a false value only yields an unusable signature (DoS, no fund redirection) |
+| Output 0 | BIP-86 P2TR(`<D>`) — the depositor's own address, as in Claim, WC and PayoutFinalize. No `PSBT_OUT_TAP_BIP32_DERIVATION` is read: the host would choose the path and the device never shows it, so any other address of this device could sit where no wallet scans |
+| Fee | `input_value − output_value > 0` (checked subtraction; rejects on underflow) |
+| Prevout binding | **Not enforced** — without an intent the device cannot compute the expected PegIn txid. Displayed on the review screen for the user to check by eye |
+| Sighash | `SIGHASH_DEFAULT` only |
+| Signing cap | None — standalone flows are uncapped; Bitcoin consensus makes the spend a one-time event |
+
+**Sequence policy note.** Reclaim is the first accepted pattern with an RBF sequence
+(`0xFFFFFFFD`). Claim keeps `0xFFFFFFFF` (`SEQUENCE_FINAL`) for the very same leaf shape, per
+the Babylon rule for graph transactions — both are correct for their own pattern, and neither
+bound relaxes the other.
+
+**Depositor Claim / Reclaim leaf script:**
+`<D> OP_CHECKSIG`
+
+**User display — Screen 9 (explicit approval, consent posture):**
+
+| Row | Source |
+|---|---|
+| Amount reclaimed | Output 0 value |
+| Transaction fee | Input 0 value − Output 0 value |
+| Reclaim address | bech32m of Output 0 — the depositor's own address, BIP-86 P2TR(`<D>`) |
+| PegIn txid | Input 0 prevout txid, display only (see *Prevout binding*). Shown in block-explorer byte order (the reverse of `PSBT_IN_PREVIOUS_TXID`), like every txid the app displays |
+
+The rows are preceded by an intro page, titled "Reclaim reserve", that states the one risk
+the device cannot rule out: *"Recover the reserve that protects your deposit. Continue only
+if your vault is redeemed. This action removes the protection permanently."* The copy
+weights that risk more heavily than the neutral Refund review on purpose — it is the only
+mitigation for an early sweep. Approval signs Input 0; rejection returns `SW_DENY` and
+nothing is signed. The exact wording is a product decision and may change without changing
+the rows.
+
+---
+
 ## Status Words
 
 | SW     | Name                  | Meaning |
@@ -408,6 +637,8 @@ The depositor reclaims funds from a wrongly-challenged vault by spending the Cha
 | `0x9000` | `SW_OK`             | Success |
 | `0x6985` | `SW_DENY`           | User rejected on device |
 | `0x6A80` | `SW_INCORRECT_DATA` | Invalid APDU data or validation failure |
+| `0x6A86` | `SW_WRONG_P1P2`     | P1 or P2 not valid for this command |
+| `0x6A87` | `SW_WRONG_DATA_LENGTH` | Lc not valid for this command |
 | `0x6D00` | `SW_INS_NOT_SUPPORTED` | Unknown INS for CLA `0xE1` |
 | `0x6E00` | `SW_CLA_NOT_SUPPORTED` | Unknown CLA |
 | `0xB007` | `SW_BAD_STATE`      | Command not allowed in current session state |

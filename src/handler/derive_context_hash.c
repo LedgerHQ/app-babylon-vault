@@ -63,6 +63,14 @@ static void _finalize(dispatcher_context_t *dc) {
         return;
     }
 
+    /* The GET_VAULT_STATE fingerprint must be taken now: APPROVE_VAULT_INTENT zeroes the root
+     * as soon as its commitments are derived, leaving nothing to hash later. */
+    if (!vault_fingerprint(G_vault_context.root, VAULT_HASH256_LEN, G_vault_context.context_fp)) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
+
     if (!vault_context_transition(&G_vault_context, VAULT_STATE_IDLE, VAULT_STATE_HASH_DERIVED)) {
         SEND_SW(dc, SW_BAD_STATE);
         return;

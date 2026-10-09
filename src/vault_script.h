@@ -126,7 +126,7 @@ void vault_taproot_leaf_hash_stream_final(cx_sha256_t *ctx, uint8_t out[VAULT_HA
  * returns the byte count written, or -1 if buf_max is too small.
  *
  * Precondition: intent->keeper_pks and intent->challenger_pks are pre-sorted
- * ascending (enforced by APPROVE_VAULT_INTENT / NAPPS-1372).
+ * ascending (enforced by APPROVE_VAULT_INTENT).
  * Precondition for htlc_leaf0: intent->depositor_pk is pre-populated.
  * ----------------------------------------------------------------------- */
 

@@ -37,6 +37,17 @@ static uint16_t tlv_err_to_sw(vault_tlv_err_t err) {
     return SW_INCORRECT_DATA; /* unreachable */
 }
 
+/* Absorb an accepted APDU's CData into the intent fingerprint; on failure the session is
+ * invalidated and the SW sent, so the caller only has to return. */
+static bool _absorb_intent_apdu(dispatcher_context_t *dc, const command_t *cmd) {
+    if (!vault_fingerprint_update(&G_approve_intent_state.intent_hash, cmd->data, cmd->lc)) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return false;
+    }
+    return true;
+}
+
 /* -------------------------------------------------------------------------
  * P1=0x00 — scalar TLV payload
  * ---------------------------------------------------------------------- */
@@ -51,15 +62,18 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
      * The per-vault commitments (htlc_hashlock, auth_anchor_hash) are recomputed
      * from the root once htlc_vout is known (see handle_key_batch).
      * derivation_path must survive so the F2 check in handle_key_batch can compare
-     * it against the intent's depositor path. */
+     * it against the intent's depositor path.  context_fp must survive because it
+     * describes the preserved root and cannot be recomputed once the root is zeroed. */
     uint8_t saved_root[VAULT_HASH256_LEN];
     uint32_t saved_path[VAULT_MAX_PATH_DEPTH];
     uint8_t saved_app_name[VAULT_APP_NAME_MAX_LEN];
+    uint8_t saved_context_fp[VAULT_FINGERPRINT_LEN];
     uint8_t saved_path_len = G_vault_context.derivation_path_len;
     uint8_t saved_app_name_len = G_vault_context.app_name_len;
     memcpy(saved_root, G_vault_context.root, VAULT_HASH256_LEN);
     memcpy(saved_path, G_vault_context.derivation_path, saved_path_len * sizeof(uint32_t));
     memcpy(saved_app_name, G_vault_context.app_name, saved_app_name_len);
+    memcpy(saved_context_fp, G_vault_context.context_fp, VAULT_FINGERPRINT_LEN);
 
     vault_context_invalidate(&G_vault_context);
     explicit_bzero(&G_scratch, sizeof(G_scratch));
@@ -71,6 +85,7 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
     explicit_bzero(saved_path, sizeof(saved_path));
     G_vault_context.app_name_len = saved_app_name_len;
     memcpy(G_vault_context.app_name, saved_app_name, saved_app_name_len);
+    memcpy(G_vault_context.context_fp, saved_context_fp, VAULT_FINGERPRINT_LEN);
     /* Restore state to HASH_DERIVED so handle_key_batch can transition
      * HASH_DERIVED → INTENT_LOADED; without this the transition would fail
      * because vault_context_invalidate() left state at IDLE. */
@@ -85,6 +100,11 @@ static void handle_scalar_payload(dispatcher_context_t *dc, const command_t *cmd
         explicit_bzero(&G_vault_intent, sizeof(G_vault_intent));
         vault_context_invalidate(&G_vault_context);
         SEND_SW(dc, tlv_err_to_sw(err));
+        return;
+    }
+
+    vault_fingerprint_init(&G_approve_intent_state.intent_hash);
+    if (!_absorb_intent_apdu(dc, cmd)) {
         return;
     }
 
@@ -158,6 +178,9 @@ static void handle_group_payload(dispatcher_context_t *dc, const command_t *cmd)
         pos += consumed;
     }
 
+    if (!_absorb_intent_apdu(dc, cmd)) {
+        return;
+    }
     SEND_SW(dc, SW_OK);
 }
 
@@ -263,6 +286,10 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
         pos += klen;
     }
 
+    if (!_absorb_intent_apdu(dc, cmd)) {
+        return;
+    }
+
     if (G_approve_intent_state.keys_received < total_expected) {
         SEND_SW(dc, SW_OK);
         return;
@@ -328,6 +355,14 @@ static void handle_key_batch(dispatcher_context_t *dc, const command_t *cmd) {
     // Root is no longer needed — both commitments are stored in G_vault_context.
     // Zero it now rather than waiting for session end to minimise exposure window.
     explicit_bzero(G_vault_context.root, sizeof(G_vault_context.root));
+
+    /* Written ahead of the approval screen but reported only once the transition to
+     * INTENT_LOADED commits; a rejection invalidates it along with the rest. */
+    if (!vault_fingerprint_final(&G_approve_intent_state.intent_hash, G_vault_context.intent_fp)) {
+        vault_context_invalidate(&G_vault_context);
+        SEND_SW(dc, SW_BAD_STATE);
+        return;
+    }
 
     /* Intent fully loaded — show approval screen before committing the transition. */
     explicit_bzero(&G_approve_intent_state, sizeof(G_approve_intent_state));

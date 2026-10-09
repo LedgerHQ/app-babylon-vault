@@ -3,8 +3,7 @@
  * scriptpubkey derivation, and PegIn txid computation.
  *
  * Tests verify byte-level structure of generated scripts against independently
- * computed expected values. See docs/babylon-vault/jira-issues.md NAPPS-1374
- * for script layout specifications.
+ * computed expected values.
  */
 
 #include <stdarg.h>

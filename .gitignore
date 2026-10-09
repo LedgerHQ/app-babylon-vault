@@ -51,3 +51,4 @@ tests/snapshots-tmp
 
 # Build dry-run artefact
 build_dry_run_output.txt
+tests/.parallel-runs/

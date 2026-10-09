@@ -192,8 +192,7 @@ void vault_taproot_leaf_hash_stream_final(cx_sha256_t *ctx, uint8_t out[VAULT_HA
  * by tweaking the NUMS internal key with the given merkle root.
  * ----------------------------------------------------------------------- */
 
-/* parity_out may be NULL when the caller does not need the parity bit.
- * NAPPS-1377 (signing) will pass a non-NULL pointer for the control block. */
+/* parity_out may be NULL when the caller does not need the parity bit. */
 static bool vault_taproot_tweak_scriptpubkey(const uint8_t merkle_root[VAULT_HASH256_LEN],
                                              uint8_t *parity_out,
                                              uint8_t out[VAULT_P2TR_SCRIPTPUBKEY_LEN]) {

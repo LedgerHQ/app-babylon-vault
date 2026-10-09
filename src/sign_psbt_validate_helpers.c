@@ -21,6 +21,15 @@
 #define BIP86_MAX_ACCOUNT       100u
 #define BIP86_MAX_ADDRESS_INDEX 10000u
 
+/* Levels of a BIP-86 path below the purpose and coin type */
+#define BIP86_ACCOUNT_LEVEL 2
+#define BIP86_CHANGE_LEVEL  3
+#define BIP86_INDEX_LEVEL   4
+
+/* Position of the first receive address within an account */
+#define BIP86_RECEIVE_BRANCH      0u
+#define BIP86_FIRST_ADDRESS_INDEX 0u
+
 /* BIP-32 derivation record layout */
 #define BIP32_PATH_STEP_SIZE   4 /* bytes per path component (uint32_t LE) */
 #define BIP32_FINGERPRINT_SIZE 4 /* bytes for the key fingerprint (uint32_t BE) */
@@ -230,4 +239,54 @@ bool leaf_has_assert_shape(int script_len, const uint8_t *prefix, uint8_t last_b
     if ((uint8_t) prefix[VAULT_LEAF_GROUP0_OP_OFF] != (uint8_t) OP_CHECKSIG) return false;
     /* Terminal OP_TRUE excludes the Vault UTXO and Refund leaves, which end <t> OP_CSV. */
     return last_byte == (uint8_t) OP_TRUE;
+}
+
+bool parse_claim_leaf_script(const uint8_t *script,
+                             int script_len,
+                             uint8_t d_key_out[VAULT_XONLY_PUBKEY_LEN]) {
+    if (script_len != (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN) return false;
+    if (script[0] != OP_PUSHBYTES_32) return false;
+    if ((uint8_t) script[VAULT_DEPOSITOR_CLAIM_LEAF_LEN - 1] != (uint8_t) OP_CHECKSIG) return false;
+    memcpy(d_key_out, script + 1, VAULT_XONLY_PUBKEY_LEN);
+    return true;
+}
+
+bool reclaim_sequence_ok(bool present, uint32_t seq) {
+    return present && seq == RECLAIM_SEQUENCE;
+}
+
+bool reclaim_fee_ok(uint64_t in_value, uint64_t out_value, uint64_t *fee_out) {
+    if (out_value >= in_value) return false;
+    *fee_out = in_value - out_value;
+    return true;
+}
+
+bool prepegin_depositor_output_accept(prepegin_depositor_outputs_t *seen,
+                                      uint64_t value,
+                                      bool change_allowed) {
+    if (seen->change_seen && !seen->anchor_seen) return false;
+
+    if (value == VAULT_DUST_LIMIT) {
+        if (seen->anchor_seen) return false;
+        seen->anchor_seen = true;
+        return true;
+    }
+    if (value > VAULT_DUST_LIMIT) {
+        if (!change_allowed || !seen->anchor_seen || seen->change_seen) return false;
+        seen->change_seen = true;
+        return true;
+    }
+    return false;
+}
+
+bool prepegin_change_path_ok(const uint32_t *path,
+                             int path_len,
+                             uint32_t signing_purpose,
+                             uint32_t signing_account) {
+    if (!check_bip86_path(path, path_len)) return false;
+    if (signing_purpose != BIP86_PURPOSE) return false;
+    if ((signing_account & BIP32_FIRST_HARDENED_CHILD) != 0) return false;
+    return path[BIP86_ACCOUNT_LEVEL] == (signing_account | BIP32_FIRST_HARDENED_CHILD) &&
+           path[BIP86_CHANGE_LEVEL] == BIP86_RECEIVE_BRANCH &&
+           path[BIP86_INDEX_LEVEL] == BIP86_FIRST_ADDRESS_INDEX;
 }

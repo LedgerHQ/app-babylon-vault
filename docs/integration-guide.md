@@ -71,7 +71,7 @@ INTENT_LOADED
   └─ 0x04 SIGN_PSBT (Assert) ─────────────────────────────► INTENT_LOADED  (user review, uncapped)
 
 IDLE / HASH_DERIVED / INTENT_LOADED
-  └─ 0x04 SIGN_PSBT (Refund / Claim / WronglyChallenged / PoP) → (state unchanged)
+  └─ 0x04 SIGN_PSBT (Refund / Claim / Reclaim / WronglyChallenged / PoP) → (state unchanged)
 ```
 
 `DERIVE_CONTEXT_HASH` is accepted from any state and resets the session before deriving. There
@@ -83,7 +83,7 @@ command (P1=`0x00` scalars → P1=`0x01` per-vault groups → P1=`0x02` public k
 to `INTENT_LOADED` on user approval. There is no session-1/session-2 distinction: all
 intent-bound signing flows are accepted from `INTENT_LOADED` in any order.
 
-**Standalone flows** (Refund, Claim, WronglyChallenged, PoP) are accepted from any
+**Standalone flows** (Refund, Claim, Reclaim, WronglyChallenged, PoP) are accepted from any
 state. They do not change state.
 
 **Assert is the exception.** It is dispatched like a standalone flow — by leaf shape, with no
@@ -200,14 +200,19 @@ the reconstructed Pre-PegIn txid could not match the broadcast one.
 | Inputs | All inputs must be wallet-policy owned — device rejects any non-internal input, and any policy that is not native SegWit |
 | Sighash | `SIGHASH_DEFAULT` (absent) or `SIGHASH_ALL` (1) per input |
 | Output at `htlc_vout` | P2TR scriptPubKey matching `vault_build_htlc_scriptpubkey(intent, htlc_hashlock)` |
-| Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value, vault_amount + depositor_claim_value + pegin_max_fee]` |
+| Output at `htlc_vout` value | Must be in `[vault_amount + depositor_claim_value + 240, vault_amount + depositor_claim_value + 240 + pegin_max_fee]`; the 240 sat fund the P2A anchor of the PegIn transaction |
 | **Auth-anchor output** | Optional `OP_RETURN` output with scriptPubKey `6A 20 ‖ auth_anchor_hash` (34 bytes) and **value 0**; at most one permitted |
 | **CPFP anchor output** | Optional P2TR(depositor_pk) BIP-86 key-path output at exactly **546 sat** (`VAULT_DUST_LIMIT`); at most one permitted |
-| All other outputs | Must be BIP-86 internal change |
+| **Change output** | Optional P2TR(depositor_pk) BIP-86 key-path output with value **above 546 sat**, placed after the CPFP anchor; at most one permitted, and only when the intent's `depositor_path` is `m/86'/coin'/account'/0/0` with `account` equal to the account of the BIP-86 wallet policy the inputs are signed from |
+| All other outputs | Rejected with `SW_INCORRECT_DATA`, including change on the wallet policy's change branch (`m/86'/coin'/0'/1/*`) |
 
 The auth-anchor `OP_RETURN` payload is bound to `SHA256(authAnchor)` recomputed on-device from the root — the host cannot substitute it. Its value must be **0** (it is provably unspendable; a non-zero value would silently burn change).
 
 The CPFP anchor at `VAULT_DUST_LIMIT` is appended by the protocol to every Pre-PegIn transaction so the depositor can fee-bump via CPFP if needed.
+
+Change goes to the depositor's own address, P2TR(`depositor_pk`), where `depositor_pk` is the key the device derived from the intent's `depositor_path` — the address the dApp shows. The anchor and the change share one scriptPubKey, so the order tells them apart: every non-HTLC output follows all HTLC outputs and the change follows the anchor. A change with no anchor before it, a second anchor, two changes, a change under a `depositor_path` other than `…/0/0` of the signing account, and a depositor output below 546 sat are all refused. The canonical layout is `[HTLC…, OP_RETURN?, anchor, change?]`; the device does not order the `OP_RETURN` against the depositor outputs.
+
+> **Breaking since 0.11.0:** change sent to the wallet policy's change branch (`…/1/x`) is refused. A host that builds Pre-PegIn change there must send it to the depositor's address instead. Inputs on either branch are unaffected.
 
 Pre-PegIn signing is **silent** — no per-signing screen is shown. The fee bound is enforced by `prepegin_max_fee` displayed during intent approval (Screen 2). The device verifies the PSBT and signs all BIP-86 inputs via the standard wallet-policy path. No custom signing.
 
@@ -423,6 +428,59 @@ The device **displays** the Pre-PegIn txid, amount reclaimed, refund timelock (b
 reclaim address. User must approve.
 
 **State after:** unchanged.
+
+---
+
+## Flow C — Reclaim Reserve
+
+Reclaim is a standalone flow that sweeps the depositor claim reserve — PegIn Output 1 — back to
+the depositor's own address, BIP-86 P2TR(`<D>`), once the vault is redeemed. It spends the same
+`<D> OP_CHECKSIG` leaf as Claim; the device tells the two apart by output count alone: 1 output
+is Reclaim, 2 is Claim, anything else is rejected.
+
+Accepted in states: `IDLE`, `HASH_DERIVED`, `INTENT_LOADED`.  
+Required wallet policy: **none** (`has_no_wallet_policy == true`).
+
+> **`TAP_BIP32_DERIVATION` is mandatory on Input 0; Output 0 needs none.** The input entry is
+> how the device proves `<D>` is its own key; a PSBT without it is rejected with
+> `SW_INCORRECT_DATA` — there is no fallback. Output 0 must pay P2TR(`<D>`) itself, so the
+> reclaim goes to the address the dApp shows for the depositor. Any other address is rejected,
+> including another address of the same wallet: the host would choose its path, the device never
+> shows it, and funds sent there would sit where no wallet scans. To end up elsewhere, move the
+> funds after the reclaim.
+
+#### PSBT requirements
+
+| Field | Requirement |
+|-------|-------------|
+| `nVersion` | ≥ 2 |
+| `nLockTime` | 0 |
+| Input count | Exactly 1 |
+| Output count | Exactly 1 |
+| Input 0 sighash | `SIGHASH_DEFAULT` — omit `PSBT_IN_SIGHASH_TYPE` or set it to `0` |
+| Input 0 `PSBT_IN_SEQUENCE` | Exactly `0xFFFFFFFD` (BIP-125 RBF), and it must be **present**: an absent field decodes as `0xFFFFFFFF`, which is not replaceable, so it is rejected rather than defaulted |
+| Input 0 `PSBT_IN_WITNESS_UTXO` | P2TR (34-byte scriptPubKey); value must exceed 546 |
+| Input 0 `PSBT_IN_TAP_LEAF_SCRIPT` | Exactly one entry: `OP_PUSHBYTES_32 <D> OP_CHECKSIG` (34 bytes), leaf version `0xC0` |
+| Control block | Exactly 33 bytes: `0xC0 \| parity` ‖ `VAULT_NUMS_XONLY`. PegIn Output 1 is a single-leaf tree, so there are no siblings; the commitment must match the Input 0 scriptPubKey |
+| Input 0 `PSBT_IN_TAP_BIP32_DERIVATION` for `<D>` | **Required.** Fingerprint must match this device's master key; path must be BIP-86; the derived x-only key must equal `<D>` |
+| Output 0 | BIP-86 key-path P2TR of `<D>` (`<D>` tweaked with the empty script tree). Same rule as Claim's Output 1, WC's Output 0 and PayoutFinalize's outputs |
+| Output 0 `PSBT_OUT_TAP_BIP32_DERIVATION` | Not read. May be omitted; if present it changes nothing |
+| Fee | Input value − output value, strictly positive. An output value above the input value is refused by the base app before the vault validator runs; the vault's checked fee arithmetic is pinned by unit tests |
+
+The device derives the signing key from the BIP-86 path in `PSBT_IN_TAP_BIP32_DERIVATION`,
+verifies the derived x-only key matches `<D>`, then signs Input 0 over the leaf.
+
+The device **displays** Screen 9: an intro page warning that the reserve protects the deposit
+and that the user should continue only if the vault is redeemed, then the amount reclaimed, fee,
+reclaim address and PegIn txid. User must approve; rejection returns `SW_DENY`.
+
+The device cannot tell whether the vault is redeemed, and it cannot bind the PegIn txid without
+an intent — it only shows it, in the order block explorers display (the reverse of
+`PSBT_IN_PREVIOUS_TXID`). Offer Reclaim only once PegIn Output 0 is spent and deeply confirmed;
+the host is in a better position to check that than the user reading the screen.
+
+**State after:** unchanged. Reclaim consumes no signature cap and does not invalidate a loaded
+intent.
 
 ---
 
