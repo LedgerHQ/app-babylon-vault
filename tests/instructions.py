@@ -8,10 +8,10 @@ def _vault_intent_key_pages(device: Device, total_keys: int) -> int:
     """Steps the keeper + challenger list contributes to the intent review.
 
     Calibrated against golden snapshot counts, not predicted: NBGL repacks tag/value
-    pairs whenever the page header changes.  Phase 2 carries SKIPPABLE_OPERATION, and
-    the "Skip" header costs vertical space, so fewer keys fit per page than an
-    unskippable review would take.  Stax's taller screen still fits 2 keys per page;
-    Flex and Apex fit 1.  Nano shows one key per screen, 2 clicks each.
+    pairs whenever the page header changes.  The key list is its own review and carries
+    SKIPPABLE_OPERATION, and the "Skip" header costs vertical space, so fewer keys fit
+    per page than an unskippable review would take.  Stax's taller screen still fits 2
+    keys per page; Flex and Apex fit 1.  Nano shows one key per screen, 2 clicks each.
     """
     if device.is_nano:
         return 2 * total_keys
@@ -27,16 +27,17 @@ def vault_intent_steps_for_keys(device: Device, total_keys: int, vault_count: in
                 a single "pairs" figure.
     vault_count: number of vault groups (>= 1).
 
-    On touch the review runs in two phases:
-      Phase 1 (mandatory): intro + params pages + confirm
-      Phase 2 (skippable): intro + vault-group pages + key pages
+    On touch the review runs as two reviews:
+      Review 1 (mandatory): intro + params pages + vault-group pages
+      Review 2 (skippable): intro + key pages
 
-    This counts the full walk through both phases.  For the short path that taps Skip
-    in phase 2, use vault_intent_skip_instructions instead.
+    This counts the full walk through both.  For the short path that taps Skip on the
+    key list, use vault_intent_skip_instructions instead.
 
     Per-device fixed part (everything except the key pages), for vault_count == 1:
-      Stax:       5     Flex/Apex:  6     Nano:  14
-    Each extra vault group adds 2 steps on touch and 7 on nano.
+      Stax/Flex/Apex:  6     Nano:  16
+    That is the review 1 intro, the params pages, the group pages and the key list's
+    intro.  Each extra vault group adds 2 steps on touch and 7 on nano.
 
     n_swipes = total_screens (touch); n_clicks = total_screens (nano).
     Relationship to golden snapshot counts: n_swipes = snapshots - 3, n_clicks = snapshots - 2 —
@@ -45,10 +46,9 @@ def vault_intent_steps_for_keys(device: Device, total_keys: int, vault_count: in
     extra = vault_count - 1
     key_pages = _vault_intent_key_pages(device, total_keys)
     if device.is_nano:
-        return 14 + 7 * extra + key_pages
-    if device.name == "stax":
-        return 5 + 2 * extra + key_pages
-    return 6 + 2 * extra + key_pages
+        return 16 + 7 * extra + key_pages
+    return (2 + vault_intent_params_pages(device)
+            + vault_intent_group_pages(device) * vault_count + key_pages)
 
 
 def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) -> int:
@@ -56,10 +56,10 @@ def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) 
 
     Convenience wrapper over vault_intent_steps_for_keys for the common symmetric case
     (equal keeper and challenger counts); prefer the latter directly when they differ.
-    Exactly equivalent to the previous hand-expanded formulas:
-      Stax  5 + 2*(vault_count-1) + challenger_count
-      Flex  6 + 2*(vault_count-1) + challenger_count
-      Nano 14 + 7*(vault_count-1) + 4*challenger_count
+    Equivalent to the hand-expanded formulas:
+      Stax  6 + 2*(vault_count-1) + challenger_count
+      Flex  6 + 2*(vault_count-1) + 2*challenger_count
+      Nano 16 + 7*(vault_count-1) + 4*challenger_count
     """
     return vault_intent_steps_for_keys(device, 2 * challenger_count, vault_count)
 
@@ -79,22 +79,35 @@ def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavI
 
 
 def vault_intent_params_pages(device: Device) -> int:
-    """Content pages the phase-1 scalar params segment occupies on touch.
+    """Content pages the global params segment occupies on touch.
 
-    The six global fields are fixed, so this does not vary with the intent.
+    The eight global rows (six parameters plus the keeper and challenger counts) are
+    fixed, so this does not vary with the intent.  Measured on the goldens: Stax fits 6
+    rows per page and Flex/Apex fit 4, so eight rows take 2 pages on every touch device.
     """
-    assert not device.is_nano, "phase boundaries are touch-only; nano runs one review"
-    return 1 if device.name == "stax" else 2
+    assert not device.is_nano, "review boundaries are touch-only; nano runs one review"
+    return 2
 
 
-def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
-    """Navigate params in full (mandatory), then Skip from the first vault group.
+def vault_intent_group_pages(device: Device) -> int:
+    """Content pages one vault group occupies on touch.
 
-    Phase 1 is a non-skippable streaming review and must be paged through.  Once params
-    are confirmed, phase 2 starts with SKIPPABLE_OPERATION armed; tapping Skip on its
-    first vault-group page opens the "Skip review?" modal, and confirming it jumps to
-    the approve/reject page — approval still has to be given explicitly, which is why
-    this list ends with REVIEW_CONFIRM rather than stopping at the skip.
+    A group is 6 rows, one of them the 64-hex vault provider key; it takes 2 pages on
+    every touch device.
+    """
+    assert not device.is_nano, "review boundaries are touch-only; nano runs one review"
+    return 2
+
+
+def vault_intent_skip_instructions(device: Device, vault_count: int = 1) -> List[NavInsID]:
+    """Navigate params and every vault group in full (mandatory), then Skip the key list.
+
+    The first review has no Skip and must be paged through, groups included.  Once the
+    last group is confirmed, the key list starts as its own review with
+    SKIPPABLE_OPERATION armed; tapping Skip on its first key page opens the "Skip
+    review?" modal, and confirming it jumps to the approve/reject page — approval still
+    has to be given explicitly, which is why this list ends with REVIEW_CONFIRM rather
+    than stopping at the skip.
 
     Skip is touch-only: nano has no skip affordance.
 
@@ -102,10 +115,14 @@ def vault_intent_skip_instructions(device: Device) -> List[NavInsID]:
            taps "Yes, skip" in the confirmation modal.
     """
     assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
+    mandatory_swipes = (
+        1  # review 1 intro → first params page
+        + vault_intent_params_pages(device)  # through params; the last swipe starts group 1
+        + vault_intent_group_pages(device) * vault_count  # through groups → key list intro
+    )
     return (
-        # phase 1 intro + params pages, then the confirm that ends phase 1
-        [NavInsID.SWIPE_CENTER_TO_LEFT] * (1 + vault_intent_params_pages(device))
-        + [NavInsID.SWIPE_CENTER_TO_LEFT]  # phase 2 intro → first vault group
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * mandatory_swipes
+        + [NavInsID.SWIPE_CENTER_TO_LEFT]  # key list intro → first key page
         + [NavInsID.RIGHT_HEADER_TAP, NavInsID.USE_CASE_CHOICE_CONFIRM]  # skip → approval
         + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
     )
@@ -157,10 +174,12 @@ def vault_intent_approve_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], 
 
 # Step counts for the DERIVE_CONTEXT_HASH approval screen.
 # The review has 1 content page ("App name") — minimal navigation before the hold.
+# The review subtitle (unverified-caller warning) sits on the touch intro page, but is a page
+# of its own on Nano.
 # Verify these against the first --golden_run if the counts produce wrong snapshots.
 DCH_APPROVE_SWIPES_STAX = 2   # Stax: intro(1/3) → App name(2/3) → Allow derivation?(3/3)
 DCH_APPROVE_SWIPES      = 2   # Flex, Apex: same 3-page layout
-DCH_APPROVE_CLICKS      = 2   # NanoSP, NanoX: header → App name → Allow derivation?
+DCH_APPROVE_CLICKS      = 3   # NanoSP, NanoX: header → warning → App name → Allow derivation?
 
 
 def derive_context_hash_approve_steps(device: Device) -> int:

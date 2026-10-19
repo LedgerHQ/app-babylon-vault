@@ -31,8 +31,10 @@ All custom APDUs use **CLA `0xE1`**.
 
 #### DERIVE_CONTEXT_HASH — caller identity is not authenticated
 
-Screen 1 (P2=`0x00`) shows the host-supplied `appName` and nothing else. This is a
-**known, accepted deviation** from the bundled protocol specification, which requires more:
+Screen 1 (P2=`0x00`) shows the host-supplied `appName` and the warning "Only approve on a
+trusted website or application" — as the intro subtitle on touch devices, as a page of its own
+on Nano. Nothing else identifies the caller. This is a **known, accepted deviation** from the
+bundled protocol specification, which requires more:
 
 > `docs/specs/derive-context-hash.md` §2.1 — "The dialog MUST display the `appName` **and
 > the requesting origin**. The dialog SHOULD also display the context bytes."
@@ -52,15 +54,17 @@ Consequences a reviewer and an integrator should both be aware of:
 - The screen says "Allow derivation?", which understates what is released: a deterministic
   **secret root**, not a hash of public data.
 - The physical approval gesture is the only remaining control, and it is being made on
-  incomplete information.
+  incomplete information. The warning tells the user the decision is theirs; it does not
+  give them anything to check the caller against.
 
 Closing this needs identity established outside the raw APDU — an origin assertion from a
 wallet or transport layer that the device can verify — which is an ecosystem change, not an
-app one. The available in-app mitigation is to give the user something cross-checkable:
-display the connected public key (or a short fingerprint of it) and a digest of the
-context, and reword the prompt to state that a secret root will be exported. That changes
-Screen 1, so it requires HLD sign-off and golden-snapshot regeneration across all five
-devices and both networks; it is not implemented.
+app one. The integrator's position is that no wallet can verify which application is calling
+and that this app is platform-agnostic, so the root is still returned for P2=`0x00`:
+integrators need it, and the command is not blocked. The warning above is the mitigation
+adopted. The stronger in-app one — display the connected public key (or a short fingerprint
+of it) and a digest of the context, and reword the prompt to state that a secret root will be
+exported — is not implemented; it changes Screen 1 further and requires HLD sign-off.
 
 #### GET_VAULT_STATE — answers an unauthenticated caller
 
@@ -181,54 +185,63 @@ The key batch must deliver exactly `keeper_count` keeper keys followed by `chall
 
 #### Screen 2 — the intent review is only partly mandatory
 
-On touch devices the review is split into two streaming phases, and only the first is
+On touch devices the review is split into two streaming reviews, and only the first is
 mandatory. This is a **known, accepted deviation** from HLD v23 §Safety UX, which is not
 being amended and continues to read:
 
 > Screen 2 "Displays the intent fields marked ✅ in the TLV table. The user must approve
 > before any signing can proceed."
 
-| Phase | Rows displayed | Skippable |
+| Review | Rows displayed | Skippable |
 |---|---|---|
-| 1 | The global scalars: app name, base fee rate, PegIn timelock, Payout timelock, Refund timelock, max Pre-PegIn fee | No |
-| 2 | Per-vault groups (VP key, vault amount, commission fee, depositor claim, max PegIn fee), repeated `vault_count` times, then the full keeper/challenger key list | **Yes** |
+| 1 | The global scalars: app name, base fee rate, PegIn timelock, Payout timelock, Refund timelock, max Pre-PegIn fee, keeper count, challenger count; then the per-vault groups (VP key, vault amount, commission fee, depositor claim, max PegIn fee), repeated `vault_count` times | No |
+| 2 | The keeper/challenger key list | **Yes** |
 
-Of those six rows, the app name comes from the session context established by
+Of the eight global rows, the app name comes from the session context established by
 `DERIVE_CONTEXT_HASH` (so it is shown even when P2=`0x01` suppressed Screen 1) and the other
-five are scalar `P1=0x00` fields. The remaining scalar TLV fields are validated without
+seven are scalar `P1=0x00` fields. The remaining scalar TLV fields are validated without
 being displayed, which this deviation does not change.
 
-Every phase-2 row is marked ✅ in the HLD's TLV table, so the deviation is precisely that
-the VP key, all per-vault amounts and the entire participant set may be bypassed. Nano
-devices are unaffected — the SDK offers no skip affordance there, so the whole review is
-mandatory.
+The deviation is precisely that the individual keeper and challenger keys may be bypassed;
+their number is still displayed. Nano devices are unaffected — the SDK offers no skip
+affordance there, so the whole review is mandatory.
 
 Approval itself is never bypassed: Skip lands on the approve/reject page, so "chose not to
 read the details" stays distinct from "never approved". The split into two streaming reviews
 exists solely to keep this boundary enforceable — NBGL arms `SKIPPABLE_OPERATION` for a
-whole streaming review and excludes per-page narrowing for `STREAMING_NAV`.
+whole streaming review and excludes per-page narrowing for `STREAMING_NAV`. The approval
+page is reachable only through review 2, which starts only after the last vault group has
+been confirmed, so no Skip can reach it before every global row and every group row has
+been shown.
 
-What the boundary preserves: `prepegin_max_fee` is a phase-1 row, so the fee bound governing
-the *silent* Pre-PegIn signing that follows approval is still guaranteed to have been shown.
-The timelocks and base fee rate, which likewise constrain later silent signing, are phase-1
-rows too. What phase 2 gives up is the per-vault amounts and the participant set.
+What the boundary preserves: every value that governs the *silent* signing following
+approval is guaranteed to have been shown — `prepegin_max_fee`, the timelocks and the base
+fee rate, as well as each vault's amount, commission fee, depositor claim and max PegIn fee.
+What review 2 gives up is the identity of the participants: a user who skips sees how many
+keepers and challengers the intent names, but not which keys.
 
 **This reverses an earlier audit fix** (S-01 / Govard #5 / D7), which removed the affordance
 on the grounds that Screen 2 is the sole anchor for the *silent* signing that follows it —
 Pre-PegIn signs with no further screen. Restoring it was requested by Babylon (Jerome Wang,
 option 1 of two proposed boundaries) for usability on large intents, where the key list can
-run to 64 entries.
+run to 64 entries. That option also put the per-vault groups inside the skippable section;
+they were moved back into the mandatory review to close V-003
+(app-babylon-vault-dev#8), because a Skip on a group page reached the approval page without
+the remaining groups' amounts, commission fees, claim values or fee limits having been
+shown. The key list, which is what makes large intents long, stays skippable.
 
-**This is the intended behaviour.** Phase 2 is skippable by design, phase 1 stays mandatory,
-and Skip always lands on the approve/reject page, so approval is never bypassed.
+**This is the intended behaviour.** The key list is skippable by design, the parameters and
+vault groups stay mandatory, and Skip always lands on the approve/reject page, so approval
+is never bypassed.
 
 **Interaction with Assert.** The Assert leaf binding is session-scoped, and the note under
 [Assert](#7-assert-standalone) identifies the user's review of the key list on Screen 2 as
-what prevents a substituted challenger set. That review is now skippable, so a user who
-skips phase 2 loses that protection. The binding still holds against the intent loaded in
+what prevents a substituted challenger set. That review is skippable, so a user who skips
+it loses that protection; the displayed challenger count exposes a substitution that changes
+the set's size, not one that keeps it. The binding still holds against the intent loaded in
 the session; what weakens is the assurance that the loaded intent is the funded one.
-Displaying the challenger set on Screen 5 would remove the dependency on phase 2 entirely;
-it is not implemented.
+Displaying the challenger set on Screen 5 would remove the dependency on the key list
+entirely; it is not implemented.
 
 ---
 
@@ -489,7 +502,7 @@ alone only binds the leaf to the output being spent.
 > list on Screen 2 is what prevents that, and is therefore load-bearing for Assert safety rather
 > than informational.
 >
-> **That review can be skipped.** The key list sits in Screen 2's skippable phase 2 (see
+> **That review can be skipped.** The key list is Screen 2's skippable second review (see
 > [Screen 2](#screen-2--the-intent-review-is-only-partly-mandatory)), so this protection is
 > contingent on the user not skipping it. Nano devices offer no skip affordance and always
 > review it in full.
