@@ -211,7 +211,7 @@ void cx_hkdf_extract(cx_md_t        hash_id,
 // request the vault makes, and fails for anything else.
 //
 // It previously ignored curve, path, path_len and chain_code and always returned CX_OK,
-// which left two blind spots (V-034): changing the unit under test to request the wrong
+// which left two blind spots: changing the unit under test to request the wrong
 // curve or path did not change the result, and the production failure branch — where
 // derive_vault_privkey must return false and leave no derived material — could never
 // execute. The contract is now asserted, and g_mock_bip32_result injects failures.

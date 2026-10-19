@@ -134,8 +134,8 @@ def _raw_exchange(client, p1: int, data: bytes):
     """Send one APPROVE_VAULT_INTENT APDU; returns the response or raises.
 
     Raises ExceptionRAPDU on any non-whitelisted SW, and AssertionError on 0xE000 — the
-    other status conftest whitelists, which this command never legitimately returns
-    (V-037). Callers that expect a rejection wrap the call in pytest.raises.
+    other status conftest whitelists, which this command never legitimately returns.
+    Callers that expect a rejection wrap the call in pytest.raises.
     """
     response = client.transport_client.exchange(
         cla=CLA_VAULT,

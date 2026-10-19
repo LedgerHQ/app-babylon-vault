@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Skip covers the key list only (V-003)**: the vault groups are now in the mandatory review. Skip on a group page used to jump to approval, hiding the remaining groups' amounts and fees (`src/display.c`, `APP_SPECIFICATION.md`)
+- **Skip covers the key list only**: the vault groups are now in the mandatory review. Skip on a group page used to jump to approval, hiding the remaining groups' amounts and fees (`src/display.c`, `APP_SPECIFICATION.md`)
 - **Keeper and challenger counts shown in the mandatory parameters**, so the size of the participant set is visible when the key list is skipped (`src/display.c`)
-- **Unverified-caller warning on the DERIVE_CONTEXT_HASH approval (V-012)**: `appName` is host-supplied and the device cannot authenticate the caller, so Screen 1 now reads "Only approve on a trusted website or application" — as the intro subtitle on touch devices, and as an extra page on Nano. **P2=`0x00` still returns the root**: integrators need it, and no wallet can verify which application is calling. Showing the connected-key fingerprint and a context digest, and rewording the prompt to say a secret root is exported, remain not done (`src/display.c`, `APP_SPECIFICATION.md`, `docs/integration-guide.md`)
+- **Unverified-caller warning on the DERIVE_CONTEXT_HASH approval**: `appName` is host-supplied and the device cannot authenticate the caller, so Screen 1 now reads "Only approve on a trusted website or application" — as the intro subtitle on touch devices, and as an extra page on Nano. **P2=`0x00` still returns the root**: integrators need it, and no wallet can verify which application is calling. Showing the connected-key fingerprint and a context digest, and rewording the prompt to say a secret root is exported, remain not done (`src/display.c`, `APP_SPECIFICATION.md`, `docs/integration-guide.md`)
 
 ### Tests
 

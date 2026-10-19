@@ -409,7 +409,7 @@ def build_group_tlv(
 
 
 def _approve_exchange(client: "RaggerClient", p1: int, data: bytes) -> bytes:
-    """Send one synchronous APPROVE_VAULT_INTENT phase; requires exact SW_OK (V-037)."""
+    """Send one synchronous APPROVE_VAULT_INTENT phase; requires exact SW_OK."""
     response = client.transport_client.exchange(
         cla=CLA_VAULT,
         ins=INS_APPROVE_VAULT_INTENT,
@@ -709,7 +709,7 @@ def sign_psbt_with_nav_and_compare(
     require_review: assert that at least one APDU actually blocked for review.  This helper
     exists to prove review-required flows display and await approval, but every exchange
     completing synchronously (done=True) silently skips navigate_and_compare, so firmware
-    that returned signatures with no confirmation screen would satisfy it (V-026).  Pass
+    that returned signatures with no confirmation screen would satisfy it.  Pass
     False only for a flow that is legitimately silent — in which case prefer
     client.sign_psbt directly.
     """

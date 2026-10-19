@@ -125,7 +125,7 @@ def seeds() -> dict[str, dict[str, bytes]]:
         "fuzz_key_batch": {
             # control bit 0 set -> the provider key is replayed as a candidate, so
             # VAULT_KEY_ERR_ROLE_COLLISION is reached without the fuzzer having to guess a
-            # 32-byte equality. This is the branch V-023 found unreachable.
+            # 32-byte equality, which would otherwise leave this branch unreachable.
             "collision_1k1c": key_batch(
                 keeper_byte=0, challenger_byte=0,
                 control=CONTROL_REPLAY_PROVIDER_KEY, keys=(KEY_A, KEY_B),

@@ -225,10 +225,10 @@ on the grounds that Screen 2 is the sole anchor for the *silent* signing that fo
 Pre-PegIn signs with no further screen. Restoring it was requested by Babylon (Jerome Wang,
 option 1 of two proposed boundaries) for usability on large intents, where the key list can
 run to 64 entries. That option also put the per-vault groups inside the skippable section;
-they were moved back into the mandatory review to close V-003
-(app-babylon-vault-dev#8), because a Skip on a group page reached the approval page without
-the remaining groups' amounts, commission fees, claim values or fee limits having been
-shown. The key list, which is what makes large intents long, stays skippable.
+they were moved back into the mandatory review because a Skip on a group page reached the
+approval page without the remaining groups' amounts, commission fees, claim values or fee
+limits having been shown. The key list, which is what makes large intents long, stays
+skippable.
 
 **This is the intended behaviour.** The key list is skippable by design, the parameters and
 vault groups stay mandatory, and Skip always lands on the approve/reject page, so approval

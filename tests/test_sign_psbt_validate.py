@@ -34,7 +34,7 @@ from ledger_bitcoin.tx import CTransaction, CTxIn, CTxOut, COutPoint, CTxWitness
 
 from test_utils.taproot import tagged_hash, taproot_tweak_pubkey, ser_script, pubkey_gen
 # Independent BIP-341 sighash and BIP-340 verifier, used to check returned signatures
-# against the PSBT rather than trusting the device's own output (V-035).
+# against the PSBT rather than trusting the device's own output.
 from test_utils.taproot_sighash import TaprootSignatureHash
 from test_utils.bip0340 import schnorr_verify
 
@@ -642,7 +642,7 @@ def _assert_single_schnorr_sig(result, expected_xonly: bytes, expected_input: in
     the SW_OK) guards against a regression that returns success without a valid signature.
 
     Pass `psbt` to additionally verify the signature cryptographically against the sighash
-    that PSBT implies (V-035).  Prefer doing so: without it these are shape checks only.
+    that PSBT implies.  Prefer doing so: without it these are shape checks only.
     """
     assert len(result) == 1, f"expected exactly one signature, got {len(result)}: {result}"
     input_index, partial_sig = result[0]
