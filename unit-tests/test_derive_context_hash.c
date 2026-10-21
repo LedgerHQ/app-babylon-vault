@@ -205,7 +205,7 @@ static void test_root_no_ctx(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
- * BIP-32 derivation failure path (V-034)
+ * BIP-32 derivation failure path
  *
  * The mock used to ignore its arguments and always return CX_OK, so this branch of
  * hkdf_derive_root could never execute and a wrong derivation request could not change

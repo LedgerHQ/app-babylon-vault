@@ -45,7 +45,7 @@ done
 # "CMakeLists.txt is newer than Makefile" meant edits to src/vault_tlv.c, a harness, or any
 # included header never triggered a rebuild: CMake's dependency tracking was never given
 # the chance to run, and the script then executed whatever stale fuzz_* binaries were
-# already there, reporting clean results for code that had changed (V-025).
+# already there, reporting clean results for code that had changed.
 if [[ ! -d "$BUILD_DIR" ]]; then
     echo "[build] Configuring fuzzers with clang..."
     cmake -DCMAKE_C_COMPILER=clang -B"$BUILD_DIR" -H"$SCRIPT_DIR"

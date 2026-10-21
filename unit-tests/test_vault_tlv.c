@@ -728,7 +728,7 @@ static void test_xonly_p_itself_rejected(void **state) {
 
 static void test_xonly_p_plus_one_rejected(void **state) {
     (void) state;
-    /* The V-013 exploit value: lifts as the valid residue x = 1 under a modular
+    /* The p + 1 exploit value: lifts as the valid residue x = 1 under a modular
      * curve check, but no BIP-340 parser will accept it on-chain. */
     uint8_t x[32];
     memcpy(x, SECP256K1_P_BE, 32);

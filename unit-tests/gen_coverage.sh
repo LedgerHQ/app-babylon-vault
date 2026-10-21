@@ -24,7 +24,7 @@ lcov --directory . -b "${BUILD_DIRECTORY}" --remove coverage.info '*/unit-tests/
 test -s coverage.info
 
 # ---------------------------------------------------------------------------
-# Scope guard (V-031)
+# Scope guard
 #
 # LCOV can only report translation units the build emitted .gcno files for, so a source
 # that no unit target compiles disappears from the numerator *and* the denominator rather

@@ -873,7 +873,7 @@ static void test_group_idx_vault_utxo_leaf_differs(void **state) {
 }
 
 /* ---------------------------------------------------------------------------
- * BIP-341 output-key tweak — reference vectors (V-030)
+ * BIP-341 output-key tweak — reference vectors
  *
  * crypto_tr_tweak_pubkey was a SHA-256 stub with y_parity hardcoded to 0, so this target
  * could not tell a correct P2TR output key from an incorrect one and only ever exercised

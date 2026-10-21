@@ -31,7 +31,7 @@ set(SRC_DIR      ${CMAKE_SOURCE_DIR}/../src)
 set(BASE_SRC_DIR ${CMAKE_SOURCE_DIR}/../bitcoin_app_base/src)
 set(MOCKS_DIR    ${CMAKE_SOURCE_DIR}/mocks)
 
-# libsecp256k1 backs the real BIP-341 output-key tweak in mock_cx.c (V-030). REQUIRED
+# libsecp256k1 backs the real BIP-341 output-key tweak in mock_cx.c. REQUIRED
 # rather than optional on purpose: falling back to a hash stub is what made the taproot
 # targets unable to serve as an oracle for the output key or the control-block parity bit,
 # and an optional dependency would silently restore that. Install with

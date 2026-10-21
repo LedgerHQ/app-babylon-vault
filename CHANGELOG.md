@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.11.1] - Skip limited to the key list
+
+### Changed
+
+- **Skip covers the key list only**: the vault groups are now in the mandatory review. Skip on a group page used to jump to approval, hiding the remaining groups' amounts and fees (`src/display.c`, `APP_SPECIFICATION.md`)
+- **Keeper and challenger counts shown in the mandatory parameters**, so the size of the participant set is visible when the key list is skipped (`src/display.c`)
+- **Unverified-caller warning on the DERIVE_CONTEXT_HASH approval**: `appName` is host-supplied and the device cannot authenticate the caller, so Screen 1 now reads "Only approve on a trusted website or application" — as the intro subtitle on touch devices, and as an extra page on Nano. **P2=`0x00` still returns the root**: integrators need it, and no wallet can verify which application is calling. Showing the connected-key fingerprint and a context digest, and rewording the prompt to say a secret root is exported, remain not done (`src/display.c`, `APP_SPECIFICATION.md`, `docs/integration-guide.md`)
+
+### Tests
+
+- **Screen 1 Nano step count**: `DCH_APPROVE_CLICKS` 2 → 3 for the added warning page; Screen 1 golden snapshots need regenerating on all five devices and both networks (`tests/instructions.py`)
+- **Skip boundary covered**: `test_only_key_list_offers_skip` (1 and 3 vaults) checks Skip appears only on the key list and replaces `test_phase1_params_not_skippable`. Step-count helpers updated (`tests/test_screen2_vault_intent.py`, `tests/instructions.py`)
+
 ## [0.11.0] - Pre-PegIn change returns to the depositor's address
 
 ### Changed

@@ -131,7 +131,8 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
     memcpy(name_str, app_name, app_name_len);
     name_str[app_name_len] = '\0';
 
-    // Screen 1 shows app_name only (spec §2.1: wallet MUST display appName).
+    // app_name is host-supplied and not authenticated, so the subtitle leaves the user to vouch
+    // for the caller (spec §2.1: wallet MUST display appName).
     nbgl_layoutTagValue_t *const pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
     pairs[0] = (nbgl_layoutTagValue_t) {.item = "App name", .value = name_str};
 
@@ -145,7 +146,7 @@ bool display_derive_context_hash(dispatcher_context_t *dc,
                        &pair_list,
                        &ICON_APP_ACTION,
                        "Derive context hash",
-                       NULL,
+                       "Only approve on a trusted website or application",
                        "Allow derivation?",
                        derive_context_hash_choice);
 
@@ -407,15 +408,18 @@ _Static_assert(sizeof(nbgl_layoutTagValue_t) == VAULT_DISPLAY_PAIR_SIZE,
 // "4294967295 sat/vB\0" — TLV parser rejects base_fee_rate > UINT32_MAX, so cast is safe
 #define VAULT_FEE_RATE_STR_SIZE 20
 
+// "255\0" — keeper_count and challenger_count are uint8_t
+#define VAULT_KEY_COUNT_STR_SIZE 4
+
 #ifdef SCREEN_SIZE_WALLET
 #define VAULT_INTENT_REVIEW_TITLE "Review vault intent\nto approve vault\nparameters"
 #define VAULT_INTENT_FINISH_TITLE "Approve vault\nintent?"
 #define VAULT_VP_KEY_LABEL        "Vault provider key"
-/* Phase 2's own intro page.  NBGL draws an intro for every streaming review and the
- * phases are separate reviews, so this page cannot be suppressed; distinct wording keeps
- * it from reading as a repeat of phase 1 and marks where the skippable section starts.
- * Touch only — nano runs the whole review as a single phase. */
-#define VAULT_VAULTS_REVIEW_TITLE "Review vault\namounts and\nparticipant keys"
+/* The key list's own intro page.  NBGL draws an intro for every streaming review and the
+ * key list is a separate review, so this page cannot be suppressed; distinct wording keeps
+ * it from reading as a repeat of the first intro and marks where the skippable section
+ * starts.  Touch only — nano runs the whole review as one. */
+#define VAULT_KEYS_REVIEW_TITLE "Review participant\nkeys"
 #else
 #define VAULT_INTENT_REVIEW_TITLE "Review vault intent"
 #define VAULT_INTENT_FINISH_TITLE "Approve intent?"
@@ -424,23 +428,26 @@ _Static_assert(sizeof(nbgl_layoutTagValue_t) == VAULT_DISPLAY_PAIR_SIZE,
 
 // ---- Streaming review state machine ----
 //
-// The vault intent is reviewed in two streaming phases:
+// The vault intent is reviewed in two streaming reviews:
 //
-//   Phase 1 (mandatory): intro → [params segment] → confirm
-//   Phase 2 (skippable): intro → [vault groups] → [keys segment] → approve/reject
+//   Review 1 (mandatory): intro → [params segment] → [vault groups]
+//   Review 2 (skippable): intro → [keys segment] → approve/reject
 //
-// The scalar parameters in phase 1 must be paged through in full: this approval is the
-// only anchor for the silent signing that follows it (Pre-PegIn signs with no further
-// screen).  Phase 2 carries SKIPPABLE_OPERATION, so the per-vault groups and the
-// keeper/challenger key list may be bypassed — a deliberate narrowing of what the user
-// is guaranteed to have seen, accepted for usability at Babylon's request and recorded
-// as a deviation in APP_SPECIFICATION.md.  Skip lands on the approve/reject page, never
-// on a silent approval: declining to read the details is not the same as not approving.
+// Review 1 must be paged through in full: this approval is the only anchor for the silent
+// signing that follows it (Pre-PegIn signs with no further screen).  It carries the global
+// parameters, the keeper and challenger counts, and every per-vault group (provider key,
+// amount, commission, depositor claim, max PegIn fee).  Only the keeper/challenger key
+// list, which can run to 64 entries, may be bypassed — a deliberate narrowing of what the
+// user is guaranteed to have seen, accepted for usability at Babylon's request and
+// recorded as a deviation in APP_SPECIFICATION.md.  Skip lands on the approve/reject page,
+// never on a silent approval: declining to read the details is not the same as not
+// approving.  The approval page is reachable only through review 2, which starts only
+// once the last vault group has been confirmed.
 //
-// The phases are separate streaming reviews because NBGL arms SKIPPABLE_OPERATION for a
-// whole review and excludes per-page narrowing for STREAMING_NAV, so two phases are the
-// only way to make one skippable while keeping the other mandatory.  On nano there is no
-// skip affordance — see VAULT_SKIP_CB.
+// The reviews are separate because NBGL arms SKIPPABLE_OPERATION for a whole review and
+// excludes per-page narrowing for STREAMING_NAV, so two reviews are the only way to make
+// one segment skippable while keeping the others mandatory.  On nano there is no skip
+// affordance — see VAULT_SKIP_CB — and the key list continues review 1.
 //
 // All intent data is already in G_vault_intent, so the whole chain is driven from
 // the choice/skip callbacks within a single io_ui_process() pump in
@@ -467,9 +474,9 @@ static void vault_stream_keys(void);
 static void vault_stream_finish(void);
 static void vault_stream_group(void);
 
-// Skip is touch-only.  Only the touch build starts phase 2 as its own
-// SKIPPABLE_OPERATION review; nano continues the mandatory phase-1 review, which arms no
-// skip affordance, so a callback passed there could never fire.  Passing NULL states that
+// Skip is touch-only.  Only the touch build starts the key list as its own
+// SKIPPABLE_OPERATION review; nano continues the mandatory review, which arms no skip
+// affordance, so a callback passed there could never fire.  Passing NULL states that
 // explicitly instead of leaning on the SDK's flag check.
 #ifdef SCREEN_SIZE_WALLET
 #define VAULT_SKIP_CB(cb) (cb)
@@ -489,8 +496,8 @@ static void vault_stream_final_choice(bool approved) {
         ui_menu_main);
 }
 
-// After the keys segment has been paged through, or on Skip from any phase 2 segment:
-// go to the approval page.  Approval is always explicit, whichever path arrives here.
+// After the keys segment has been paged through, or on Skip from it: go to the approval
+// page.  Approval is always explicit, whichever path arrives here.
 static void vault_stream_finish(void) {
     nbgl_useCaseReviewStreamingFinish(VAULT_INTENT_FINISH_TITLE, vault_stream_final_choice);
 }
@@ -503,12 +510,39 @@ static void vault_after_keys(bool confirm) {
     vault_stream_finish();
 }
 
-// After all vault groups are confirmed: show the keys segment.
-// Skip on keys → approval page directly.
+// Skip on the keys segment → approval page directly.
 static void vault_stream_keys(void) {
     nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list,
                                            vault_after_keys,
                                            VAULT_SKIP_CB(vault_stream_finish));
+}
+
+#ifdef SCREEN_SIZE_WALLET
+// Entry point for the skippable key list review (touch only), called when its intro
+// "Continue" is pressed.
+static void vault_stream_keys_start(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_keys();
+}
+#endif
+
+// After all vault groups are confirmed: review the participant keys.  On touch this is a
+// new streaming review carrying SKIPPABLE_OPERATION, which therefore covers the key list
+// only; no parameter or group page can offer Skip.  On nano the key list continues the
+// mandatory review.
+static void vault_stream_keys_review(void) {
+#ifdef SCREEN_SIZE_WALLET
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
+                                     &ICON_APP_ACTION,
+                                     VAULT_KEYS_REVIEW_TITLE,
+                                     NULL,
+                                     vault_stream_keys_start);
+#else
+    vault_stream_keys();
+#endif
 }
 
 static void vault_after_group(bool confirm) {
@@ -520,10 +554,10 @@ static void vault_after_group(bool confirm) {
 }
 
 // Streams vault groups one segment at a time, reusing static string buffers.
-// Calls vault_stream_keys() once all vault_count groups have been confirmed.
+// Calls vault_stream_keys_review() once all vault_count groups have been confirmed.
 static void vault_stream_group(void) {
     if (g_stream_vault_idx >= G_vault_intent.vault_count) {
-        vault_stream_keys();
+        vault_stream_keys_review();
         return;
     }
     uint8_t i = g_stream_vault_idx++;
@@ -555,50 +589,23 @@ static void vault_stream_group(void) {
     g_vault_grp_list.nbPairs = 6;
     g_vault_grp_list.nbMaxLinesForValue = 0;
 
-    /* Skip from any group jumps straight to the approval page, bypassing the remaining
-     * groups and the key list — the whole of phase 2 is one skippable unit. */
-    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list,
-                                           vault_after_group,
-                                           VAULT_SKIP_CB(vault_stream_finish));
+    /* No skip callback: every group must be shown before the approval page is reachable. */
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list, vault_after_group, NULL);
 }
 
-#ifdef SCREEN_SIZE_WALLET
-// Entry point for phase 2 (touch only): the skippable streaming review for vault
-// groups and keys.  Called when the phase 2 intro "Continue" is pressed.
-static void vault_stream_vaults_start(bool confirm) {
-    if (!confirm) {
-        vault_stream_reject();
-        return;
-    }
-    vault_stream_group();
-}
-#endif
-
-// After the params segment is confirmed: on touch, start a new skippable streaming
-// review for vault groups and keys (phase 2).  On nano, continue the existing
-// streaming review directly.
+// After the params segment is confirmed: stream the vault groups in the same mandatory
+// review.
 static void vault_after_params(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
         return;
     }
     g_stream_vault_idx = 0;
-#ifdef SCREEN_SIZE_WALLET
-    /* SKIPPABLE_OPERATION covers this review only.  Phase 1 is a separate review and
-     * stays mandatory; the flag cannot be narrowed further, since NBGL arms Skip for a
-     * whole streaming review and excludes per-page narrowing for STREAMING_NAV. */
-    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
-                                     &ICON_APP_ACTION,
-                                     VAULT_VAULTS_REVIEW_TITLE,
-                                     NULL,
-                                     vault_stream_vaults_start);
-#else
     vault_stream_group();
-#endif
 }
 
-// After the phase 1 intro: start the params segment.  No skip callback — params
-// are always reviewed in full before vault group details are shown.
+// After the intro: start the params segment.  No skip callback — params and vault
+// groups are always reviewed in full before the key list is shown.
 static void vault_stream_intro_choice(bool confirm) {
     if (!confirm) {
         vault_stream_reject();
@@ -659,6 +666,8 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_refund_tl_str[VAULT_TIMELOCK_STR_SIZE];
     char vault_prepegin_fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+    char vault_keeper_count_str[VAULT_KEY_COUNT_STR_SIZE];
+    char vault_challenger_count_str[VAULT_KEY_COUNT_STR_SIZE];
 
     int n = 0;
 
@@ -703,6 +712,21 @@ bool display_vault_intent(dispatcher_context_t *dc) {
     vault_pairs[n++] =
         (nbgl_layoutTagValue_t) {.item = "Max Pre-PegIn fee", .value = vault_prepegin_fee_str};
 
+    // The key counts are mandatory rows so the size of the participant set is shown even
+    // when the key list itself is skipped.
+    snprintf(vault_keeper_count_str,
+             sizeof(vault_keeper_count_str),
+             "%u",
+             (unsigned) G_vault_intent.keeper_count);
+    vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Keepers", .value = vault_keeper_count_str};
+
+    snprintf(vault_challenger_count_str,
+             sizeof(vault_challenger_count_str),
+             "%u",
+             (unsigned) G_vault_intent.challenger_count);
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Challengers", .value = vault_challenger_count_str};
+
     LEDGER_ASSERT(n <= VAULT_INTENT_MAX_PAIRS, "Too many pairs");
 
     // Scalar params segment: pairs live in vault_pairs_raw; value strings live on
@@ -720,8 +744,9 @@ bool display_vault_intent(dispatcher_context_t *dc) {
         (uint8_t) (G_vault_intent.keeper_count + G_vault_intent.challenger_count);
     g_vault_keys_list.nbMaxLinesForValue = 0;
 
-    // Phase 1: mandatory review of the global parameters.  SKIPPABLE_OPERATION is
-    // intentionally absent — it would arm Skip for the params segment too.
+    // Review 1: mandatory review of the global parameters and the vault groups.
+    // SKIPPABLE_OPERATION is intentionally absent — it would arm Skip for every segment
+    // of this review.
     nbgl_useCaseReviewStreamingStart(TYPE_OPERATION,
                                      &ICON_APP_ACTION,
                                      VAULT_INTENT_REVIEW_TITLE,

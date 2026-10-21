@@ -125,8 +125,9 @@ loads the intent again for user approval).
 
 - `app_name` — host sends `"babylon-btc-vault"`. Validated for length and character set
   (`[a-z0-9\-]`) only: it is **not** an authentication signal, and any caller can claim this
-  string. Screen 1 shows it and nothing else, so the user cannot distinguish two callers
-  using the same name, and approving releases a deterministic secret root. See
+  string. Screen 1 shows it with the warning "Only approve on a trusted website or
+  application" and nothing else, so the user cannot distinguish two callers using the same
+  name, and approving releases a deterministic secret root. See
   "DERIVE_CONTEXT_HASH — caller identity is not authenticated" in `APP_SPECIFICATION.md`
   for the accepted deviation from the protocol spec's requirement to display a requesting
   origin.

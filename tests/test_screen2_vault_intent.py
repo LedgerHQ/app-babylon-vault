@@ -11,13 +11,13 @@ Subsequent runs compare against those goldens automatically.
 Flows covered:
   - Approval  (all content pages → confirm)
   - Rejection (first content page → reject)
-  - Skip      (params in full, then Skip from phase 2 → approval)
+  - Skip      (params and groups in full, then Skip the key list → approval)
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import List, TYPE_CHECKING
 if TYPE_CHECKING:
     from ragger_bitcoin import RaggerClient
 
@@ -49,7 +49,6 @@ from .vault_client import (
 )
 from .instructions import (
     vault_intent_approve_instructions,
-    vault_intent_params_pages,
     vault_intent_reject_instructions,
     vault_intent_skip_instructions,
     vault_intent_steps,
@@ -63,7 +62,7 @@ _KEY_A = TEST_VALID_KEYS[0]
 _KEY_B = TEST_VALID_KEYS[1]
 
 
-def _scalars(bitcoin_network: str) -> bytes:
+def _scalars(bitcoin_network: str, vault_count: int = 1) -> bytes:
     ct = 0 if bitcoin_network == "main" else 1
     return build_intent_tlv(
         coin_type=ct,
@@ -76,14 +75,14 @@ def _scalars(bitcoin_network: str) -> bytes:
         keeper_count=1,
         challenger_count=1,
         prepegin_max_fee=500_000,
-        vault_count=1,
+        vault_count=vault_count,
     )
 
 
-def _group() -> bytes:
+def _group(index: int = 0, vault_provider_pk: bytes = TEST_VP_KEY) -> bytes:
     return build_group_tlv(
-        htlc_vout=0,
-        vault_provider_pk=TEST_VP_KEY,
+        htlc_vout=index,
+        vault_provider_pk=vault_provider_pk,
         vault_amount=8_765_432,       # 0.08765432 BTC — all 8 decimal places
         commission_fee=43_219,        # 0.00043219 BTC
         depositor_claim_value=21_987, # 0.00021987 BTC
@@ -194,10 +193,10 @@ def _scalars_4k3c(bitcoin_network: str) -> bytes:
 
 def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navigator: Navigator,
                                                    device: Device, bitcoin_network: str):
-    """Paging phase 2 through in full still shows every field, Skip notwithstanding.
+    """Paging the key list through in full still shows every field, Skip notwithstanding.
 
-    Phase 2 is skippable, but nothing forces the user to skip it: this walks every page
-    of both phases and approves, which is the counterpart to test_skip_intent_screen's
+    The key list is skippable, but nothing forces the user to skip it: this walks every
+    page of both reviews and approves, which is the counterpart to test_skip_intent_screen's
     short path.  It also pins the page packing that SKIPPABLE_OPERATION's header changes
     — see _vault_intent_key_pages.
 
@@ -246,23 +245,28 @@ def test_intent_screen_asymmetric_keys_full_review(client: "RaggerClient", navig
 
 
 # ---------------------------------------------------------------------------
-# Skip affordance (phase 2 skippable, phase 1 mandatory)
+# Skip affordance (key list skippable, params and vault groups mandatory)
 # ---------------------------------------------------------------------------
+
+def _screen_texts(client: "RaggerClient") -> List[str]:
+    """Text of every event on the current screen."""
+    content = client.transport_client.get_current_screen_content()
+    return [event.get("text", "") for event in content.get("events", [])]
+
 
 def _skip_offered(client: "RaggerClient") -> bool:
     """True when the current screen shows the NBGL "Skip" header button."""
-    content = client.transport_client.get_current_screen_content()
-    return any(event.get("text") == "Skip" for event in content.get("events", []))
+    return "Skip" in _screen_texts(client)
 
 
 def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
                             device: Device, bitcoin_network: str):
-    """Skip from the first vault group jumps to approval, bypassing groups and keys.
+    """Skip from the first key page jumps to approval, bypassing the key list only.
 
-    Phase 2 carries SKIPPABLE_OPERATION, so the per-vault groups and the whole
-    keeper/challenger key list can be bypassed.  The 4-keeper / 3-challenger fixture
-    makes that visible: the skipped path is a handful of pages where the full review is
-    more than twice as long.
+    The key list is its own review carrying SKIPPABLE_OPERATION; the params and the
+    per-vault groups before it are mandatory.  The 4-keeper / 3-challenger fixture makes
+    the saving visible: the skipped path omits every key page, where the full review
+    pages through all seven keys.
 
     Skip lands on the approve/reject page, not on a signature — the captured goldens end
     with an explicit approval, which is the property that keeps "did not read the
@@ -306,20 +310,50 @@ def test_skip_intent_screen(client: "RaggerClient", navigator: Navigator,
         )
 
 
-def test_phase1_params_not_skippable(client: "RaggerClient", navigator: Navigator,
-                                     device: Device, bitcoin_network: str):
-    """The scalar params segment offers no Skip; the vault groups that follow do.
+# Upper bound on the pages walked before the key list starts, so a review that never
+# reaches it fails the test instead of hanging.  The largest case here (3 vaults) takes 8.
+_MAX_MANDATORY_PAGES = 32
 
-    Phase 1 and phase 2 are separate streaming reviews precisely so SKIPPABLE_OPERATION
-    can arm one without the other.  This reads the header off the live screens rather
-    than inferring the boundary from a page count, so it fails if the flag ever widens
-    to cover the params segment.
+# Header text of the key list's intro page (VAULT_KEYS_REVIEW_TITLE).  Matched as a
+# substring so it holds whether Speculos reports the title's two lines separately or joined.
+_KEYS_INTRO_MARKER = "participant"
+
+
+@pytest.mark.parametrize("vault_count", [1, 3])
+def test_only_key_list_offers_skip(client: "RaggerClient", navigator: Navigator,
+                                   device: Device, bitcoin_network: str, vault_count: int):
+    """No parameter or vault-group page offers Skip; the key list does.
+
+    The key list is a separate streaming review precisely so SKIPPABLE_OPERATION can arm
+    it without arming the pages before it.  This reads the header and the rows off the
+    live screens rather than inferring the boundary from a page count, so it fails if the
+    flag ever widens to cover a parameter or a group page.  It also checks that every
+    mandatory row — including each "N of M" vault group and the key counts — was shown
+    before the key list began, which is what makes the approval page unreachable without
+    them.  vault_count=3 exercises the group-to-group transitions, the one place a Skip
+    on a group page could jump past the remaining groups.
     """
     if device.is_nano:
         pytest.skip("skip affordance is touch-only; nano runs one mandatory review")
 
     derive_for_intent(client, navigator, device, bitcoin_network)
-    _send_scalars_and_group(client, bitcoin_network)
+    client.transport_client.exchange(
+        cla=CLA_VAULT,
+        ins=INS_APPROVE_VAULT_INTENT,
+        p1=P1_SCALARS,
+        p2=P2_UNUSED,
+        data=_scalars(bitcoin_network, vault_count),
+    )
+    # Distinct vault provider keys, disjoint from the keeper and challenger keys.
+    vp_keys = [TEST_VP_KEY] + TEST_VALID_KEYS[2:2 + vault_count - 1]
+    for index, vp_key in enumerate(vp_keys):
+        client.transport_client.exchange(
+            cla=CLA_VAULT,
+            ins=INS_APPROVE_VAULT_INTENT,
+            p1=P1_GROUP,
+            p2=P2_UNUSED,
+            data=_group(index, vp_key),
+        )
 
     with client.transport_client.exchange_async(
         cla=CLA_VAULT,
@@ -334,19 +368,33 @@ def test_phase1_params_not_skippable(client: "RaggerClient", navigator: Navigato
             navigator.navigate([NavInsID.SWIPE_CENTER_TO_LEFT],
                                screen_change_before_first_instruction=first)
 
-        # Phase 1 intro → first params page.
+        # Review 1 intro → first params page.
         swipe(first=True)
 
-        # Every params page must be free of the Skip header.  Swiping past the last one
-        # confirms phase 1 and starts phase 2, landing on its intro.
-        for page in range(vault_intent_params_pages(device)):
-            assert not _skip_offered(client), \
-                f"phase 1 params page {page} must not offer Skip"
+        # Walk every mandatory page up to the key list's intro, none of which may carry
+        # the Skip header.
+        mandatory_texts: List[str] = []
+        for page in range(_MAX_MANDATORY_PAGES):
+            texts = _screen_texts(client)
+            if any(_KEYS_INTRO_MARKER in text for text in texts):
+                break
+            assert "Skip" not in texts, \
+                f"mandatory page {page} must not offer Skip: {texts}"
+            mandatory_texts.extend(texts)
             swipe()
+        else:
+            pytest.fail("the key list review never started")
 
-        # Phase 2 intro → first vault group, where Skip is armed.
+        for label in ("Max Pre-PegIn fee", "Keepers", "Challengers",
+                      "Vault amount", "Max commission fee", "Depositor claim", "Max PegIn fee"):
+            assert label in mandatory_texts, f"mandatory row {label!r} was never shown"
+        for index in range(1, vault_count + 1):
+            assert f"{index} of {vault_count}" in mandatory_texts, \
+                f"vault group {index} of {vault_count} was never shown"
+
+        # Key list intro → first key page, where Skip is armed.
         swipe()
-        assert _skip_offered(client), "phase 2 vault groups must offer Skip"
+        assert _skip_offered(client), "the key list must offer Skip"
 
         # Complete the flow so the pending APDU gets its response.
         navigator.navigate(
