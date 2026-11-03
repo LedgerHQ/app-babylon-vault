@@ -1,0 +1,1401 @@
+/**
+ * Unit tests for sign_psbt_validate_helpers.c — the pure helper functions
+ * extracted from the PSBT validation layer:
+ *
+ *   check_bip86_path              — BIP-86 derivation path shape check
+ *   parse_tap_bip32_deriv_value   — TAP_BIP32_DERIVATION value parser
+ *   parse_refund_leaf_script      — Refund HTLC leaf script shape checker
+ *   parse_claim_leaf_script       — Claim/Reclaim leaf script shape checker
+ *   reclaim_sequence_ok           — Reclaim Input 0 nSequence rule
+ *   reclaim_fee_ok                — Reclaim fee arithmetic (checked subtraction)
+ *   prepegin_depositor_output_accept — Pre-PegIn CPFP anchor / depositor change classification
+ *   prepegin_change_path_ok       — depositor paths that may receive Pre-PegIn change
+ *
+ * Tests verify both acceptance of valid inputs and rejection of every
+ * distinct invalid shape. BIP44_COIN_TYPE=1 is set via CMake compile def.
+ */
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+#include <cmocka.h>
+
+#include "sign_psbt_validate_helpers.h"
+#include "vault_constants.h"
+
+/* ---------------------------------------------------------------------------
+ * Helpers
+ * ------------------------------------------------------------------------- */
+
+/* Build a 5-step BIP-86 path: m/purpose'/coin'/account'/change/index */
+static void make_bip86_path(uint32_t *out,
+                             uint32_t purpose,
+                             uint32_t coin,
+                             uint32_t account,
+                             uint32_t change,
+                             uint32_t index) {
+    out[0] = purpose  | 0x80000000u;
+    out[1] = coin     | 0x80000000u;
+    out[2] = account  | 0x80000000u;
+    out[3] = change;
+    out[4] = index;
+}
+
+/* Write a uint32_t in little-endian into a byte buffer at offset. */
+static void write_u32_le(uint8_t *buf, size_t offset, uint32_t v) {
+    buf[offset + 0] = (uint8_t)(v);
+    buf[offset + 1] = (uint8_t)(v >> 8);
+    buf[offset + 2] = (uint8_t)(v >> 16);
+    buf[offset + 3] = (uint8_t)(v >> 24);
+}
+
+/* Write a uint32_t in big-endian into a byte buffer at offset. */
+static void write_u32_be(uint8_t *buf, size_t offset, uint32_t v) {
+    buf[offset + 0] = (uint8_t)(v >> 24);
+    buf[offset + 1] = (uint8_t)(v >> 16);
+    buf[offset + 2] = (uint8_t)(v >> 8);
+    buf[offset + 3] = (uint8_t)(v);
+}
+
+/* ---------------------------------------------------------------------------
+ * check_bip86_path — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+static void test_bip86_valid_minimal(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_true(check_bip86_path(path, 5));
+}
+
+static void test_bip86_valid_change_1(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 0);
+    assert_true(check_bip86_path(path, 5));
+}
+
+static void test_bip86_valid_max_account_and_index(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 10000);
+    assert_true(check_bip86_path(path, 5));
+}
+
+/* ---------------------------------------------------------------------------
+ * check_bip86_path — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_bip86_reject_short_path(void **state) {
+    (void) state;
+    uint32_t path[4];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_false(check_bip86_path(path, 4));
+}
+
+static void test_bip86_reject_long_path(void **state) {
+    (void) state;
+    uint32_t path[6] = {0};
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_false(check_bip86_path(path, 6));
+}
+
+static void test_bip86_reject_purpose_not_hardened(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[0] = BIP86_PURPOSE; /* strip hardened bit */
+    assert_false(check_bip86_path(path, 5));
+}
+
+static void test_bip86_reject_wrong_purpose(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, 84, BIP44_COIN_TYPE, 0, 0, 0); /* BIP-84 */
+    assert_false(check_bip86_path(path, 5));
+}
+
+static void test_bip86_reject_wrong_coin_type(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE + 1, 0, 0, 0);
+    assert_false(check_bip86_path(path, 5));
+}
+
+static void test_bip86_reject_coin_type_not_hardened(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[1] = BIP44_COIN_TYPE; /* strip hardened bit */
+    assert_false(check_bip86_path(path, 5));
+}
+
+static void test_bip86_reject_account_not_hardened(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[2] = 0; /* strip hardened bit */
+    assert_false(check_bip86_path(path, 5));
+}
+
+static void test_bip86_reject_account_too_large(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 101, 0, 0);
+    assert_false(check_bip86_path(path, 5));
+}
+
+static void test_bip86_reject_change_too_large(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 2, 0);
+    assert_false(check_bip86_path(path, 5));
+}
+
+static void test_bip86_reject_index_too_large(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 10001);
+    assert_false(check_bip86_path(path, 5));
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_tap_bip32_deriv_value — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Build a TAP_BIP32_DERIVATION value:
+ *   [n_hashes (1B)] [n_hashes*32 zero bytes] [fingerprint (4B LE)] [path (4B LE * n_steps)]
+ */
+static int build_deriv_val(uint8_t *buf,
+                            size_t buf_len,
+                            int n_hashes,
+                            uint32_t fingerprint,
+                            const uint32_t *path,
+                            int n_steps) {
+    int total = 1 + n_hashes * 32 + 4 + n_steps * 4;
+    if ((size_t) total > buf_len) return -1;
+    memset(buf, 0, (size_t) total);
+    buf[0] = (uint8_t) n_hashes;
+    int fp_off = 1 + n_hashes * 32;
+    write_u32_be(buf, (size_t) fp_off, fingerprint);  /* fingerprint is BE per BIP-32/PSBT */
+    for (int i = 0; i < n_steps; i++) {
+        write_u32_le(buf, (size_t) (fp_off + 4 + i * 4), path[i]);  /* path steps are LE */
+    }
+    return total;
+}
+
+static void test_deriv_valid_n_hashes_1(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    uint8_t val[1 + 32 + 4 + 5 * 4];
+    int len = build_deriv_val(val, sizeof(val), 1, 0xDEADBEEF, path, 5);
+    assert_int_equal(len, (int) sizeof(val));
+
+    uint32_t fp;
+    uint32_t out_path[5];
+    int n = parse_tap_bip32_deriv_value(val, len, &fp, out_path, 5);
+    assert_int_equal(n, 5);
+    assert_int_equal(fp, 0xDEADBEEF);
+    assert_memory_equal(out_path, path, 5 * sizeof(uint32_t));
+}
+
+static void test_deriv_valid_n_hashes_0(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 1, 0, 42);
+    uint8_t val[1 + 0 + 4 + 5 * 4];
+    int len = build_deriv_val(val, sizeof(val), 0, 0x12345678, path, 5);
+    assert_int_equal(len, (int) sizeof(val));
+
+    uint32_t fp;
+    uint32_t out_path[5];
+    int n = parse_tap_bip32_deriv_value(val, len, &fp, out_path, 5);
+    assert_int_equal(n, 5);
+    assert_int_equal(fp, 0x12345678);
+    assert_memory_equal(out_path, path, 5 * sizeof(uint32_t));
+}
+
+static void test_deriv_valid_n_hashes_2(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 7);
+    uint8_t val[1 + 64 + 4 + 5 * 4];
+    int len = build_deriv_val(val, sizeof(val), 2, 0xCAFEBABE, path, 5);
+    assert_int_equal(len, (int) sizeof(val));
+
+    uint32_t fp;
+    uint32_t out_path[5];
+    int n = parse_tap_bip32_deriv_value(val, len, &fp, out_path, 5);
+    assert_int_equal(n, 5);
+    assert_int_equal(fp, 0xCAFEBABE);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_tap_bip32_deriv_value — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_deriv_reject_empty(void **state) {
+    (void) state;
+    uint8_t val[1] = {0};
+    uint32_t fp;
+    uint32_t path[5];
+    assert_int_equal(parse_tap_bip32_deriv_value(val, 0, &fp, path, 5), -1);
+}
+
+static void test_deriv_reject_too_short_for_fingerprint(void **state) {
+    (void) state;
+    /* n_hashes=0 but only 2 bytes (need at least 5: 1 + 4) */
+    uint8_t val[2] = {OP_0, OP_0};
+    uint32_t fp;
+    uint32_t path[5];
+    assert_int_equal(parse_tap_bip32_deriv_value(val, 2, &fp, path, 5), -1);
+}
+
+static void test_deriv_reject_hash_truncated(void **state) {
+    (void) state;
+    /* n_hashes=1 but buffer has only 10 bytes, not 1+32+4=37 */
+    uint8_t val[10] = {0x01};
+    uint32_t fp;
+    uint32_t path[5];
+    assert_int_equal(parse_tap_bip32_deriv_value(val, 10, &fp, path, 5), -1);
+}
+
+static void test_deriv_reject_path_not_divisible_by_4(void **state) {
+    (void) state;
+    /* n_hashes=0, fingerprint, then 3 bytes (not divisible by 4) */
+    uint8_t val[1 + 4 + 3];
+    memset(val, 0, sizeof(val));
+    val[0] = 0;
+    uint32_t fp;
+    uint32_t path[5];
+    assert_int_equal(parse_tap_bip32_deriv_value(val, sizeof(val), &fp, path, 5), -1);
+}
+
+static void test_deriv_reject_too_many_steps(void **state) {
+    (void) state;
+    /* n_hashes=0, fingerprint, then 6 path steps — exceeds max_path_steps=5 */
+    uint8_t val[1 + 4 + 6 * 4];
+    memset(val, 0, sizeof(val));
+    val[0] = 0;
+    uint32_t fp;
+    uint32_t path[5];
+    assert_int_equal(parse_tap_bip32_deriv_value(val, sizeof(val), &fp, path, 5), -1);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_refund_leaf_script — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+/* Build script: OP_PUSHBYTES_32 <key[32]> OP_CHECKSIGVERIFY <csv_push...> OP_CSV */
+static int build_refund_script(uint8_t *buf, size_t buf_len,
+                                const uint8_t key[32],
+                                const uint8_t *csv_push, int csv_push_len) {
+    int total = 1 + 32 + 1 + csv_push_len + 1;
+    if ((size_t) total > buf_len) return -1;
+    int pos = 0;
+    buf[pos++] = OP_PUSHBYTES_32;
+    memcpy(buf + pos, key, 32); pos += 32;
+    buf[pos++] = OP_CHECKSIGVERIFY;
+    memcpy(buf + pos, csv_push, (size_t) csv_push_len); pos += csv_push_len;
+    buf[pos++] = OP_CHECKSEQUENCEVERIFY;
+    return total;
+}
+
+static void test_refund_valid_op1(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    uint8_t csv_push[] = {OP_1};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    assert_int_equal(len, 36); /* 1 + 32 + 1 + 1(OP_1) + 1 */
+
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
+    assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 1);
+}
+
+static void test_refund_valid_op16(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xBB, 32);
+    uint8_t csv_push[] = {OP_16};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
+    assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 16);
+}
+
+static void test_refund_valid_direct_push_1byte(void **state) {
+    (void) state;
+    /* CSV = 100 (0x64) — direct 1-byte push: OP_PUSHBYTES_1 + value byte */
+    uint8_t key[32];
+    memset(key, 0x01, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 0x64};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 2);
+    assert_int_equal(len, 37); /* 1 + 32 + 1 + 2(push) + 1 */
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
+    assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 100);
+}
+
+static void test_refund_valid_direct_push_2byte(void **state) {
+    (void) state;
+    /* CSV = 144 (0x90): high bit set, needs sign byte → OP_PUSHBYTES_2 0x90 0x00 */
+    uint8_t key[32];
+    memset(key, 0x02, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0x90, 0x00};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 3);
+    assert_int_equal(len, 38); /* 1 + 32 + 1 + 3(push) + 1 */
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
+    assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 144);
+}
+
+static void test_refund_valid_pushdata1(void **state) {
+    (void) state;
+    /* OP_PUSHDATA1 <len=1> <0x01> — unusual but valid */
+    uint8_t key[32];
+    memset(key, 0x03, 32);
+    uint8_t csv_push[] = {OP_PUSHDATA1, OP_PUSHBYTES_1, 0x01};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 3);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
+    assert_memory_equal(out_key, key, 32);
+    assert_int_equal((int) csv_value, 1);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_refund_leaf_script — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_refund_reject_too_short(void **state) {
+    (void) state;
+    /* 35 bytes is one short of the minimum 36 */
+    uint8_t script[35] = {0};
+    script[0]  = OP_PUSHBYTES_32;
+    script[33] = OP_CHECKSIGVERIFY;
+    script[34] = OP_1;
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, 35, out_key, &csv_value));
+}
+
+static void test_refund_reject_wrong_first_byte(void **state) {
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_1};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    script[0] = OP_PUSHBYTES_33; /* wrong push size: 33 instead of 32 */
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_wrong_checksigverify(void **state) {
+    (void) state;
+    /* OP_EQUALVERIFY is rejected; only OP_CHECKSIGVERIFY is valid */
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_1};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    script[33] = OP_EQUALVERIFY;
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_csv_op0(void **state) {
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_0};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_csv_op1negate(void **state) {
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_1NEGATE};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_csv_unknown_opcode(void **state) {
+    (void) state;
+    /* OP_NOP (0x61) is beyond OP_16 and not a valid push opcode */
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_NOP};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_extra_bytes_after_csv(void **state) {
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_1};
+    uint8_t script[65];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    script[len] = OP_0; /* extra byte after OP_CSV */
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len + 1, out_key, &csv_value));
+}
+
+static void test_refund_reject_missing_csv_opcode(void **state) {
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_1};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 1);
+    /* Truncate before OP_CSV */
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len - 1, out_key, &csv_value));
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_refund_leaf_script — BIP-68 operand domain
+ *
+ * OP_CHECKSEQUENCEVERIFY acts only on the low 16 bits of its operand (plus the
+ * type flag).  An operand carrying bits above that field is satisfiable by a far
+ * smaller nSequence than the value the device would display, so the parser must
+ * reject anything outside the block-count domain.
+ * ------------------------------------------------------------------------- */
+
+/* Only these tests need a 3-byte push; vault_script.h carries just the opcodes the
+ * firmware itself emits. */
+#define OP_PUSHBYTES_3 0x03u
+
+static void test_refund_reject_csv_high_bits_set(void **state) {
+    (void) state;
+    /* 0x00010001 = 65537.  Consensus reads only the low 16 bits, so this script is
+     * satisfied by nSequence = 1 while the operand claims 65537 blocks. */
+    uint8_t key[32];
+    memset(key, 0x04, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0x01, 0x00, 0x01};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_csv_just_above_mask(void **state) {
+    (void) state;
+    /* 0x00010000 = 65536 — the first value outside the 16-bit block-count field. */
+    uint8_t key[32];
+    memset(key, 0x05, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0x00, 0x00, 0x01};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_reject_csv_time_based_bit_in_operand(void **state) {
+    (void) state;
+    /* 0x00400048 = 72 with the BIP-68 time-based flag set in the operand.  Would
+     * otherwise pass the protocol minimum while nSequence = 72 satisfies the script. */
+    uint8_t key[32];
+    memset(key, 0x06, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0x48, 0x00, 0x40};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_false(parse_refund_leaf_script(script, len, out_key, &csv_value));
+}
+
+static void test_refund_accept_csv_at_mask_boundary(void **state) {
+    (void) state;
+    /* 0xFFFF = 65535 is the largest block count OP_CSV can enforce; it must still
+     * parse.  Encoded with a zero sign pad, so the sign bit stays clear. */
+    uint8_t key[32];
+    memset(key, 0x07, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_3, 0xFF, 0xFF, 0x00};
+    uint8_t script[64];
+    int len = build_refund_script(script, sizeof(script), key, csv_push, 4);
+    uint8_t out_key[32];
+    uint32_t csv_value = 0;
+    assert_true(parse_refund_leaf_script(script, len, out_key, &csv_value));
+    assert_int_equal((int) csv_value, 0xFFFF);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_payout_leaf_script — helpers
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Build a syntactically valid payout leaf:
+ *   OP_PUSHBYTES_32 <key[32]> OP_CHECKSIGVERIFY <filler[filler_len]> <csv_push> OP_CSV
+ * Total length must be > 68.  The filler bytes stand in for the multisig groups.
+ *
+ * When filler_len leaves room for it, the filler opens with the challenger multisig's
+ * first key push — OP_PUSHBYTES_32 <key[32]> OP_CHECKSIG — because the parser reads
+ * those two opcodes to tell a payout leaf from a Vault UTXO leaf.  Shorter fillers get
+ * filler_byte throughout; they only exercise the length guard.
+ */
+#define PAYOUT_GROUP0_LEN (1 + 32 + 1)
+
+static int build_payout_script(uint8_t *buf, size_t buf_len,
+                                const uint8_t key[32],
+                                int filler_len,
+                                uint8_t filler_byte,
+                                const uint8_t *csv_push, int csv_push_len) {
+    int total = 1 + 32 + 1 + filler_len + csv_push_len + 1;
+    if ((size_t) total > buf_len) return -1;
+    int pos = 0;
+    buf[pos++] = OP_PUSHBYTES_32;
+    memcpy(buf + pos, key, 32); pos += 32;
+    buf[pos++] = OP_CHECKSIGVERIFY;
+    int rest = filler_len;
+    if (filler_len >= PAYOUT_GROUP0_LEN) {
+        buf[pos++] = OP_PUSHBYTES_32;
+        memset(buf + pos, filler_byte, 32); pos += 32;
+        buf[pos++] = OP_CHECKSIG;
+        rest = filler_len - PAYOUT_GROUP0_LEN;
+    }
+    memset(buf + pos, filler_byte, (size_t) rest); pos += rest;
+    memcpy(buf + pos, csv_push, (size_t) csv_push_len); pos += csv_push_len;
+    buf[pos++] = OP_CHECKSEQUENCEVERIFY;
+    return total;
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_payout_leaf_script — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+static void test_payout_valid_1byte_csv(void **state) {
+    /* t2 = 90 (VAULT_PAYOUT_TIMELOCK_MIN), 1-byte push: OP_PUSHBYTES_1 0x5A */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    /* filler = 35 bytes → total = 34 + 35 + 2 + 1 = 72 > 68 */
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x42, csv_push, 2);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_true(parse_payout_leaf_script(script, len, d_key, &csv));
+    assert_memory_equal(d_key, key, 32);
+    assert_int_equal((int) csv, 90);
+}
+
+static void test_payout_valid_2byte_csv(void **state) {
+    /* t2 = 4032 (VAULT_PAYOUT_TIMELOCK_MAX), 2-byte push: OP_PUSHBYTES_2 0xC0 0x0F */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xBB, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0xC0, 0x0F};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 3);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_true(parse_payout_leaf_script(script, len, d_key, &csv));
+    assert_memory_equal(d_key, key, 32);
+    assert_int_equal((int) csv, 4032);
+}
+
+static void test_payout_valid_2byte_csv_with_sign_pad(void **state) {
+    /* t2 = 128 → _push_number emits: OP_PUSHBYTES_2 0x80 0x00 (sign-pad zero) */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xCC, 32);
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0x80, 0x00};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0xFF, csv_push, 3);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_true(parse_payout_leaf_script(script, len, d_key, &csv));
+    assert_int_equal((int) csv, 128);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_payout_leaf_script — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_payout_reject_too_short_at_68(void **state) {
+    /* Exactly 68 bytes must be rejected (Assert leaf length) */
+    (void) state;
+    uint8_t key[32] = {0};
+    /* filler = 32 bytes → total = 34 + 32 + 1 + 1 = 68 */
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 31, 0x00, csv_push, 2);
+    assert_int_equal(len, VAULT_NOPAYOUT_LEAF_LEN);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_wrong_first_byte(void **state) {
+    /* OP_PUSHBYTES_33 instead of OP_PUSHBYTES_32: key not at expected position */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    script[0] = OP_PUSHBYTES_33; /* wrong push size */
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_wrong_opcode_at_33(void **state) {
+    /* OP_CHECKSIG instead of OP_CHECKSIGVERIFY at position 33 */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    script[33] = OP_CHECKSIG; /* should be OP_CHECKSIGVERIFY */
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_wrong_last_opcode(void **state) {
+    /* No OP_CSV at the end */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    script[len - 1] = OP_CHECKSIG; /* corrupt: replace OP_CSV with OP_CHECKSIG */
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_group0_push_not_key(void **state) {
+    /* Byte 34 must open the challenger multisig with a 32-byte key push. */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 40, 0x00, csv_push, 2);
+    script[VAULT_LEAF_GROUP0_PUSH_OFF] = OP_PUSHBYTES_33;
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_vault_utxo_leaf(void **state) {
+    /* The Vault UTXO leaf — <D> OP_CHECKSIGVERIFY <VP> OP_CHECKSIGVERIFY <VK…> <UC…>
+     * <P> OP_CSV — matches every other conjunct this parser tests: same OP_PUSHBYTES_32
+     * <D> prefix, same OP_CSV terminator, and a pegin_csv_timelock range that overlaps
+     * the accepted payout t2 range.  It must be rejected on byte 67, where a second lone
+     * required signer ends in OP_CHECKSIGVERIFY instead of a multisig group's OP_CHECKSIG.
+     * Accepting it would let a host obtain a Vault UTXO signature via PayoutFinalize. */
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    /* t = 90: inside both VAULT_TIMELOCK and VAULT_PAYOUT_TIMELOCK ranges. */
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 90};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 40, 0x00, csv_push, 2);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
+    /* Turn the group-0 key push into <VaultProvider> OP_CHECKSIGVERIFY. */
+    script[VAULT_LEAF_GROUP0_OP_OFF] = OP_CHECKSIGVERIFY;
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_csv_below_min(void **state) {
+    /* t2 = 89 < VAULT_PAYOUT_TIMELOCK_MIN (90): below valid timelock range */
+    (void) state;
+    uint8_t key[32] = {0};
+    uint8_t csv_push[] = {OP_PUSHBYTES_1, 89};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 2);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+static void test_payout_reject_csv_above_max(void **state) {
+    /* t2 = 4033 > VAULT_PAYOUT_TIMELOCK_MAX (4032): above valid timelock range */
+    (void) state;
+    uint8_t key[32] = {0};
+    /* 4033 = 0x0FC1; LE: 0xC1 0x0F; sign bit clear (0x0F & 0x80 == 0) → OP_PUSHBYTES_2 */
+    uint8_t csv_push[] = {OP_PUSHBYTES_2, 0xC1, 0x0F};
+    uint8_t script[128];
+    int len = build_payout_script(script, sizeof(script), key, 35, 0x00, csv_push, 3);
+    assert_true(len > VAULT_NOPAYOUT_LEAF_LEN);
+
+    uint8_t d_key[32];
+    uint32_t csv = 0;
+    assert_false(parse_payout_leaf_script(script, len, d_key, &csv));
+}
+
+/* ---------------------------------------------------------------------------
+ * Signature cap boundary — mirrors the production cap check
+ *
+ * Production: if (counter >= cap) { invalidate; SW_CAP_EXCEEDED; return false; }
+ *             counter++;
+ * The helper returns true when the increment succeeds (counter was < cap),
+ * false when the cap is exceeded.
+ * ------------------------------------------------------------------------- */
+
+static bool _test_cap_check(uint16_t *counter, uint16_t cap) {
+    if (*counter >= cap) return false;
+    (*counter)++;
+    return true;
+}
+
+static void test_cap_boundary_prepegin(void **state) {
+    (void) state;
+    /* Pre-PegIn cap: 1 */
+    uint16_t c = 0;
+    assert_true(_test_cap_check(&c, 1));   /* 0 → 1: OK */
+    assert_int_equal(c, 1);
+    assert_false(_test_cap_check(&c, 1));  /* 1 ≥ 1: rejected */
+    assert_int_equal(c, 1);               /* counter not modified on rejection */
+}
+
+static void test_cap_boundary_pegin(void **state) {
+    (void) state;
+    /* PegIn cap: vault_count (10 for the Jira AC example) */
+    uint16_t cap = 10;
+    uint16_t c = 0;
+    for (uint16_t i = 0; i < cap; i++)
+        assert_true(_test_cap_check(&c, cap));
+    assert_int_equal(c, cap);
+    assert_false(_test_cap_check(&c, cap));
+}
+
+static void test_cap_boundary_payout(void **state) {
+    (void) state;
+    /* Payout cap: vault_count × (keeper_count + 2)
+     * Jira AC: vault_count=10, keeper_count=3 → cap = 10 × 5 = 50 */
+    uint16_t cap = (uint16_t)(10u * (3u + 2u));
+    assert_int_equal(cap, 50);
+    uint16_t c = 0;
+    for (uint16_t i = 0; i < cap; i++)
+        assert_true(_test_cap_check(&c, cap));
+    assert_int_equal(c, cap);
+    assert_false(_test_cap_check(&c, cap));
+}
+
+static void test_cap_boundary_nopayout(void **state) {
+    (void) state;
+    /* NoPayout cap: vault_count × (keeper_count + challenger_count)
+     * Jira AC: vault_count=10, keeper_count=3, challenger_count=2 → cap = 10 × 5 = 50 */
+    uint16_t cap = (uint16_t)(10u * (3u + 2u));
+    assert_int_equal(cap, 50);
+    uint16_t c = 0;
+    for (uint16_t i = 0; i < cap; i++)
+        assert_true(_test_cap_check(&c, cap));
+    assert_int_equal(c, cap);
+    assert_false(_test_cap_check(&c, cap));
+}
+
+/* ---------------------------------------------------------------------------
+ * _pegin_validate_outputs fee arithmetic — overflow guards
+ *
+ * The two-step overflow-safe addition in _pegin_validate_outputs is a private
+ * static function and cannot be called directly.  The helper below mirrors the
+ * exact same pattern so the logic — including the second (anchor) overflow
+ * branch — is exercised under unit-test conditions.
+ * ------------------------------------------------------------------------- */
+
+static bool _test_outputs_sum(uint64_t vault, uint64_t claim, uint64_t anchor,
+                              uint64_t *out) {
+    uint64_t s = vault + claim;
+    if (s < vault) return false;
+    s += anchor;
+    if (s < anchor) return false;
+    *out = s;
+    return true;
+}
+
+static void test_pegin_fee_sum_overflow_guards(void **state) {
+    (void) state;
+    uint64_t sum;
+
+    assert_true(_test_outputs_sum(1000, 2000, 3000, &sum));
+    assert_int_equal(sum, 6000);
+
+    /* First guard: vault_amount + depositor_claim wraps */
+    assert_false(_test_outputs_sum(UINT64_MAX, 1, 0, &sum));
+
+    /* Second guard: vault + claim == UINT64_MAX (no first wrap),
+     * then anchor = 1 pushes it over — second branch fires. */
+    assert_false(_test_outputs_sum((uint64_t)1u << 63,
+                                   ((uint64_t)1u << 63) - 1u,
+                                   1, &sum));
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — helpers
+ * ------------------------------------------------------------------------- */
+
+/* Build script: OP_PUSHBYTES_32 <key[32]> <last_op> */
+static int build_claim_script(uint8_t *buf, size_t buf_len,
+                              const uint8_t key[32], uint8_t first_op, uint8_t last_op) {
+    int total = 1 + 32 + 1;
+    if ((size_t) total > buf_len) return -1;
+    int pos = 0;
+    buf[pos++] = first_op;
+    memcpy(buf + pos, key, 32); pos += 32;
+    buf[pos++] = last_op;
+    return total;
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — acceptance tests
+ * ------------------------------------------------------------------------- */
+
+static void test_claim_valid_34_bytes(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xAA, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    assert_int_equal(len, (int) VAULT_DEPOSITOR_CLAIM_LEAF_LEN);
+
+    uint8_t d_key[32];
+    assert_true(parse_claim_leaf_script(script, len, d_key));
+    assert_memory_equal(d_key, key, 32);
+}
+
+/* ---------------------------------------------------------------------------
+ * parse_claim_leaf_script — rejection tests
+ * ------------------------------------------------------------------------- */
+
+static void test_claim_reject_33_bytes(void **state) {
+    (void) state;
+    /* One byte short of the required 34; content is irrelevant, only length matters. */
+    uint8_t key[32];
+    memset(key, 0xDD, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len - 1, d_key));
+}
+
+static void test_claim_reject_35_bytes(void **state) {
+    (void) state;
+    /* One byte past the required 34; content is irrelevant, only length matters. */
+    uint8_t key[32];
+    memset(key, 0xEE, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIG);
+    script[len] = OP_CHECKSIG; /* trailing byte */
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len + 1, d_key));
+}
+
+static void test_claim_reject_wrong_first_opcode(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xBB, 32);
+    uint8_t script[64];
+    int len = build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_33, OP_CHECKSIG);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len, d_key));
+}
+
+static void test_claim_reject_wrong_terminal_opcode(void **state) {
+    (void) state;
+    uint8_t key[32];
+    memset(key, 0xCC, 32);
+    uint8_t script[64];
+    int len =
+        build_claim_script(script, sizeof(script), key, OP_PUSHBYTES_32, OP_CHECKSIGVERIFY);
+    uint8_t d_key[32];
+    assert_false(parse_claim_leaf_script(script, len, d_key));
+}
+
+/* ---------------------------------------------------------------------------
+ * reclaim_sequence_ok
+ * ------------------------------------------------------------------------- */
+
+static void test_reclaim_sequence_accept_rbf_signal(void **state) {
+    (void) state;
+    assert_true(reclaim_sequence_ok(true, 0xFFFFFFFDu));
+}
+
+static void test_reclaim_sequence_reject_locktime_enabling(void **state) {
+    (void) state;
+    /* 0xFFFFFFFE enables nLockTime; not the Reclaim RBF signal. */
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFEu));
+}
+
+static void test_reclaim_sequence_reject_off_by_two(void **state) {
+    (void) state;
+    /* 0xFFFFFFFB is another RBF-signaling value one bit away from the accepted one;
+     * only exact equality to 0xFFFFFFFD is accepted, not "close enough". */
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFBu));
+}
+
+static void test_reclaim_sequence_reject_sequence_final(void **state) {
+    (void) state;
+    assert_false(reclaim_sequence_ok(true, 0xFFFFFFFFu));
+}
+
+static void test_reclaim_sequence_reject_zero(void **state) {
+    (void) state;
+    assert_false(reclaim_sequence_ok(true, 0x00000000u));
+}
+
+static void test_reclaim_sequence_reject_absent_field(void **state) {
+    (void) state;
+    /* Field absent: even though 0xFFFFFFFD is the value that would decode by default
+     * elsewhere, present=false must be rejected regardless of seq. */
+    assert_false(reclaim_sequence_ok(false, 0xFFFFFFFDu));
+}
+
+/* ---------------------------------------------------------------------------
+ * reclaim_fee_ok
+ * ------------------------------------------------------------------------- */
+
+static void test_reclaim_fee_accept_positive(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_true(reclaim_fee_ok(1000000ull, 999000ull, &fee));
+    assert_int_equal((int) fee, 1000);
+}
+
+static void test_reclaim_fee_reject_zero(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(1000000ull, 1000000ull, &fee));
+}
+
+static void test_reclaim_fee_reject_output_exceeds_input(void **state) {
+    (void) state;
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(1000000ull, 1000001ull, &fee));
+}
+
+static void test_reclaim_fee_reject_no_wraparound(void **state) {
+    (void) state;
+    /* in_value = 0, out_value = 1: would wrap to UINT64_MAX under unchecked subtraction. */
+    uint64_t fee = 0;
+    assert_false(reclaim_fee_ok(0, 1, &fee));
+}
+
+/* ---------------------------------------------------------------------------
+ * prepegin_depositor_output_accept
+ * ------------------------------------------------------------------------- */
+
+/* Every (anchor_seen, change_seen) combination, including the unreachable one. */
+static const prepegin_depositor_outputs_t k_seen_states[] = {
+    {false, false},
+    {true, false},
+    {true, true},
+    {false, true},
+};
+
+/* Values strictly below the anchor value, which can never be accepted. */
+static const uint64_t k_sub_dust_values[] = {0, 1, VAULT_DUST_LIMIT - 1u};
+
+static void assert_seen(const prepegin_depositor_outputs_t *seen,
+                        bool anchor_seen,
+                        bool change_seen) {
+    assert_int_equal(seen->anchor_seen, anchor_seen);
+    assert_int_equal(seen->change_seen, change_seen);
+}
+
+/* Feed outputs in order through the helper; returns false at the first rejected output. */
+static bool accept_depositor_outputs(const uint64_t *values, size_t n_values) {
+    prepegin_depositor_outputs_t seen = {false, false};
+    for (size_t i = 0; i < n_values; i++) {
+        if (!prepegin_depositor_output_accept(&seen, values[i], true)) return false;
+    }
+    return true;
+}
+
+static void test_depositor_output_accept_anchor_at_dust_limit(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_accept_change_just_above_dust_limit(void **state) {
+    (void) state;
+    /* 547 sat is the smallest change; it is distinguished from the anchor by value alone. */
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_accept_change_max_value(void **state) {
+    (void) state;
+    /* No upper bound on change here: the transaction's fee bound is enforced separately. */
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_true(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_change_without_anchor(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
+    assert_seen(&seen, false, false);
+}
+
+static void test_depositor_output_reject_second_anchor(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_reject_anchor_after_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, true};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_second_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, true};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, true));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, true));
+    assert_seen(&seen, true, true);
+}
+
+static void test_depositor_output_reject_below_dust_limit_in_every_state(void **state) {
+    (void) state;
+    /* 545 is the boundary just under the anchor value; 0 is the other extreme. */
+    for (size_t v = 0; v < sizeof(k_sub_dust_values) / sizeof(k_sub_dust_values[0]); v++) {
+        for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
+            prepegin_depositor_outputs_t seen = k_seen_states[s];
+            assert_false(prepegin_depositor_output_accept(&seen, k_sub_dust_values[v], true));
+            assert_seen(&seen, k_seen_states[s].anchor_seen, k_seen_states[s].change_seen);
+        }
+    }
+}
+
+static void test_depositor_output_reject_change_seen_without_anchor_seen(void **state) {
+    (void) state;
+    /* Unreachable for a caller that updates the state only through the helper; refused for
+     * every value, including the anchor value that would otherwise be accepted here. */
+    const uint64_t values[] = {0,
+                               VAULT_DUST_LIMIT - 1u,
+                               VAULT_DUST_LIMIT,
+                               VAULT_DUST_LIMIT + 1u,
+                               UINT64_MAX};
+    for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+        prepegin_depositor_outputs_t seen = {false, true};
+        assert_false(prepegin_depositor_output_accept(&seen, values[v], true));
+        assert_seen(&seen, false, true);
+    }
+}
+
+static void test_depositor_output_state_only_moves_forward(void **state) {
+    (void) state;
+    /* Whatever the value and path policy, an accepted output sets exactly one new flag and
+     * clears none; a rejected one changes nothing; change is never set when it is not allowed. */
+    const uint64_t values[] =
+        {0, 1, VAULT_DUST_LIMIT - 1u, VAULT_DUST_LIMIT, VAULT_DUST_LIMIT + 1u, UINT64_MAX};
+    const bool change_allowed_cases[] = {false, true};
+    for (size_t c = 0; c < sizeof(change_allowed_cases) / sizeof(change_allowed_cases[0]); c++) {
+        for (size_t s = 0; s < sizeof(k_seen_states) / sizeof(k_seen_states[0]); s++) {
+            for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++) {
+                const prepegin_depositor_outputs_t before = k_seen_states[s];
+                prepegin_depositor_outputs_t seen = before;
+                if (prepegin_depositor_output_accept(&seen, values[v], change_allowed_cases[c])) {
+                    assert_true(seen.anchor_seen >= before.anchor_seen);
+                    assert_true(seen.change_seen >= before.change_seen);
+                    assert_int_equal((seen.anchor_seen != before.anchor_seen) +
+                                         (seen.change_seen != before.change_seen),
+                                     1);
+                    if (!change_allowed_cases[c]) {
+                        assert_int_equal(seen.change_seen, before.change_seen);
+                    }
+                } else {
+                    assert_seen(&seen, before.anchor_seen, before.change_seen);
+                }
+            }
+        }
+    }
+}
+
+static void test_depositor_output_reject_change_when_path_disallows_change(void **state) {
+    (void) state;
+    prepegin_depositor_outputs_t seen = {true, false};
+    assert_false(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT + 1u, false));
+    assert_false(prepegin_depositor_output_accept(&seen, UINT64_MAX, false));
+    assert_seen(&seen, true, false);
+}
+
+static void test_depositor_output_accept_anchor_when_path_disallows_change(void **state) {
+    (void) state;
+    /* The path restriction concerns change only; an anchor at any depositor path is kept. */
+    prepegin_depositor_outputs_t seen = {false, false};
+    assert_true(prepegin_depositor_output_accept(&seen, VAULT_DUST_LIMIT, false));
+    assert_seen(&seen, true, false);
+}
+
+static void test_change_path_accept_first_receive_address(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+    /* The account must be the one the inputs are signed from, whichever it is. */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 7, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 7));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 0);
+    assert_true(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 100));
+}
+
+static void test_change_path_reject_other_account(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 1, 0, 0);
+    /* depositor in another account */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    /* signing from another account */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 1));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 100, 0, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 99));
+}
+
+static void test_change_path_reject_other_signing_purpose(void **state) {
+    (void) state;
+    /* 0 is the purpose of a state with no wallet policy; a hardened 86 is no purpose. */
+    const uint32_t purposes[] = {0u, 44u, 49u, 84u, 87u, BIP86_PURPOSE | 0x80000000u};
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    for (size_t i = 0; i < sizeof(purposes) / sizeof(purposes[0]); i++) {
+        assert_false(prepegin_change_path_ok(path, 5, purposes[i], 0));
+    }
+}
+
+static void test_change_path_reject_hardened_signing_account(void **state) {
+    (void) state;
+    /* The signing account is unhardened by contract; a hardened value would otherwise
+     * collide with the hardened account level of the path. */
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0x80000000u));
+}
+
+static void test_change_path_reject_other_positions(void **state) {
+    (void) state;
+    uint32_t path[5];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 1);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* second receive address */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 10000);
+    /* last permitted address index */
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* wallet change branch */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 1, 1);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0));
+}
+
+static void test_change_path_reject_malformed_path(void **state) {
+    (void) state;
+    uint32_t path[6];
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[5] = 0;
+    assert_false(prepegin_change_path_ok(path, 4, BIP86_PURPOSE, 0)); /* too short */
+    assert_false(prepegin_change_path_ok(path, 6, BIP86_PURPOSE, 0)); /* too long */
+    make_bip86_path(path, 84, BIP44_COIN_TYPE, 0, 0, 0);
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* not BIP-86 */
+    make_bip86_path(path, BIP86_PURPOSE, BIP44_COIN_TYPE, 0, 0, 0);
+    path[2] &= ~0x80000000u;
+    assert_false(prepegin_change_path_ok(path, 5, BIP86_PURPOSE, 0)); /* unhardened account */
+}
+
+static void test_depositor_output_sequence_accept_anchor_then_change(void **state) {
+    (void) state;
+    const uint64_t anchor_only[] = {VAULT_DUST_LIMIT};
+    const uint64_t anchor_then_change[] = {VAULT_DUST_LIMIT, 1000000u};
+    assert_true(accept_depositor_outputs(anchor_only, 1));
+    assert_true(accept_depositor_outputs(anchor_then_change, 2));
+}
+
+static void test_depositor_output_sequence_reject_change_before_anchor(void **state) {
+    (void) state;
+    const uint64_t change_only[] = {1000000u};
+    const uint64_t change_then_anchor[] = {1000000u, VAULT_DUST_LIMIT};
+    assert_false(accept_depositor_outputs(change_only, 1));
+    assert_false(accept_depositor_outputs(change_then_anchor, 2));
+}
+
+static void test_depositor_output_sequence_reject_repeats(void **state) {
+    (void) state;
+    const uint64_t two_anchors[] = {VAULT_DUST_LIMIT, VAULT_DUST_LIMIT};
+    const uint64_t anchor_change_anchor[] = {VAULT_DUST_LIMIT, 1000000u, VAULT_DUST_LIMIT};
+    const uint64_t two_changes[] = {VAULT_DUST_LIMIT, 1000000u, 2000000u};
+    assert_false(accept_depositor_outputs(two_anchors, 2));
+    assert_false(accept_depositor_outputs(anchor_change_anchor, 3));
+    assert_false(accept_depositor_outputs(two_changes, 3));
+}
+
+/* ---------------------------------------------------------------------------
+ * Test runner
+ * ------------------------------------------------------------------------- */
+
+int main(void) {
+    const struct CMUnitTest tests[] = {
+        /* check_bip86_path */
+        cmocka_unit_test(test_bip86_valid_minimal),
+        cmocka_unit_test(test_bip86_valid_change_1),
+        cmocka_unit_test(test_bip86_valid_max_account_and_index),
+        cmocka_unit_test(test_bip86_reject_short_path),
+        cmocka_unit_test(test_bip86_reject_long_path),
+        cmocka_unit_test(test_bip86_reject_purpose_not_hardened),
+        cmocka_unit_test(test_bip86_reject_wrong_purpose),
+        cmocka_unit_test(test_bip86_reject_wrong_coin_type),
+        cmocka_unit_test(test_bip86_reject_coin_type_not_hardened),
+        cmocka_unit_test(test_bip86_reject_account_not_hardened),
+        cmocka_unit_test(test_bip86_reject_account_too_large),
+        cmocka_unit_test(test_bip86_reject_change_too_large),
+        cmocka_unit_test(test_bip86_reject_index_too_large),
+
+        /* parse_tap_bip32_deriv_value */
+        cmocka_unit_test(test_deriv_valid_n_hashes_1),
+        cmocka_unit_test(test_deriv_valid_n_hashes_0),
+        cmocka_unit_test(test_deriv_valid_n_hashes_2),
+        cmocka_unit_test(test_deriv_reject_empty),
+        cmocka_unit_test(test_deriv_reject_too_short_for_fingerprint),
+        cmocka_unit_test(test_deriv_reject_hash_truncated),
+        cmocka_unit_test(test_deriv_reject_path_not_divisible_by_4),
+        cmocka_unit_test(test_deriv_reject_too_many_steps),
+
+        /* signature cap boundaries */
+        cmocka_unit_test(test_cap_boundary_prepegin),
+        cmocka_unit_test(test_cap_boundary_pegin),
+        cmocka_unit_test(test_cap_boundary_payout),
+        cmocka_unit_test(test_cap_boundary_nopayout),
+
+        /* _pegin_validate_outputs fee arithmetic */
+        cmocka_unit_test(test_pegin_fee_sum_overflow_guards),
+
+        /* parse_refund_leaf_script */
+        cmocka_unit_test(test_refund_valid_op1),
+        cmocka_unit_test(test_refund_valid_op16),
+        cmocka_unit_test(test_refund_valid_direct_push_1byte),
+        cmocka_unit_test(test_refund_valid_direct_push_2byte),
+        cmocka_unit_test(test_refund_valid_pushdata1),
+        cmocka_unit_test(test_refund_reject_too_short),
+        cmocka_unit_test(test_refund_reject_wrong_first_byte),
+        cmocka_unit_test(test_refund_reject_wrong_checksigverify),
+        cmocka_unit_test(test_refund_reject_csv_op0),
+
+        /* parse_refund_leaf_script — BIP-68 operand domain */
+        cmocka_unit_test(test_refund_reject_csv_high_bits_set),
+        cmocka_unit_test(test_refund_reject_csv_just_above_mask),
+        cmocka_unit_test(test_refund_reject_csv_time_based_bit_in_operand),
+        cmocka_unit_test(test_refund_accept_csv_at_mask_boundary),
+        cmocka_unit_test(test_refund_reject_csv_op1negate),
+        cmocka_unit_test(test_refund_reject_csv_unknown_opcode),
+        cmocka_unit_test(test_refund_reject_extra_bytes_after_csv),
+        cmocka_unit_test(test_refund_reject_missing_csv_opcode),
+
+        /* parse_payout_leaf_script */
+        cmocka_unit_test(test_payout_valid_1byte_csv),
+        cmocka_unit_test(test_payout_valid_2byte_csv),
+        cmocka_unit_test(test_payout_valid_2byte_csv_with_sign_pad),
+        cmocka_unit_test(test_payout_reject_too_short_at_68),
+        cmocka_unit_test(test_payout_reject_wrong_first_byte),
+        cmocka_unit_test(test_payout_reject_wrong_opcode_at_33),
+        cmocka_unit_test(test_payout_reject_wrong_last_opcode),
+        cmocka_unit_test(test_payout_reject_group0_push_not_key),
+        cmocka_unit_test(test_payout_reject_vault_utxo_leaf),
+        cmocka_unit_test(test_payout_reject_csv_below_min),
+        cmocka_unit_test(test_payout_reject_csv_above_max),
+
+        /* parse_claim_leaf_script */
+        cmocka_unit_test(test_claim_valid_34_bytes),
+        cmocka_unit_test(test_claim_reject_33_bytes),
+        cmocka_unit_test(test_claim_reject_35_bytes),
+        cmocka_unit_test(test_claim_reject_wrong_first_opcode),
+        cmocka_unit_test(test_claim_reject_wrong_terminal_opcode),
+
+        /* reclaim_sequence_ok */
+        cmocka_unit_test(test_reclaim_sequence_accept_rbf_signal),
+        cmocka_unit_test(test_reclaim_sequence_reject_locktime_enabling),
+        cmocka_unit_test(test_reclaim_sequence_reject_off_by_two),
+        cmocka_unit_test(test_reclaim_sequence_reject_sequence_final),
+        cmocka_unit_test(test_reclaim_sequence_reject_zero),
+        cmocka_unit_test(test_reclaim_sequence_reject_absent_field),
+
+        /* reclaim_fee_ok */
+        cmocka_unit_test(test_reclaim_fee_accept_positive),
+        cmocka_unit_test(test_reclaim_fee_reject_zero),
+        cmocka_unit_test(test_reclaim_fee_reject_output_exceeds_input),
+        cmocka_unit_test(test_reclaim_fee_reject_no_wraparound),
+
+        /* prepegin_depositor_output_accept */
+        cmocka_unit_test(test_depositor_output_accept_anchor_at_dust_limit),
+        cmocka_unit_test(test_depositor_output_accept_change_just_above_dust_limit),
+        cmocka_unit_test(test_depositor_output_accept_change_max_value),
+        cmocka_unit_test(test_depositor_output_reject_change_without_anchor),
+        cmocka_unit_test(test_depositor_output_reject_second_anchor),
+        cmocka_unit_test(test_depositor_output_reject_anchor_after_change),
+        cmocka_unit_test(test_depositor_output_reject_second_change),
+        cmocka_unit_test(test_depositor_output_reject_below_dust_limit_in_every_state),
+        cmocka_unit_test(test_depositor_output_reject_change_seen_without_anchor_seen),
+        cmocka_unit_test(test_depositor_output_state_only_moves_forward),
+        cmocka_unit_test(test_depositor_output_reject_change_when_path_disallows_change),
+        cmocka_unit_test(test_depositor_output_accept_anchor_when_path_disallows_change),
+        cmocka_unit_test(test_change_path_accept_first_receive_address),
+        cmocka_unit_test(test_change_path_reject_other_account),
+        cmocka_unit_test(test_change_path_reject_other_signing_purpose),
+        cmocka_unit_test(test_change_path_reject_hardened_signing_account),
+        cmocka_unit_test(test_change_path_reject_other_positions),
+        cmocka_unit_test(test_change_path_reject_malformed_path),
+        cmocka_unit_test(test_depositor_output_sequence_accept_anchor_then_change),
+        cmocka_unit_test(test_depositor_output_sequence_reject_change_before_anchor),
+        cmocka_unit_test(test_depositor_output_sequence_reject_repeats),
+    };
+
+    return cmocka_run_group_tests(tests, NULL, NULL);
+}

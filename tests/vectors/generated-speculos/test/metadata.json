@@ -1,0 +1,24 @@
+{
+  "base_fee_rate": 1,
+  "challenger_pks_hex": [
+    "2f01e5e15cca351daff3843fb70f3c2f0a1bdd05e5af888a67784ef3e10a2a01"
+  ],
+  "coin_type": 1,
+  "groups": [
+    {
+      "commission_fee": 54321,
+      "depositor_claim_value": 12345,
+      "htlc_vout": 0,
+      "pegin_max_fee": 10000,
+      "vault_amount": 9876543,
+      "vault_provider_pk_hex": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    }
+  ],
+  "htlc_refund_timelock": 144,
+  "keeper_pks_hex": [
+    "25d1dff95105f5253c4022f628a996ad3a0d95fbf21d468a1b33f8c160d8f517"
+  ],
+  "payout_timelock": 200,
+  "pegin_csv_timelock": 684,
+  "prepegin_txid_hex": "8e8ecc6505c486198753e1d470e07e86301dabe9f99b40e5160af4dc5e9fe7fe"
+}

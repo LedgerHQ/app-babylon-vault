@@ -1,7 +1,14 @@
 name: Check that the submodule is up to date
 
-# This workflow ensures that the submodule is up to date with the 'baseapp' branch
-# of the https://github.com/LedgerHQ/app-bitcoin repository.
+# This workflow ensures that the bitcoin_app_base submodule points at the head of the
+# 'baseapp' branch of https://github.com/LedgerHQ/app-bitcoin.
+#
+# The expected origin and branch are hardcoded below and deliberately NOT read from the
+# checked-out .gitmodules. That file is repository content, so a pull request could
+# otherwise redirect the submodule to an attacker-controlled repository, set the gitlink to
+# that branch's head, and obtain a green check — the check would then prove only that the
+# gitlink matches whatever head the PR itself declared, not that it came from LedgerHQ.
+# Only bitcoin_app_base is validated here; other submodules have their own trust policies.
 
 on:
   workflow_dispatch:
@@ -12,16 +19,60 @@ on:
       - develop
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check_submodule:
     name: Check submodule
     runs-on: ubuntu-latest
     steps:
       - name: Clone
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - name: Compare submodule with remote branch
+      - name: Verify baseapp gitlink against the official branch head
+        shell: bash
         run: |
-          git submodule update --init --recursive
-          git submodule update --remote --recursive
-          git diff --exit-code || { echo "The submodule is not up to date"; exit 1; }
+          set -euo pipefail
+
+          expected_path='bitcoin_app_base'
+          expected_url='https://github.com/LedgerHQ/app-bitcoin'
+          expected_branch='baseapp'
+
+          # The committed .gitmodules must still declare the official origin. Comparing it
+          # to the hardcoded values turns a silent redirect into a failing check.
+          actual_path="$(git config -f .gitmodules --get submodule.bitcoin_app_base.path)"
+          actual_url="$(git config -f .gitmodules --get submodule.bitcoin_app_base.url)"
+          actual_branch="$(git config -f .gitmodules --get submodule.bitcoin_app_base.branch)"
+
+          for name in path url branch; do
+            eval "actual=\$actual_$name; expected=\$expected_$name"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::.gitmodules submodule.bitcoin_app_base.$name is '$actual', expected '$expected'" >&2
+              exit 1
+            fi
+          done
+
+          # Compare the committed gitlink with the branch head fetched from the hardcoded
+          # URL, not from the revision under test.
+          gitlink="$(git ls-tree HEAD "$expected_path" | awk 'NR == 1 { print $3 }')"
+          remote_head="$(git ls-remote "$expected_url" "refs/heads/$expected_branch" | awk 'NR == 1 { print $1 }')"
+
+          if [ -z "$gitlink" ]; then
+            echo "::error::no gitlink found for $expected_path" >&2
+            exit 1
+          fi
+          if [ -z "$remote_head" ]; then
+            echo "::error::could not resolve $expected_url refs/heads/$expected_branch" >&2
+            exit 1
+          fi
+
+          echo "gitlink:     $gitlink"
+          echo "remote head: $remote_head"
+
+          if [ "$gitlink" != "$remote_head" ]; then
+            echo "::error::bitcoin_app_base is not at the head of the official '$expected_branch' branch" >&2
+            exit 1
+          fi

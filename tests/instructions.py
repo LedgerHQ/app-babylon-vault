@@ -1,33 +1,552 @@
 from ragger.navigator import NavInsID
-from ragger.firmware import Firmware
+from ledgered.devices import Device
 from ragger_bitcoin.ragger_instructions import Instructions
-
-# The instructions in this file instruct ragger and speculos on how to interact with the device
-# during the tests.
+from typing import List, Tuple
 
 
-def sign_psbt_instruction_approve(model: Firmware, save_screenshot: bool = True) -> Instructions:
+def _vault_intent_key_pages(device: Device, total_keys: int) -> int:
+    """Steps the keeper + challenger list contributes to the intent review.
+
+    Calibrated against golden snapshot counts, not predicted: NBGL repacks tag/value
+    pairs whenever the page header changes.  The key list is its own review and carries
+    SKIPPABLE_OPERATION, and the "Skip" header costs vertical space, so fewer keys fit
+    per page than an unskippable review would take.  Stax's taller screen still fits 2
+    keys per page; Flex and Apex fit 1.  Nano shows one key per screen, 2 clicks each.
     """
-    Creates the ragger instructions for signing the custom transaction type.
+    if device.is_nano:
+        return 2 * total_keys
+    if device.name == "stax":
+        return (total_keys + 1) // 2
+    return total_keys
 
-    Parameters:
-        model (Firmware): pass the 'firmware' fixture (provided by ragger).
-        save_screenshot (bool): Whether to save the snapshots during the interaction (and compare with
-                                the expected snapshots).
 
-    Returns:
-        Instructions: A configured Instructions instance..
+def vault_intent_steps_for_keys(device: Device, total_keys: int, vault_count: int = 1) -> int:
+    """Navigation steps to reach the intent-approval trigger.
+
+    total_keys: keepers + challengers combined; handles asymmetric counts, unlike passing
+                a single "pairs" figure.
+    vault_count: number of vault groups (>= 1).
+
+    On touch the review runs as two reviews:
+      Review 1 (mandatory): intro + params pages + vault-group pages
+      Review 2 (skippable): intro + key pages
+
+    This counts the full walk through both.  For the short path that taps Skip on the
+    key list, use vault_intent_skip_instructions instead.
+
+    Per-device fixed part (everything except the key pages), for vault_count == 1:
+      Stax/Flex/Apex:  6     Nano:  16
+    That is the review 1 intro, the params pages, the group pages and the key list's
+    intro.  Each extra vault group adds 2 steps on touch and 7 on nano.
+
+    n_swipes = total_screens (touch); n_clicks = total_screens (nano).
+    Relationship to golden snapshot counts: n_swipes = snapshots - 3, n_clicks = snapshots - 2 —
+    so after a --golden_run the observed counts confirm (or correct) these figures.
     """
+    extra = vault_count - 1
+    key_pages = _vault_intent_key_pages(device, total_keys)
+    if device.is_nano:
+        return 16 + 7 * extra + key_pages
+    return (2 + vault_intent_params_pages(device)
+            + vault_intent_group_pages(device) * vault_count + key_pages)
 
-    instructions = Instructions(model)
 
-    if model.name.startswith("nano"):
-        instructions.new_request("Sign transaction", save_screenshot=save_screenshot)
-    else:
-        instructions.new_request("Review", NavInsID.USE_CASE_REVIEW_TAP, NavInsID.USE_CASE_REVIEW_TAP,
-                                 save_screenshot=save_screenshot)
-        instructions.same_request("Transaction type", NavInsID.USE_CASE_REVIEW_TAP, NavInsID.USE_CASE_REVIEW_TAP,
-                                  save_screenshot=save_screenshot)
+def vault_intent_steps(device: Device, vault_count: int, challenger_count: int) -> int:
+    """Navigation steps for an intent with `challenger_count` keeper/challenger *pairs*.
 
-        instructions.confirm_transaction(save_screenshot=save_screenshot)
+    Convenience wrapper over vault_intent_steps_for_keys for the common symmetric case
+    (equal keeper and challenger counts); prefer the latter directly when they differ.
+    Equivalent to the hand-expanded formulas:
+      Stax  6 + 2*(vault_count-1) + challenger_count
+      Flex  6 + 2*(vault_count-1) + 2*challenger_count
+      Nano 16 + 7*(vault_count-1) + 4*challenger_count
+    """
+    return vault_intent_steps_for_keys(device, 2 * challenger_count, vault_count)
+
+
+def vault_intent_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
+    """Return the complete navigation instruction list for approving a vault intent.
+
+    n_steps: RIGHT_CLICKs (Nano) or SWIPEs (touch) to reach the confirm trigger.
+    Pass vault_intent_steps(device, 1, 1) for standard 1-keeper + 1-challenger data.
+    """
+    if device.is_nano:
+        return [NavInsID.RIGHT_CLICK] * n_steps + [NavInsID.BOTH_CLICK]
+    return (
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * n_steps
+        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+    )
+
+
+def vault_intent_params_pages(device: Device) -> int:
+    """Content pages the global params segment occupies on touch.
+
+    The eight global rows (six parameters plus the keeper and challenger counts) are
+    fixed, so this does not vary with the intent.  Measured on the goldens: Stax fits 6
+    rows per page and Flex/Apex fit 4, so eight rows take 2 pages on every touch device.
+    """
+    assert not device.is_nano, "review boundaries are touch-only; nano runs one review"
+    return 2
+
+
+def vault_intent_group_pages(device: Device) -> int:
+    """Content pages one vault group occupies on touch.
+
+    A group is 6 rows, one of them the 64-hex vault provider key; it takes 2 pages on
+    every touch device.
+    """
+    assert not device.is_nano, "review boundaries are touch-only; nano runs one review"
+    return 2
+
+
+def vault_intent_skip_instructions(device: Device, vault_count: int = 1) -> List[NavInsID]:
+    """Navigate params and every vault group in full (mandatory), then Skip the key list.
+
+    The first review has no Skip and must be paged through, groups included.  Once the
+    last group is confirmed, the key list starts as its own review with
+    SKIPPABLE_OPERATION armed; tapping Skip on its first key page opens the "Skip
+    review?" modal, and confirming it jumps to the approve/reject page — approval still
+    has to be given explicitly, which is why this list ends with REVIEW_CONFIRM rather
+    than stopping at the skip.
+
+    Skip is touch-only: nano has no skip affordance.
+
+    Touch: RIGHT_HEADER_TAP taps the top-right "Skip" button; USE_CASE_CHOICE_CONFIRM
+           taps "Yes, skip" in the confirmation modal.
+    """
+    assert not device.is_nano, "skip is touch-only; nano has no skip affordance"
+    mandatory_swipes = (
+        1  # review 1 intro → first params page
+        + vault_intent_params_pages(device)  # through params; the last swipe starts group 1
+        + vault_intent_group_pages(device) * vault_count  # through groups → key list intro
+    )
+    return (
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * mandatory_swipes
+        + [NavInsID.SWIPE_CENTER_TO_LEFT]  # key list intro → first key page
+        + [NavInsID.RIGHT_HEADER_TAP, NavInsID.USE_CASE_CHOICE_CONFIRM]  # skip → approval
+        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+    )
+
+
+def vault_intent_reject_instructions(device: Device, n_steps: int) -> List[NavInsID]:
+    """Return the complete navigation instruction list for rejecting a vault intent.
+
+    Nano: needs n_steps + 1 RIGHT_CLICKs — the extra click moves past "Approve intent?"
+    to the "Reject operation" screen, then BOTH_CLICK confirms rejection.
+
+    Touch: USE_CASE_REVIEW_REJECT taps the footer Reject button; USE_CASE_CHOICE_CONFIRM
+    taps "Yes, reject" in the confirmation dialog. The rejection callback fires at
+    CHOICE_CONFIRM, so no USE_CASE_STATUS_DISMISS is needed.
+    """
+    if device.is_nano:
+        return [NavInsID.RIGHT_CLICK] * (n_steps + 1) + [NavInsID.BOTH_CLICK]
+    return (
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * n_steps
+        + [NavInsID.USE_CASE_REVIEW_REJECT, NavInsID.USE_CASE_CHOICE_CONFIRM]
+    )
+
+
+def vault_intent_approve_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
+    """Return (navigate_instruction, validation_instructions, search_text) to approve.
+
+    Touch: SWIPE_CENTER_TO_LEFT to the finish page, USE_CASE_REVIEW_CONFIRM (3 s hold),
+           then USE_CASE_STATUS_DISMISS for the "Operation signed" status screen.
+    Nano:  RIGHT_CLICK until our custom finishTitle "Approve intent?" appears, BOTH_CLICK.
+           No status dismiss needed — Nano NBGL auto-dismisses the status.
+    """
+    if device.is_nano:
+        # Nano NBGL shows our custom finishTitle on the confirmation screen.
+        # VAULT_INTENT_FINISH_TITLE (no SCREEN_SIZE_WALLET) = "Approve intent?"
+        return (NavInsID.RIGHT_CLICK,
+                [NavInsID.BOTH_CLICK],
+                r"^Approve intent\?$")
+    # Match the app's own finishTitle, not the SDK's "Hold to sign" long-press label:
+    # that label is not extractable on Stax, so searching for it walks off the end of the
+    # review and times out.  Every other nav helper here keys off the app title for the
+    # same reason (see derive_context_hash_nav).  On touch VAULT_INTENT_FINISH_TITLE is
+    # "Approve vault\nintent?", so the first rendered line is "Approve vault"; left
+    # unanchored so it matches whether Speculos reports the two lines separately or joined.
+    # No collision with the review intro title ("...to approve vault..." — lowercase).
+    return (NavInsID.SWIPE_CENTER_TO_LEFT,
+            [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS],
+            "Approve vault")
+
+
+# Step counts for the DERIVE_CONTEXT_HASH approval screen.
+# The review has 1 content page ("App name") — minimal navigation before the hold.
+# The review subtitle (unverified-caller warning) sits on the touch intro page, but is a page
+# of its own on Nano.
+# Verify these against the first --golden_run if the counts produce wrong snapshots.
+DCH_APPROVE_SWIPES_STAX = 2   # Stax: intro(1/3) → App name(2/3) → Allow derivation?(3/3)
+DCH_APPROVE_SWIPES      = 2   # Flex, Apex: same 3-page layout
+DCH_APPROVE_CLICKS      = 3   # NanoSP, NanoX: header → warning → App name → Allow derivation?
+
+
+def derive_context_hash_approve_steps(device: Device) -> int:
+    """Return the step count for the DERIVE_CONTEXT_HASH approval screen."""
+    if device.is_nano:
+        return DCH_APPROVE_CLICKS
+    if device.name == "stax":
+        return DCH_APPROVE_SWIPES_STAX
+    return DCH_APPROVE_SWIPES
+
+
+def derive_context_hash_approve_instructions(device: Device, n_steps: int) -> List[NavInsID]:
+    """Return the full navigation instruction list for approving DERIVE_CONTEXT_HASH.
+
+    n_steps: RIGHT_CLICKs (Nano) or SWIPEs (touch) before the confirm trigger.
+    Pass derive_context_hash_approve_steps(device) for the standard 1-field screen.
+    """
+    if device.is_nano:
+        return [NavInsID.RIGHT_CLICK] * n_steps + [NavInsID.BOTH_CLICK]
+    return (
+        [NavInsID.SWIPE_CENTER_TO_LEFT] * n_steps
+        + [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS]
+    )
+
+
+def derive_context_hash_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
+    """Return (navigate_instruction, validation_instructions, search_text) to approve
+    a DERIVE_CONTEXT_HASH request.
+
+    Touch: SWIPE until "Allow derivation?", USE_CASE_REVIEW_CONFIRM (3 s hold),
+           then USE_CASE_STATUS_DISMISS for the "Operation signed" status screen.
+    Nano:  RIGHT_CLICK until "Allow derivation?", BOTH_CLICK to confirm.
+    """
+    if device.is_nano:
+        return (NavInsID.RIGHT_CLICK,
+                [NavInsID.BOTH_CLICK],
+                r"^Allow derivation\?$")
+    return (NavInsID.SWIPE_CENTER_TO_LEFT,
+            [NavInsID.USE_CASE_REVIEW_CONFIRM, NavInsID.USE_CASE_STATUS_DISMISS],
+            "^Allow derivation\\?$")
+
+
+def vault_intent_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
+    """Return (navigate_instruction, validation_instructions, search_text) to reject
+    a vault intent, without pinning a page count.
+
+    The count-based vault_intent_reject_instructions has to be recalibrated whenever NBGL
+    repacks pairs per page; this walks to the final page by text instead.
+
+    Touch: SWIPE to the finish page, USE_CASE_REVIEW_REJECT, then USE_CASE_CHOICE_CONFIRM.
+    Nano:  RIGHT_CLICK until "Reject operation", BOTH_CLICK to confirm.
+    """
+    if device.is_nano:
+        return (NavInsID.RIGHT_CLICK,
+                [NavInsID.BOTH_CLICK],
+                r"^Reject operation$")
+    # Keys off the app's finishTitle rather than the SDK long-press label — see
+    # vault_intent_approve_nav for why "Hold to sign" cannot be used on touch.
+    return (NavInsID.SWIPE_CENTER_TO_LEFT,
+            [NavInsID.USE_CASE_REVIEW_REJECT, NavInsID.USE_CASE_CHOICE_CONFIRM],
+            "Approve vault")
+
+
+def derive_context_hash_reject_nav(device: Device) -> Tuple[NavInsID, List[NavInsID], str]:
+    """Return (navigate_instruction, validation_instructions, search_text) to reject
+    a DERIVE_CONTEXT_HASH request.
+
+    Touch: SWIPE until "Allow derivation?", USE_CASE_REVIEW_REJECT, then
+           USE_CASE_CHOICE_CONFIRM to confirm the rejection modal.
+    Nano:  RIGHT_CLICK until "Reject operation?", BOTH_CLICK to confirm.
+    """
+    if device.is_nano:
+        return (NavInsID.RIGHT_CLICK,
+                [NavInsID.BOTH_CLICK],
+                r"^Reject operation$")
+    return (NavInsID.SWIPE_CENTER_TO_LEFT,
+            [NavInsID.USE_CASE_REVIEW_REJECT, NavInsID.USE_CASE_CHOICE_CONFIRM],
+            "^Allow derivation\\?$")
+
+
+def sign_psbt_refund_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 3 (Refund) — Nano devices only.
+
+    Touch devices should use sign_psbt_refund_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
     return instructions
+
+
+def sign_psbt_refund_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 3 (Refund) on touch devices."""
+    assert not device.is_nano, "Nano uses sign_psbt_refund_approve_instructions, not flat nav"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_claim_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 4 (Claim) — Nano devices only.
+
+    Touch devices should use sign_psbt_claim_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_claim_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 4 (Claim) on touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    if device.name == "stax":
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
+    else:
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
+
+
+def sign_psbt_assert_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 5 (Assert) — Nano devices only.
+
+    Touch devices should use sign_psbt_assert_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_assert_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 5 (Assert) on touch devices.
+
+    Screen 5 shows three pairs (claim txid, amount carried, fee) on a single content page
+    on every touch device, so the page sequence is intro → content → hold-to-sign: two
+    taps, then the hold.  Flex/Apex previously carried a third tap, left over from before
+    the W7 fix removed the "Output count" field and with it one content page; the extra
+    tap had nothing to advance to and timed out waiting for a screen change.
+    """
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → hold to sign
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_wc_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 6 (WC) — Nano devices only.
+
+    Touch devices should use sign_psbt_wc_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_wc_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 6 (WC) on touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_claim_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 4 (Claim) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_claim_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 4 (Claim) on touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]
+
+
+def sign_psbt_assert_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 5 (Assert) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_assert_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 5 (Assert) on touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]
+
+
+def sign_psbt_wc_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 6 (WC) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_wc_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 6 (WC) on touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]
+
+
+def sign_psbt_pop_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 7 (PoP) — all devices."""
+    if device.is_nano:
+        return [NavInsID.RIGHT_CLICK] * 6 + [NavInsID.BOTH_CLICK]
+    elif  device.name == "stax":
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
+    else:
+        return [
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,      # content → finish
+            NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+            NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+        ]
+
+
+def sign_psbt_pop_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 7 (PoP) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_pop_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 7 (PoP) on touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]
+
+
+def sign_psbt_payout_finalize_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 8 (PayoutFinalize) — Nano devices only.
+
+    Touch devices should use sign_psbt_payout_finalize_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_payout_finalize_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 8 (PayoutFinalize) — touch devices.
+
+    Screen 8 shows 5 fields: "Vault UTXO txid", "Amount received", "Destination",
+    "CPFP address" and "Transaction fee".  The txid spans four lines and the fee row is
+    unconditional, so flex and apex_p need one more content page than stax does.
+    """
+    assert not device.is_nano, "Nano uses sign_psbt_payout_finalize_approve_instructions"
+    if device.name == "stax":
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
+        ]
+    else:
+        taps = [
+            NavInsID.USE_CASE_REVIEW_TAP,  # intro → content
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 1
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 2
+            NavInsID.USE_CASE_REVIEW_TAP,  # content page 3 (fee)
+        ]
+    return taps + [
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_payout_finalize_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 8 (PayoutFinalize) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_payout_finalize_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 8 (PayoutFinalize) — touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]
+
+
+
+
+def sign_psbt_reclaim_approve_instructions(device: Device) -> Instructions:
+    """Approve-path Instructions for Screen 9 (Reclaim) — Nano devices only.
+
+    Touch devices should use sign_psbt_reclaim_approve_nav() instead.
+    """
+    instructions = Instructions(device)
+    instructions.new_request("Sign", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_reclaim_approve_nav(device: Device) -> List[NavInsID]:
+    """Flat approve-path navigation for Screen 9 (Reclaim) — touch devices.
+
+    Screen 9 shows 4 fields: "Amount reclaimed", "Transaction fee", "Reclaim address"
+    and "PegIn txid", after an intro page that carries the consent warning.
+    """
+    assert not device.is_nano, "Nano uses sign_psbt_reclaim_approve_instructions"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,      # intro → content
+        NavInsID.USE_CASE_REVIEW_TAP,      # content page 1
+        NavInsID.USE_CASE_REVIEW_TAP,      # content page 2
+        NavInsID.USE_CASE_REVIEW_CONFIRM,  # hold to sign
+        NavInsID.USE_CASE_STATUS_DISMISS,  # dismiss status
+    ]
+
+
+def sign_psbt_reclaim_reject_instructions(device: Device) -> Instructions:
+    """Reject-path Instructions for Screen 9 (Reclaim) — Nano devices only."""
+    instructions = Instructions(device)
+    instructions.new_request("Reject", NavInsID.RIGHT_CLICK, NavInsID.BOTH_CLICK)
+    return instructions
+
+
+def sign_psbt_reclaim_reject_nav(device: Device) -> List[NavInsID]:
+    """Flat reject-path navigation for Screen 9 (Reclaim) — touch devices."""
+    assert not device.is_nano, "Nano uses Instructions-based navigation"
+    return [
+        NavInsID.USE_CASE_REVIEW_TAP,
+        NavInsID.USE_CASE_REVIEW_REJECT,
+        NavInsID.USE_CASE_CHOICE_CONFIRM,
+    ]

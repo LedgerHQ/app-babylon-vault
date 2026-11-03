@@ -1,0 +1,49 @@
+name: Fuzzing phase
+
+# One ClusterFuzzLite build+run phase, called by clusterfuzzlite.yml.
+#
+# Exists so the corpus phases can be chained with `needs:` instead of being parallel
+# matrix entries, without repeating the two action steps four times. See the ordering
+# rationale in clusterfuzzlite.yml.
+
+on:
+  workflow_call:
+    inputs:
+      sanitizer:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+      fuzz-seconds:
+        required: true
+        type: number
+      output-sarif:
+        required: false
+        default: false
+        type: boolean
+
+permissions: read-all
+
+jobs:
+  fuzz:
+    name: ${{ inputs.mode }} (${{ inputs.sanitizer }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ github.token }}
+          language: c
+          sanitizer: ${{ inputs.sanitizer }}
+
+      - name: Run Fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ github.token }}
+          fuzz-seconds: ${{ inputs.fuzz-seconds }}
+          mode: ${{ inputs.mode }}
+          sanitizer: ${{ inputs.sanitizer }}
+          output-sarif: ${{ inputs.output-sarif }}

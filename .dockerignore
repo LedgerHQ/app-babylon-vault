@@ -1,0 +1,37 @@
+# Build outputs must not enter the ClusterFuzzLite image context.
+#
+# .clusterfuzzlite/Dockerfile does `COPY . $SRC/app-babylon-vault`, and COPY ignores
+# .gitignore — so a developer with a local fuzzing/build/ from run_local.sh ends up with
+# that CMake cache inside the image, where its recorded source path no longer matches and
+# the configure step fails with "CMakeCache.txt directory is different than the directory
+# where CMakeCache.txt was created". CI never hits this because its checkout is clean,
+# which makes it a local-only failure that looks like a broken build script.
+#
+# .git is deliberately NOT excluded: ClusterFuzzLite's code-change mode needs history.
+
+build/
+unit-tests/build/
+fuzzing/build/
+fuzzing/crashes/
+fuzzing/corpus/
+
+# NOT excluded: fuzzing/seeds/. A pattern like `fuzzing/seeds/*/` does not mean
+# "subdirectories only" here — Docker strips the trailing slash, so it would match
+# generate_seeds.py too and break the build. The generated blobs are 648 bytes and
+# build.sh regenerates them anyway, so excluding them gains nothing.
+
+# Device build artefacts
+bin/
+debug/
+dep/
+obj/
+
+# Test scratch
+tests/snapshots-tmp/
+tests/.test_bitcoin/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

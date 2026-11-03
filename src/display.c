@@ -1,87 +1,762 @@
 #include "display.h"
 
+#include <stdio.h>
+#include <string.h>
+
 #include "../bitcoin_app_base/src/ui/display.h"
 #include "../bitcoin_app_base/src/ui/menu.h"
+#include "bip322.h"
+#include "globals.h"
 #include "io_ext.h"
+#include "ledger_assert.h"
 #include "nbgl_use_case.h"
 
 static void review_choice(bool approved) {
-    set_ux_flow_response(approved);  // sets the return value of io_ui_process
-
-    if (approved) {
-        // nothing to do in this case; after signing, the responsibility to show the main menu
-        // goes back to the base app's handler
-    } else {
-        nbgl_useCaseReviewStatus(STATUS_TYPE_TRANSACTION_REJECTED, ui_menu_main);
-    }
+    set_ux_flow_response(approved);
+    nbgl_useCaseReviewStatus(
+        approved ? STATUS_TYPE_TRANSACTION_SIGNED : STATUS_TYPE_TRANSACTION_REJECTED,
+        ui_menu_main);
 }
 
-#define MAX_N_PAIRS 4
+#define MAX_N_PAIRS 6
 
-// These are kept static rather than on the stack because the NBGL library
-// stores pointers to them that must remain valid long term.
-static nbgl_layoutTagValue_t pairs[MAX_N_PAIRS];
-static nbgl_layoutTagValueList_t pairList;
-static char value_str[32], magic_value_str[32], fee_str[32];
+_Static_assert(MAX_N_PAIRS == TX_DISPLAY_MAX_PAIRS,
+               "TX_DISPLAY_MAX_PAIRS out of sync with MAX_N_PAIRS");
+_Static_assert(TX_DISPLAY_AMOUNT_STR_SIZE >= MAX_AMOUNT_LENGTH + 1,
+               "TX_DISPLAY_AMOUNT_STR_SIZE too small; update globals.h");
+_Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= MAX_ADDRESS_LENGTH_STR + 1,
+               "TX_DISPLAY_ADDR_STR_SIZE too small; update globals.h");
+_Static_assert(TX_DISPLAY_TXID_STR_SIZE >= 2 * 32 + 1,
+               "TX_DISPLAY_TXID_STR_SIZE too small for 32-byte hex txid; update globals.h");
+_Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= 2 * VAULT_HASH256_LEN + 1,
+               "TX_DISPLAY_ADDR_STR_SIZE too small for hex txid reuse in Claim/Assert display");
+/* NBGL stores all pair pointers before rendering; VAULT_KEY_PAIR_SLOTS must cover the
+ * maximum pairs laid out per page on any supported device (currently 4 on Flex/Stax/Apex).
+ * Verify this assumption against the SDK when updating to a new device target. */
+_Static_assert(VAULT_KEY_PAIR_SLOTS >= 4,
+               "VAULT_KEY_PAIR_SLOTS too small; verify NBGL per-page pair limit before reducing");
+_Static_assert(TX_DISPLAY_ADDR_STR_SIZE >= BIP322_ETH_ADDR_STR_LEN,
+               "TX_DISPLAY_ADDR_STR_SIZE too small for Ethereum address");
+_Static_assert(TX_DISPLAY_EXTRA_STR_SIZE >= BIP322_CHAIN_ID_STR_LEN,
+               "TX_DISPLAY_EXTRA_STR_SIZE too small for chain ID");
+_Static_assert(TX_DISPLAY_EXTRA_STR_SIZE >= TX_DISPLAY_AMOUNT_STR_SIZE,
+               "TX_DISPLAY_EXTRA_STR_SIZE must also hold a format_sats_amount result");
+_Static_assert(TX_DISPLAY_TXID_STR_SIZE >= BIP322_ETH_ADDR_STR_LEN,
+               "TX_DISPLAY_TXID_STR_SIZE too small for registry address");
 
-bool display_transaction(dispatcher_context_t *dc,
-                         int64_t value_spent,
-                         uint64_t magic_input_value,
-                         uint64_t fee) {
-    uint64_t value_spent_abs = value_spent < 0 ? -value_spent : value_spent;
-    format_sats_amount(COIN_COINID_SHORT, value_spent_abs, value_str);
-    format_sats_amount(COIN_COINID_SHORT, magic_input_value, magic_value_str);
-    format_sats_amount(COIN_COINID_SHORT, fee, fee_str);
+/* Shared by every TYPE_TRANSACTION review whose pairs were written into
+ * G_scratch.display_tx.pairs_raw: runs the review, blocks on the user's choice and sends
+ * SW_DENY on rejection.  Returns true only on approval. */
+static bool review_tx_pairs(dispatcher_context_t *dc,
+                            int n_pairs,
+                            const char *title,
+                            const char *subtitle,
+                            const char *finish_title) {
+    LEDGER_ASSERT(n_pairs <= MAX_N_PAIRS, "Too many pairs");
 
-    int n_pairs = 0;
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-        .item = "Transaction type",
-        .value = "FOO",
+    nbgl_layoutTagValueList_t pair_list = {
+        .nbMaxLinesForValue = 0,
+        .nbPairs = n_pairs,
+        .pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw,
     };
-
-    if (value_spent >= 0) {
-        pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-            .item = "Value spent",
-            .value = value_str,
-        };
-    } else {
-        pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-            .item = "Value received",
-            .value = value_str,
-        };
-    }
-
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-        .item = "Magic value",
-        .value = magic_value_str,
-    };
-
-    pairs[n_pairs++] = (nbgl_layoutTagValue_t) {
-        .item = "Fee",
-        .value = fee_str,
-    };
-
-    assert(n_pairs <= MAX_N_PAIRS);
-
-    // Setup list
-    pairList.nbMaxLinesForValue = 0;
-    pairList.nbPairs = n_pairs;
-    pairList.pairs = pairs;
 
     nbgl_useCaseReview(TYPE_TRANSACTION,
-                       &pairList,
+                       &pair_list,
                        &ICON_APP_ACTION,
-                       "Review transaction\nto a FOO output",
-                       NULL,
-                       "Sign transaction\nto create a FOO output?",
+                       title,
+                       subtitle,
+                       finish_title,
                        review_choice);
 
-    // blocking call until the user approves or rejects the transaction
-    bool result = io_ui_process(dc);
-    if (!result) {
+    bool approved = io_ui_process(dc);
+    if (!approved) {
         SEND_SW(dc, SW_DENY);
         return false;
     }
+    return true;
+}
 
+// ---------------------------------------------------------------------------
+// Shared value formatting
+// ---------------------------------------------------------------------------
+
+// Txids reach the device in PSBT/wire byte order; block explorers and wallets show the
+// reverse, which is the order a user can compare against.
+void format_txid_hex(const uint8_t *txid, char *out, size_t out_len) {
+    uint8_t displayed[VAULT_HASH256_LEN];
+    for (size_t i = 0; i < sizeof(displayed); i++) {
+        displayed[i] = txid[sizeof(displayed) - 1 - i];
+    }
+    format_hex(displayed, sizeof(displayed), out, out_len);
+}
+
+// "4294967295 blocks (~29826161 days)\0" is the widest output; see
+// TX_DISPLAY_EXTRA_STR_SIZE in globals.h.
+#define VAULT_TIMELOCK_STR_SIZE TX_DISPLAY_EXTRA_STR_SIZE
+
+// 1 block ≈ 10 minutes. Examples: "100 blocks (~17 h)", "1008 blocks (~7 days)".
+// Shared by the vault intent review (Screen 2) and the Refund review (Screen 3) so the
+// user can match a transaction's timelock against the one they approved in the intent.
+// minutes is 64-bit: blocks spans the full CScriptNum-positive range, and blocks * 10
+// overflows uint32_t above 429496729.
+static void format_timelock_blocks(uint32_t blocks, char *buf, size_t len) {
+    uint64_t minutes = (uint64_t) blocks * 10u;
+    if (minutes < 60u) {
+        snprintf(buf, len, "%u blocks (~%u min)", (unsigned) blocks, (unsigned) minutes);
+    } else if (minutes < 1440u) {
+        snprintf(buf, len, "%u blocks (~%u h)", (unsigned) blocks, (unsigned) (minutes / 60u));
+    } else {
+        snprintf(buf, len, "%u blocks (~%u days)", (unsigned) blocks, (unsigned) (minutes / 1440u));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Screen 1 — DERIVE_CONTEXT_HASH approval
+// ---------------------------------------------------------------------------
+
+// Separate rejection callback so TYPE_OPERATION reviews show STATUS_TYPE_OPERATION_REJECTED
+// rather than STATUS_TYPE_TRANSACTION_REJECTED (which review_choice emits).
+static void derive_context_hash_choice(bool approved) {
+    set_ux_flow_response(approved);
+    nbgl_useCaseReviewStatus(
+        approved ? STATUS_TYPE_OPERATION_SIGNED : STATUS_TYPE_OPERATION_REJECTED,
+        ui_menu_main);
+}
+
+bool display_derive_context_hash(dispatcher_context_t *dc,
+                                 const uint8_t *app_name,
+                                 uint8_t app_name_len) {
+    // app_name_len <= 64, addr_str is 80 bytes — safe.
+    char *const name_str = G_scratch.display_tx.addr_str;
+    memcpy(name_str, app_name, app_name_len);
+    name_str[app_name_len] = '\0';
+
+    // app_name is host-supplied and not authenticated, so the subtitle leaves the user to vouch
+    // for the caller (spec §2.1: wallet MUST display appName).
+    nbgl_layoutTagValue_t *const pairs = (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+    pairs[0] = (nbgl_layoutTagValue_t) {.item = "App name", .value = name_str};
+
+    nbgl_layoutTagValueList_t pair_list = {
+        .nbMaxLinesForValue = 0,
+        .nbPairs = 1,
+        .pairs = pairs,
+    };
+
+    nbgl_useCaseReview(TYPE_OPERATION,
+                       &pair_list,
+                       &ICON_APP_ACTION,
+                       "Derive context hash",
+                       "Only approve on a trusted website or application",
+                       "Allow derivation?",
+                       derive_context_hash_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen 3 — Refund transaction
+// ---------------------------------------------------------------------------
+
+bool display_refund_transaction(dispatcher_context_t *dc,
+                                uint64_t amount_reclaimed,
+                                uint64_t fee,
+                                uint32_t timelock_blocks,
+                                const uint8_t *prepegin_txid,
+                                const char *refund_address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    format_txid_hex(prepegin_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    format_timelock_blocks(timelock_blocks,
+                           G_scratch.display_tx.extra_str,
+                           TX_DISPLAY_EXTRA_STR_SIZE);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Pre-PegIn txid", .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Refund timelock",
+                                             .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = refund_address};
+
+    return review_tx_pairs(dc, n, "Review refund\ntransaction", NULL, "Sign refund\ntransaction?");
+}
+
+// ---------------------------------------------------------------------------
+// Screen 4 — Claim transaction
+// ---------------------------------------------------------------------------
+
+bool display_claim_transaction(dispatcher_context_t *dc,
+                               uint64_t amount_spent,
+                               uint64_t connector_amount,
+                               uint64_t fee,
+                               const uint8_t *pegin_txid,
+                               const char *out0_address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_spent, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, connector_amount, G_scratch.display_tx.extra_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+    /* txid_str (65 B): 32-byte txid as 64 hex chars + NUL; addr_str is free for out0_address. */
+    format_txid_hex(pegin_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
+
+    int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Amount spent", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Connector amount",
+                                             .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Output 0 address", .value = out0_address};
+
+    return review_tx_pairs(dc, n, "Review Claim\ntransaction", NULL, "Sign Claim\ntransaction?");
+}
+
+// ---------------------------------------------------------------------------
+// Screen 5 — Assert transaction
+// ---------------------------------------------------------------------------
+
+bool display_assert_transaction(dispatcher_context_t *dc,
+                                const uint8_t *claim_txid,
+                                uint64_t amount_carried,
+                                uint64_t fee) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    /* addr_str (80 B) holds 64-char hex txid + NUL. */
+    format_txid_hex(claim_txid, G_scratch.display_tx.addr_str, TX_DISPLAY_ADDR_STR_SIZE);
+    format_sats_amount(COIN_COINID_SHORT, amount_carried, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Claim txid", .value = G_scratch.display_tx.addr_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Amount", .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+
+    return review_tx_pairs(dc, n, "Review Assert\ntransaction", NULL, "Sign Assert\ntransaction?");
+}
+
+// ---------------------------------------------------------------------------
+// Screen 6 — Wrongly Challenged (WC) transaction
+// ---------------------------------------------------------------------------
+
+bool display_wc_transaction(dispatcher_context_t *dc,
+                            uint64_t amount_reclaimed,
+                            uint64_t wallet_inputs_amount,
+                            uint64_t fee,
+                            const char *wc_address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaimed amount",
+                                             .value = G_scratch.display_tx.amount_str};
+    if (wallet_inputs_amount > 0) {
+        format_sats_amount(COIN_COINID_SHORT, wallet_inputs_amount, G_scratch.display_tx.extra_str);
+        tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Wallet inputs",
+                                                 .value = G_scratch.display_tx.extra_str};
+    }
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = wc_address};
+
+    return review_tx_pairs(dc,
+                           n,
+                           "Review wrongly\nchallenged tx",
+                           NULL,
+                           "Sign wrongly\nchallenged tx?");
+}
+
+// ---------------------------------------------------------------------------
+// Screen 7 — PoP (Register ETH address)
+// ---------------------------------------------------------------------------
+
+bool display_pop_transaction(dispatcher_context_t *dc,
+                             const char *eth_addr,
+                             const char *chain_id,
+                             const char *registry,
+                             const char *btc_address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    // addr_str (80 B): ETH address (42 chars + NUL fits within 80 B)
+    strlcpy(G_scratch.display_tx.addr_str, eth_addr, TX_DISPLAY_ADDR_STR_SIZE);
+    // extra_str (TX_DISPLAY_EXTRA_STR_SIZE B): chain ID (≤20 decimal digits + NUL)
+    strlcpy(G_scratch.display_tx.extra_str, chain_id, TX_DISPLAY_EXTRA_STR_SIZE);
+    // txid_str (65 B): registry address (42 chars + NUL fits within 65 B)
+    strlcpy(G_scratch.display_tx.txid_str, registry, TX_DISPLAY_TXID_STR_SIZE);
+    /* btc_addr_buf lives on this function's stack frame, which remains active while
+     * io_ui_process blocks below — NBGL pointer stays valid throughout rendering. */
+    char btc_addr_buf[TX_DISPLAY_ADDR_STR_SIZE];
+    strlcpy(btc_addr_buf, btc_address, sizeof(btc_addr_buf));
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Ethereum address",
+                                             .value = G_scratch.display_tx.addr_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Chain id", .value = G_scratch.display_tx.extra_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Registry address",
+                                             .value = G_scratch.display_tx.txid_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Bitcoin address", .value = btc_addr_buf};
+
+    return review_tx_pairs(dc, n, "Register ETH\naddress", NULL, "Register ETH\naddress?");
+}
+
+// ---------------------------------------------------------------------------
+// Screen 8 — Payout finalize
+// ---------------------------------------------------------------------------
+
+bool display_payout_finalize(dispatcher_context_t *dc,
+                             uint64_t amount_received,
+                             const char *address,
+                             const char *cpfp_address,
+                             uint64_t fee,
+                             const char *vault_prevout_txid) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_received, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+
+    // The fee pair is unconditional: a suppressed row is indistinguishable from a
+    // zero fee, and the user must never approve a payout with no fee shown.
+    int n = 0;
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Vault UTXO txid", .value = vault_prevout_txid};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount received",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Destination", .value = address};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "CPFP address", .value = cpfp_address};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+
+    return review_tx_pairs(dc,
+                           n,
+                           "Review payout\nfinalization",
+                           NULL,
+                           "Sign payout\nfinalization?");
+}
+
+// ---------------------------------------------------------------------------
+// Screen 9 — Reclaim transaction
+// ---------------------------------------------------------------------------
+
+// Consent, not validation: the device cannot see whether the vault is redeemed, so the
+// intro states the risk the user alone can judge — an early sweep kills the self-claim path.
+#define RECLAIM_REVIEW_TITLE "Reclaim reserve"
+#define RECLAIM_REVIEW_WARNING                                                     \
+    "Recover the reserve that protects your deposit. Continue only if your vault " \
+    "is redeemed. This action removes the protection permanently."
+
+bool display_reclaim_transaction(dispatcher_context_t *dc,
+                                 uint64_t amount_reclaimed,
+                                 uint64_t fee,
+                                 const uint8_t *pegin_txid,
+                                 const char *reclaim_address) {
+    nbgl_layoutTagValue_t *const tx_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display_tx.pairs_raw;
+
+    format_sats_amount(COIN_COINID_SHORT, amount_reclaimed, G_scratch.display_tx.amount_str);
+    format_sats_amount(COIN_COINID_SHORT, fee, G_scratch.display_tx.fee_str);
+    /* addr_str already holds reclaim_address; the txid goes to txid_str. */
+    format_txid_hex(pegin_txid, G_scratch.display_tx.txid_str, TX_DISPLAY_TXID_STR_SIZE);
+
+    int n = 0;
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Amount reclaimed",
+                                             .value = G_scratch.display_tx.amount_str};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Transaction fee", .value = G_scratch.display_tx.fee_str};
+    tx_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Reclaim address", .value = reclaim_address};
+    tx_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "PegIn txid", .value = G_scratch.display_tx.txid_str};
+
+    return review_tx_pairs(dc,
+                           n,
+                           RECLAIM_REVIEW_TITLE,
+                           RECLAIM_REVIEW_WARNING,
+                           "Sign reclaim\ntransaction?");
+}
+
+// ---------------------------------------------------------------------------
+// Vault intent approval screen
+// ---------------------------------------------------------------------------
+
+#define VAULT_INTENT_MAX_PAIRS VAULT_SCALAR_PAIRS_MAX
+
+_Static_assert(sizeof(nbgl_layoutTagValue_t) == VAULT_DISPLAY_PAIR_SIZE,
+               "nbgl_layoutTagValue_t size changed; update VAULT_DISPLAY_PAIR_SIZE in globals.h");
+
+// "4294967295 sat/vB\0" — TLV parser rejects base_fee_rate > UINT32_MAX, so cast is safe
+#define VAULT_FEE_RATE_STR_SIZE 20
+
+// "255\0" — keeper_count and challenger_count are uint8_t
+#define VAULT_KEY_COUNT_STR_SIZE 4
+
+#ifdef SCREEN_SIZE_WALLET
+#define VAULT_INTENT_REVIEW_TITLE "Review vault intent\nto approve vault\nparameters"
+#define VAULT_INTENT_FINISH_TITLE "Approve vault\nintent?"
+#define VAULT_VP_KEY_LABEL        "Vault provider key"
+/* The key list's own intro page.  NBGL draws an intro for every streaming review and the
+ * key list is a separate review, so this page cannot be suppressed; distinct wording keeps
+ * it from reading as a repeat of the first intro and marks where the skippable section
+ * starts.  Touch only — nano runs the whole review as one. */
+#define VAULT_KEYS_REVIEW_TITLE "Review participant\nkeys"
+#else
+#define VAULT_INTENT_REVIEW_TITLE "Review vault intent"
+#define VAULT_INTENT_FINISH_TITLE "Approve intent?"
+#define VAULT_VP_KEY_LABEL        "Provider key"
+#endif
+
+// ---- Streaming review state machine ----
+//
+// The vault intent is reviewed in two streaming reviews:
+//
+//   Review 1 (mandatory): intro → [params segment] → [vault groups]
+//   Review 2 (skippable): intro → [keys segment] → approve/reject
+//
+// Review 1 must be paged through in full: this approval is the only anchor for the silent
+// signing that follows it (Pre-PegIn signs with no further screen).  It carries the global
+// parameters, the keeper and challenger counts, and every per-vault group (provider key,
+// amount, commission, depositor claim, max PegIn fee).  Only the keeper/challenger key
+// list, which can run to 64 entries, may be bypassed — a deliberate narrowing of what the
+// user is guaranteed to have seen, accepted for usability at Babylon's request and
+// recorded as a deviation in APP_SPECIFICATION.md.  Skip lands on the approve/reject page,
+// never on a silent approval: declining to read the details is not the same as not
+// approving.  The approval page is reachable only through review 2, which starts only
+// once the last vault group has been confirmed.
+//
+// The reviews are separate because NBGL arms SKIPPABLE_OPERATION for a whole review and
+// excludes per-page narrowing for STREAMING_NAV, so two reviews are the only way to make
+// one segment skippable while keeping the others mandatory.  On nano there is no skip
+// affordance — see VAULT_SKIP_CB — and the key list continues review 1.
+//
+// All intent data is already in G_vault_intent, so the whole chain is driven from
+// the choice/skip callbacks within a single io_ui_process() pump in
+// display_vault_intent; only the final approve/reject sets the UX flow response.
+//
+// Single-flow invariant: display_vault_intent blocks on io_ui_process for the whole
+// review, so these file-scope lists are safe (no re-entrancy).
+static nbgl_layoutTagValueList_t g_vault_params_list;
+static nbgl_layoutTagValueList_t g_vault_keys_list;
+// Per-vault group streaming state for multi-vault (vault_count > 1).
+// File-scope so these buffers survive across NBGL callback frames inside io_ui_process.
+// Safe to reuse per segment: streaming review never navigates back to a confirmed segment.
+static uint8_t g_stream_vault_idx;
+static nbgl_layoutTagValueList_t g_vault_grp_list;
+static nbgl_layoutTagValue_t g_vault_grp_pairs[6];
+static char g_grp_vault_label[16]; /* "10 of 10\0" */
+static char g_grp_vp_str[VAULT_HEX_KEY_STR_SIZE];
+static char g_grp_amt_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+static char g_grp_comm_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+static char g_grp_claim_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+static char g_grp_fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+
+static void vault_stream_keys(void);
+static void vault_stream_finish(void);
+static void vault_stream_group(void);
+
+// Skip is touch-only.  Only the touch build starts the key list as its own
+// SKIPPABLE_OPERATION review; nano continues the mandatory review, which arms no skip
+// affordance, so a callback passed there could never fire.  Passing NULL states that
+// explicitly instead of leaning on the SDK's flag check.
+#ifdef SCREEN_SIZE_WALLET
+#define VAULT_SKIP_CB(cb) (cb)
+#else
+#define VAULT_SKIP_CB(cb) NULL
+#endif
+
+static void vault_stream_reject(void) {
+    set_ux_flow_response(false);
+    nbgl_useCaseReviewStatus(STATUS_TYPE_OPERATION_REJECTED, ui_menu_main);
+}
+
+static void vault_stream_final_choice(bool approved) {
+    set_ux_flow_response(approved);
+    nbgl_useCaseReviewStatus(
+        approved ? STATUS_TYPE_OPERATION_SIGNED : STATUS_TYPE_OPERATION_REJECTED,
+        ui_menu_main);
+}
+
+// After the keys segment has been paged through, or on Skip from it: go to the approval
+// page.  Approval is always explicit, whichever path arrives here.
+static void vault_stream_finish(void) {
+    nbgl_useCaseReviewStreamingFinish(VAULT_INTENT_FINISH_TITLE, vault_stream_final_choice);
+}
+
+static void vault_after_keys(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_finish();
+}
+
+// Skip on the keys segment → approval page directly.
+static void vault_stream_keys(void) {
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_keys_list,
+                                           vault_after_keys,
+                                           VAULT_SKIP_CB(vault_stream_finish));
+}
+
+#ifdef SCREEN_SIZE_WALLET
+// Entry point for the skippable key list review (touch only), called when its intro
+// "Continue" is pressed.
+static void vault_stream_keys_start(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_keys();
+}
+#endif
+
+// After all vault groups are confirmed: review the participant keys.  On touch this is a
+// new streaming review carrying SKIPPABLE_OPERATION, which therefore covers the key list
+// only; no parameter or group page can offer Skip.  On nano the key list continues the
+// mandatory review.
+static void vault_stream_keys_review(void) {
+#ifdef SCREEN_SIZE_WALLET
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION | SKIPPABLE_OPERATION,
+                                     &ICON_APP_ACTION,
+                                     VAULT_KEYS_REVIEW_TITLE,
+                                     NULL,
+                                     vault_stream_keys_start);
+#else
+    vault_stream_keys();
+#endif
+}
+
+static void vault_after_group(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    vault_stream_group();
+}
+
+// Streams vault groups one segment at a time, reusing static string buffers.
+// Calls vault_stream_keys_review() once all vault_count groups have been confirmed.
+static void vault_stream_group(void) {
+    if (g_stream_vault_idx >= G_vault_intent.vault_count) {
+        vault_stream_keys_review();
+        return;
+    }
+    uint8_t i = g_stream_vault_idx++;
+    const vault_group_t *grp = &G_vault_intent.groups[i];
+
+    snprintf(g_grp_vault_label,
+             sizeof(g_grp_vault_label),
+             "%u of %u",
+             (unsigned) (i + 1u),
+             (unsigned) G_vault_intent.vault_count);
+    format_hex(grp->vault_provider_pk, VAULT_XONLY_PUBKEY_LEN, g_grp_vp_str, sizeof(g_grp_vp_str));
+    format_sats_amount(COIN_COINID_SHORT, grp->vault_amount, g_grp_amt_str);
+    format_sats_amount(COIN_COINID_SHORT, grp->commission_fee, g_grp_comm_str);
+    format_sats_amount(COIN_COINID_SHORT, grp->depositor_claim_value, g_grp_claim_str);
+    format_sats_amount(COIN_COINID_SHORT, grp->pegin_max_fee, g_grp_fee_str);
+
+    g_vault_grp_pairs[0] = (nbgl_layoutTagValue_t) {.item = "Vault", .value = g_grp_vault_label};
+    g_vault_grp_pairs[1] =
+        (nbgl_layoutTagValue_t) {.item = VAULT_VP_KEY_LABEL, .value = g_grp_vp_str};
+    g_vault_grp_pairs[2] = (nbgl_layoutTagValue_t) {.item = "Vault amount", .value = g_grp_amt_str};
+    g_vault_grp_pairs[3] =
+        (nbgl_layoutTagValue_t) {.item = "Max commission fee", .value = g_grp_comm_str};
+    g_vault_grp_pairs[4] =
+        (nbgl_layoutTagValue_t) {.item = "Depositor claim", .value = g_grp_claim_str};
+    g_vault_grp_pairs[5] =
+        (nbgl_layoutTagValue_t) {.item = "Max PegIn fee", .value = g_grp_fee_str};
+
+    g_vault_grp_list.pairs = g_vault_grp_pairs;
+    g_vault_grp_list.nbPairs = 6;
+    g_vault_grp_list.nbMaxLinesForValue = 0;
+
+    /* No skip callback: every group must be shown before the approval page is reachable. */
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_grp_list, vault_after_group, NULL);
+}
+
+// After the params segment is confirmed: stream the vault groups in the same mandatory
+// review.
+static void vault_after_params(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    g_stream_vault_idx = 0;
+    vault_stream_group();
+}
+
+// After the intro: start the params segment.  No skip callback — params and vault
+// groups are always reviewed in full before the key list is shown.
+static void vault_stream_intro_choice(bool confirm) {
+    if (!confirm) {
+        vault_stream_reject();
+        return;
+    }
+    nbgl_useCaseReviewStreamingContinueExt(&g_vault_params_list, vault_after_params, NULL);
+}
+
+// Called by NBGL lazily for each key pair it needs to render.
+// NBGL stores pair->item and pair->value as raw pointers across all pairs on a page
+// before rendering any of them, so each pairIndex must write into a distinct buffer
+// slot.  The slot is pairIndex % VAULT_KEY_PAIR_SLOTS; 4 slots covers the maximum
+// number of pairs NBGL lays out per page on any supported device.
+// G_vault_intent is immutable while io_ui_process blocks, so pk indexing is safe.
+static nbgl_contentTagValue_t *_vault_key_pair_callback(uint8_t pairIndex) {
+    const vault_intent_t *intent = &G_vault_intent;
+    LEDGER_ASSERT(pairIndex < (uint8_t) (intent->keeper_count + intent->challenger_count),
+                  "pairIndex out of range");
+    const uint8_t *pk;
+    uint8_t slot = pairIndex % VAULT_KEY_PAIR_SLOTS;
+    if (pairIndex < intent->keeper_count) {
+        pk = intent->keeper_pks[pairIndex];
+        snprintf(G_scratch.display.key_label[slot],
+                 sizeof(G_scratch.display.key_label[slot]),
+                 "Keeper %u",
+                 (unsigned) (pairIndex + 1u));
+    } else {
+        uint8_t ci = pairIndex - intent->keeper_count;
+        pk = intent->challenger_pks[ci];
+        snprintf(G_scratch.display.key_label[slot],
+                 sizeof(G_scratch.display.key_label[slot]),
+                 "Challenger %u",
+                 (unsigned) (ci + 1u));
+    }
+    format_hex(pk,
+               VAULT_XONLY_PUBKEY_LEN,
+               G_scratch.display.key_str[slot],
+               sizeof(G_scratch.display.key_str[slot]));
+    nbgl_contentTagValue_t *pair = (nbgl_contentTagValue_t *) G_scratch.display.key_pair_raw[slot];
+    memset(pair, 0, sizeof(*pair));
+    pair->item = G_scratch.display.key_label[slot];
+    pair->value = G_scratch.display.key_str[slot];
+    return pair;
+}
+
+bool display_vault_intent(dispatcher_context_t *dc) {
+    // vault_pairs lives in G_scratch.display (scalar segment only).
+    // Scalar string buffers stay on the stack — small, and the frame must remain
+    // alive through the blocking io_ui_process() call so NBGL pointers stay valid.
+    // Key pairs are formatted on demand by _vault_key_pair_callback().
+    // G_scratch.display is safe here: display_vault_intent blocks on io_ui_process
+    // and cannot overlap with the hkdf or script_scratch union members.
+    nbgl_layoutTagValue_t *const vault_pairs =
+        (nbgl_layoutTagValue_t *) G_scratch.display.vault_pairs_raw;
+    char vault_app_name_str[VAULT_APP_NAME_MAX_LEN + 1u]; /* +1 for NUL */
+    char vault_fee_rate_str[VAULT_FEE_RATE_STR_SIZE];
+    char vault_pegin_csv_str[VAULT_TIMELOCK_STR_SIZE];
+    char vault_payout_tl_str[VAULT_TIMELOCK_STR_SIZE];
+    char vault_refund_tl_str[VAULT_TIMELOCK_STR_SIZE];
+    char vault_prepegin_fee_str[TX_DISPLAY_AMOUNT_STR_SIZE];
+    char vault_keeper_count_str[VAULT_KEY_COUNT_STR_SIZE];
+    char vault_challenger_count_str[VAULT_KEY_COUNT_STR_SIZE];
+
+    int n = 0;
+
+    // ---- Scalar fields (global params only) ----
+    //
+    // Per-vault group fields are streamed one segment at a time by vault_stream_group(),
+    // for all vault counts including 1.  This keeps the display path uniform and ensures
+    // every vault review shows a "Vault N of M" header regardless of vault_count.
+
+    // App name is shown first so the user can confirm the HKDF domain even when
+    // DERIVE_CONTEXT_HASH was called with P2=0x01 (silent, no Screen 1 shown).
+    memcpy(vault_app_name_str, G_vault_context.app_name, G_vault_context.app_name_len);
+    vault_app_name_str[G_vault_context.app_name_len] = '\0';
+    vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "App name", .value = vault_app_name_str};
+
+    snprintf(vault_fee_rate_str,
+             sizeof(vault_fee_rate_str),
+             "%u sat/vB",
+             (unsigned) G_vault_intent.base_fee_rate);
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Base fee rate", .value = vault_fee_rate_str};
+
+    format_timelock_blocks(G_vault_intent.pegin_csv_timelock,
+                           vault_pegin_csv_str,
+                           sizeof(vault_pegin_csv_str));
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "PegIn timelock", .value = vault_pegin_csv_str};
+
+    format_timelock_blocks(G_vault_intent.payout_timelock,
+                           vault_payout_tl_str,
+                           sizeof(vault_payout_tl_str));
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Payout timelock", .value = vault_payout_tl_str};
+
+    format_timelock_blocks(G_vault_intent.htlc_refund_timelock,
+                           vault_refund_tl_str,
+                           sizeof(vault_refund_tl_str));
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Refund timelock", .value = vault_refund_tl_str};
+
+    format_sats_amount(COIN_COINID_SHORT, G_vault_intent.prepegin_max_fee, vault_prepegin_fee_str);
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Max Pre-PegIn fee", .value = vault_prepegin_fee_str};
+
+    // The key counts are mandatory rows so the size of the participant set is shown even
+    // when the key list itself is skipped.
+    snprintf(vault_keeper_count_str,
+             sizeof(vault_keeper_count_str),
+             "%u",
+             (unsigned) G_vault_intent.keeper_count);
+    vault_pairs[n++] = (nbgl_layoutTagValue_t) {.item = "Keepers", .value = vault_keeper_count_str};
+
+    snprintf(vault_challenger_count_str,
+             sizeof(vault_challenger_count_str),
+             "%u",
+             (unsigned) G_vault_intent.challenger_count);
+    vault_pairs[n++] =
+        (nbgl_layoutTagValue_t) {.item = "Challengers", .value = vault_challenger_count_str};
+
+    LEDGER_ASSERT(n <= VAULT_INTENT_MAX_PAIRS, "Too many pairs");
+
+    // Scalar params segment: pairs live in vault_pairs_raw; value strings live on
+    // this stack frame and stay valid because io_ui_process blocks here for the
+    // whole flow.
+    g_vault_params_list.pairs = vault_pairs;
+    g_vault_params_list.nbPairs = (uint8_t) n;
+    g_vault_params_list.nbMaxLinesForValue = 0;
+
+    // Keys segment: formatted on demand by _vault_key_pair_callback().  No pair
+    // array is pre-allocated; NBGL calls the callback with the absolute pair index.
+    g_vault_keys_list.pairs = NULL;
+    g_vault_keys_list.callback = _vault_key_pair_callback;
+    g_vault_keys_list.nbPairs =
+        (uint8_t) (G_vault_intent.keeper_count + G_vault_intent.challenger_count);
+    g_vault_keys_list.nbMaxLinesForValue = 0;
+
+    // Review 1: mandatory review of the global parameters and the vault groups.
+    // SKIPPABLE_OPERATION is intentionally absent — it would arm Skip for every segment
+    // of this review.
+    nbgl_useCaseReviewStreamingStart(TYPE_OPERATION,
+                                     &ICON_APP_ACTION,
+                                     VAULT_INTENT_REVIEW_TITLE,
+                                     NULL,
+                                     vault_stream_intro_choice);
+
+    bool approved = io_ui_process(dc);
+    if (!approved) {
+        SEND_SW(dc, SW_DENY);
+        return false;
+    }
     return true;
 }

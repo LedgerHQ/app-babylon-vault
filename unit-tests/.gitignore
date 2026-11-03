@@ -1,0 +1,6 @@
+build/
+Testing/
+coverage/
+coverage.info
+coverage.base
+coverage.capture
